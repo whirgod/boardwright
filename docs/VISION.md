@@ -19,6 +19,10 @@ One server that:
 4. **Hosts multiple Engines per Game**, so Engines can be swapped, compared, and played
    against each other.
 
+Boardwright is also a **project for learning game theory**: Engine libraries implement one search
+algorithm each (minimax with alpha-beta, expectiminimax, …), favour clarity and documentation over
+raw speed, and can be compared side by side.
+
 The repository is a **monorepo**: the server, the web UI, the game rules, and the Engine
 implementations live together and share one set of contracts (`packages/core`).
 
