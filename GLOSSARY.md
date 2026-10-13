@@ -1,0 +1,63 @@
+# Boardwright
+
+A host that referees turn-based board games between humans and AI engines, and lets people watch, review, and analyze them.
+
+## Language
+
+### Games and play
+
+**Game**:
+A kind of board game with fixed rules, such as chess or nine men's morris.
+_Avoid_: Game type, variant (unless it really is a variant)
+
+**Match**:
+One concrete playing of a Game between Players, from the initial Position to an Outcome.
+_Avoid_: Game (for a single playing), session, round
+
+**Position**:
+The complete state of a Match at one moment, including whose turn it is.
+_Avoid_: Board, state
+
+**Move**:
+One action a Player takes that turns one Position into the next.
+_Avoid_: Turn, action, ply (use ply only when counting half-moves)
+
+**Seat**:
+A side in a Game that a Player occupies, such as white or black.
+_Avoid_: Color, side, player (a Seat is not a person)
+
+**Player**:
+A human or an Engine occupying a Seat in a Match.
+_Avoid_: User, participant
+
+**Outcome**:
+How a Match ended: the winning Seat or a draw, plus the reason.
+_Avoid_: Result, score
+
+**Notation**:
+The text encoding of Positions and Moves for one Game.
+_Avoid_: Format, serialization
+
+### Engines and analysis
+
+**Engine**:
+An AI that can choose Moves and analyze Positions for one Game.
+_Avoid_: Bot, AI, solver
+
+**Analysis**:
+An Engine's assessment of a Position: one or more Lines, best first.
+_Avoid_: Evaluation (that is the Score)
+
+**Line**:
+A sequence of Moves an Engine expects from a Position, with its Score.
+_Avoid_: Variation, PV (acceptable as shorthand in engine code)
+
+**Score**:
+An Engine's evaluation of a Line from the perspective of the Seat to move.
+_Avoid_: Eval, rating
+
+### Hosting
+
+**Game master**:
+The server's role as referee: it owns every Match's Position and accepts only legal Moves.
+_Avoid_: Arbiter, controller

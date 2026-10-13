@@ -1,0 +1,15 @@
+{
+  "name": "@boardwright/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Game master host: HTTP API for clients and engines, and host of the web UI.",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "start": "node src/main.ts"
+  },
+  "dependencies": {
+    "@boardwright/core": "*",
+    "fastify": "^5.12.6"
+  }
+}
