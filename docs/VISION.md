@@ -25,7 +25,7 @@ implementations live together and share one set of contracts (`packages/core`).
 ## Non-goals (for now)
 
 - Real-money play, accounts with payments, ranking/matchmaking at scale.
-- Games with hidden information or more than a handful of players (poker, etc.).
+- Games with hidden information, or with more than two Seats or non-zero-sum Outcomes (ADR 0003).
   Backgammon's dice (chance) **is** in scope.
 - Competing with dedicated engines (Stockfish et al.) on strength. Engines here are
   for play, teaching, and experimentation. Plugging in external strong engines later is welcome.

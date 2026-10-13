@@ -26,6 +26,6 @@ Each step links its GitHub issues; waves run in order, tasks within a wave in pa
    server (#10).
 4. **Full experience + more Games** — morris/checkers renderers (#11), review mode and analysis
    overlay (#12), persistence (#13), chess rules (#14), backgammon rules + chance model (#15), sandboxed
-   Engine workers (#29).
+   Engine workers (#29), Resignation (#31).
 5. **Later** — chess Engine + renderer (#16), backgammon Engine + renderer (#17), external
    Engine protocol (#18).
