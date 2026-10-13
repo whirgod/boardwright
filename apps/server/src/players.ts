@@ -91,7 +91,7 @@ function parseEngine(fields: Record<string, unknown>): ParsedPlayer {
   };
 }
 
-function parseLimits(
+export function parseLimits(
   value: unknown,
 ): { ok: true; limits: SearchLimits } | { ok: false; problem: string } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

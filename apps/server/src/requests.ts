@@ -3,8 +3,8 @@
  * bodies are tiny, and owning the checks keeps error messages in our error
  * shape without a schema library dependency.
  */
-import type { GameId, Seat } from "@boardwright/core";
-import { parsePlayer, type Player } from "./players.ts";
+import type { GameId, SearchLimits, Seat } from "@boardwright/core";
+import { parseLimits, parsePlayer, type Player } from "./players.ts";
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; problem: string };
 
@@ -102,4 +102,71 @@ export function parseResignBody(body: unknown): Parsed<ResignBody> {
     };
   }
   return { ok: true, value: { token } };
+}
+
+/** The `start` message of the Analysis stream. */
+export interface AnalysisStartBody {
+  readonly id?: string;
+  readonly gameId: GameId;
+  readonly engineId: string;
+  readonly position: string;
+  readonly limits: SearchLimits;
+}
+
+/** `{ type: "start", id?, gameId, engineId, position, limits? }` */
+export function parseAnalysisStartBody(
+  body: Record<string, unknown>,
+): Parsed<AnalysisStartBody> {
+  const extra = unexpectedFields(body, [
+    "type",
+    "id",
+    "gameId",
+    "engineId",
+    "position",
+    "limits",
+  ]);
+  if (extra) return { ok: false, problem: extra };
+  const { id, gameId, engineId, position, limits } = body;
+  if (id !== undefined && (typeof id !== "string" || id.length > 100)) {
+    return { ok: false, problem: "`id` must be a string of at most 100 chars" };
+  }
+  if (typeof gameId !== "string" || gameId === "") {
+    return { ok: false, problem: "`gameId` must be a non-empty string" };
+  }
+  if (typeof engineId !== "string" || engineId === "") {
+    return { ok: false, problem: "`engineId` must be a non-empty string" };
+  }
+  if (typeof position !== "string") {
+    return {
+      ok: false,
+      problem: "`position` must be a string in the Game's Notation",
+    };
+  }
+  const parsed = parseLimits(limits ?? {});
+  if (!parsed.ok) return parsed;
+  return {
+    ok: true,
+    value: {
+      ...(id !== undefined ? { id } : {}),
+      gameId,
+      engineId,
+      position,
+      limits: parsed.limits,
+    },
+  };
+}
+
+/** Parse a text message as a JSON object. */
+export function parseJsonObject(
+  text: string,
+): Parsed<Record<string, unknown>> {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { ok: false, problem: "message must be valid JSON" };
+  }
+  return isObject(value)
+    ? { ok: true, value }
+    : { ok: false, problem: "message must be a JSON object" };
 }
