@@ -11,7 +11,7 @@ import {
   type TicTacToeMove,
   type TicTacToePosition,
 } from "@boardwright/game-tic-tac-toe";
-import { assertEngineContract } from "@boardwright/testing";
+import { assertEngineContract, diceRace } from "@boardwright/testing";
 import { createMinimaxEngine, MAX_EVALUATION } from "./mod.ts";
 
 const engine = createMinimaxEngine({
@@ -519,4 +519,24 @@ Deno.test("handles a Seat moving several times in a row", async () => {
 
 Deno.test("honours the Engine contract", async () => {
   await assertEngineContract(engine, ttt);
+});
+
+Deno.test("refuses Games with chance (ADR 0005)", () => {
+  assertThrows(
+    () =>
+      createMinimaxEngine({
+        // @ts-expect-error: a ChanceGameRules is refused at compile time
+        rules: diceRace,
+        evaluate: () => 0,
+        name: "minimax",
+      }),
+    TypeError,
+    "Chance events",
+  );
+  // Also at run time, when the type was widened to plain GameRules.
+  const widened = diceRace as GameRules<unknown, unknown>;
+  assertThrows(
+    () => createMinimaxEngine({ rules: widened, evaluate: () => 0, name: "m" }),
+    TypeError,
+  );
 });

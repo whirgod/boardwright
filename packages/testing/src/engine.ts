@@ -1,9 +1,11 @@
-import type {
-  Analysis,
-  Engine,
-  GameRules,
-  Score,
-  SearchLimits,
+import {
+  type Analysis,
+  chancePending,
+  type Engine,
+  type GameRules,
+  hasChance,
+  type Score,
+  type SearchLimits,
 } from "@boardwright/core";
 import { seededRandom } from "./mod.ts";
 
@@ -42,6 +44,13 @@ function compareScores(a: Score, b: Score): number {
   return 0;
 }
 
+function wellFormed(s: Score): boolean {
+  return s.kind === "value"
+    ? Number.isFinite(s.value)
+    : (s.kind === "win-in" || s.kind === "loss-in") &&
+      Number.isInteger(s.plies) && s.plies >= 1;
+}
+
 /**
  * Checks that `engine` obeys the `Engine.analyze` contract for `rules`:
  * invalid limits throw a RangeError synchronously; only completed depths
@@ -50,6 +59,11 @@ function compareScores(a: Score, b: Score): number {
  * first `next()`); every Line is a legal Move sequence with a well-formed
  * Score, best Lines first, distinct first Moves; time limits and aborts are
  * honoured. Every Engine package must call this from its tests.
+ *
+ * For a Game with chance (`hasChance(rules)`), sampling walks resolve Chance
+ * events at random by their probabilities, Lines must end at the next Chance
+ * event, and a Position with a pending Chance event must yield Analyses with
+ * no Lines and a well-formed expected `score` (ADR 0005).
  */
 export async function assertEngineContract<Position, Move>(
   engine: Engine<Position, Move>,
@@ -163,14 +177,30 @@ export async function assertEngineContract<Position, Move>(
   const rand = seededRandom(seed);
   const sampled = new Map<string, Position>();
   let terminal: Position | undefined;
+  const pending = (p: Position) => chancePending(rules, p);
   const walkTo = (stopAt: number): Position | undefined => {
     let p = rules.initialPosition();
     for (let ply = 0; ply < maxPlies; ply++) {
-      if (rules.toMove(p) === undefined) {
+      if (rules.outcome(p) !== undefined) {
         terminal ??= p;
         return undefined;
       }
       if (ply >= stopAt) return p;
+      if (hasChance(rules) && pending(p)) {
+        // Resolve the Chance event at random, by its probabilities.
+        const events = rules.chanceEvents(p);
+        let u = rand();
+        let drawn = events[events.length - 1]!.chance;
+        for (const e of events) {
+          u -= e.probability;
+          if (u < 0) {
+            drawn = e.chance;
+            break;
+          }
+        }
+        p = rules.resolveChance(p, drawn);
+        continue;
+      }
       const legal = rules.legalMoves(p);
       p = rules.play(p, legal[Math.floor(rand() * legal.length)] as Move);
     }
@@ -181,6 +211,10 @@ export async function assertEngineContract<Position, Move>(
     if (p !== undefined) sampled.set(show(p), p);
   }
   check(sampled.size > 0, "could not sample any non-terminal Position");
+  check(
+    !hasChance(rules) || [...sampled.values()].some(pending),
+    "could not sample a Position with a pending Chance event",
+  );
   // A full playout, so a terminal Position is covered whenever one is reachable.
   for (let w = 0; w < 20 && terminal === undefined; w++) walkTo(maxPlies);
   const terminals = options.terminalPositions ??
@@ -234,6 +268,23 @@ export async function assertEngineContract<Position, Move>(
           a.depth <= (limits.maxDepth ?? Infinity),
           `${at}: exceeds maxDepth`,
         );
+        if (a.score !== undefined) {
+          check(
+            wellFormed(a.score),
+            `${at}: malformed expected Score ${JSON.stringify(a.score)}`,
+          );
+        }
+        if (pending(position)) {
+          check(
+            a.lines.length === 0,
+            `${at}: a pending Chance event has no Lines, got ${a.lines.length}`,
+          );
+          check(
+            a.score !== undefined,
+            `${at}: a pending Chance event needs an expected score`,
+          );
+          return;
+        }
         check(
           a.lines.length >= 1 && a.lines.length <= wanted,
           `${at}: ${a.lines.length} Lines, expected 1..${wanted}`,
@@ -244,13 +295,7 @@ export async function assertEngineContract<Position, Move>(
           const played = line.moves.map(moveText).join(" ");
           check(line.moves.length >= 1, `${at}: Line has no Moves`);
           const s = line.score;
-          check(
-            s.kind === "value"
-              ? Number.isFinite(s.value)
-              : (s.kind === "win-in" || s.kind === "loss-in") &&
-                Number.isInteger(s.plies) && s.plies >= 1,
-            `${at}: malformed Score ${JSON.stringify(s)}`,
-          );
+          check(wellFormed(s), `${at}: malformed Score ${JSON.stringify(s)}`);
           check(
             previous === undefined || compareScores(previous, s) >= 0,
             `${at}: Lines are not best first (${
@@ -261,6 +306,10 @@ export async function assertEngineContract<Position, Move>(
           let p = position;
           for (const move of line.moves) {
             const m = moveText(move);
+            check(
+              !pending(p),
+              `${at}: Line [${played}] continues past a Chance event with ${m}`,
+            );
             check(
               rules.toMove(p) !== undefined &&
                 rules.legalMoves(p).some((x) => moveText(x) === m),

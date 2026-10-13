@@ -51,13 +51,19 @@ export type Outcome =
  * The rules of one Game. Pure and deterministic: the server uses it to
  * referee Matches, engines use it to search. Positions and Moves are
  * opaque to everything except the Game itself and its Notation.
+ *
+ * A Game with chance implements {@link ChanceGameRules} instead (ADR 0005);
+ * for a plain `GameRules`, no Seat to move means the Match is over.
  */
 export interface GameRules<Position, Move> {
   readonly id: GameId;
   readonly name: string;
   readonly seats: readonly Seat[];
   initialPosition(): Position;
-  /** Seat to move, or `undefined` when the position is terminal. */
+  /**
+   * Seat to move, or `undefined` when the position is terminal (or, in a
+   * {@link ChanceGameRules}, while a Chance event is pending).
+   */
   toMove(position: Position): Seat | undefined;
   legalMoves(position: Position): readonly Move[];
   /** Throws if `move` is not legal in `position`; never mutates `position`. */
@@ -76,13 +82,90 @@ export interface Notation<Position, Move> {
   decodeMove(text: string, position: Position): Move;
 }
 
-/** Engine evaluation from the perspective of the Seat to move. */
+/** One possible result of a pending Chance event and its probability. */
+export interface ChanceResult<Chance> {
+  readonly chance: Chance;
+  /** In (0, 1]; the probabilities of one Chance event sum to 1. */
+  readonly probability: number;
+}
+
+/**
+ * The rules of a Game with chance, such as backgammon's dice (ADR 0005).
+ * Besides "a Seat is to move" and "terminal", a Position may have a
+ * **pending Chance event**: no Seat to move (`toMove` is `undefined`), no
+ * Outcome and no legal Moves. Only the Game master resolves it, by drawing
+ * one of `chanceEvents(position)` and applying it with `resolveChance`, so
+ * the Game itself stays pure and deterministic. Chance results (`Chance`)
+ * are a type of their own, not Moves, with their own Notation.
+ *
+ * Structurally every `ChanceGameRules` is also a `GameRules`; code that must
+ * tell them apart uses {@link hasChance}.
+ */
+export interface ChanceGameRules<Position, Move, Chance>
+  extends GameRules<Position, Move> {
+  /**
+   * The possible results of the Chance event pending in `position`, each
+   * once and with its probability (they sum to 1); empty when no Chance
+   * event is pending.
+   */
+  chanceEvents(position: Position): readonly ChanceResult<Chance>[];
+  /**
+   * The Position after `chance` happened. Throws if no Chance event is
+   * pending or `chance` is not one of its results; never mutates `position`.
+   */
+  resolveChance(position: Position, chance: Chance): Position;
+  readonly notation: ChanceNotation<Position, Move, Chance>;
+}
+
+/** {@link Notation} plus the text encoding of chance results. */
+export interface ChanceNotation<Position, Move, Chance>
+  extends Notation<Position, Move> {
+  encodeChance(chance: Chance): string;
+  /** Throws on invalid text. */
+  decodeChance(text: string, position: Position): Chance;
+}
+
+/**
+ * Whether `rules` is a Game with chance. Structural (no `instanceof`), so it
+ * also works on rules loaded in another realm, e.g. a Worker.
+ */
+export function hasChance<Position, Move>(
+  rules: GameRules<Position, Move>,
+): rules is ChanceGameRules<Position, Move, unknown> {
+  const r = rules as Partial<ChanceGameRules<Position, Move, unknown>>;
+  return typeof r.chanceEvents === "function" &&
+    typeof r.resolveChance === "function" &&
+    typeof r.notation?.encodeChance === "function" &&
+    typeof r.notation?.decodeChance === "function";
+}
+
+/**
+ * Whether a Chance event is pending in `position`: no Seat to move and no
+ * Outcome. Always `false` for a Game without chance.
+ */
+export function chancePending<Position, Move>(
+  rules: GameRules<Position, Move>,
+  position: Position,
+): boolean {
+  return hasChance(rules) && rules.toMove(position) === undefined &&
+    rules.outcome(position) === undefined;
+}
+
+/**
+ * Engine evaluation from the perspective of the Seat to move; while a Chance
+ * event is pending (no Seat to move), from the perspective of the Game's
+ * first Seat (`rules.seats[0]`).
+ */
 export type Score =
   | { readonly kind: "value"; readonly value: number }
   | { readonly kind: "win-in"; readonly plies: number }
   | { readonly kind: "loss-in"; readonly plies: number };
 
-/** A sequence of Moves an Engine expects from a Position, with its Score. */
+/**
+ * A sequence of Moves an Engine expects from a Position, with its Score. A
+ * Line ends at the next Chance event: its last Move may lead to a pending
+ * Chance event, but no Move follows one.
+ */
 export interface Line<Move> {
   readonly moves: readonly Move[];
   readonly score: Score;
@@ -90,8 +173,13 @@ export interface Line<Move> {
 
 export interface Analysis<Move> {
   readonly depth: number;
-  /** Best Lines first. */
+  /** Best Lines first; empty while a Chance event is pending. */
   readonly lines: readonly Line<Move>[];
+  /**
+   * The expected Score of the Position, set while a Chance event is pending
+   * (there are no Lines then). Absent otherwise: the Lines carry the Scores.
+   */
+  readonly score?: Score;
 }
 
 export interface SearchLimits {
@@ -114,10 +202,15 @@ export interface Engine<Position, Move> {
    *   first one completes (`maxTimeMs` alone never yields nothing).
    * - Only completed depths are yielded; an interrupted one is discarded.
    * - Yielded depths are integers >= 1 and strictly increasing.
-   * - Every Analysis of a non-terminal `position` has between 1 and
+   * - Every Analysis of a `position` with a Seat to move has between 1 and
    *   `limits.lines` (default 1) Lines. Every Line has at least one Move, its
    *   Moves are legal in sequence from `position`, and Lines start with
-   *   distinct Moves, best first.
+   *   distinct Moves, best first. No Move in a Line follows a pending
+   *   Chance event.
+   * - A Position with a pending Chance event (Games with chance only) has
+   *   no Lines: every Analysis is `{ depth, lines: [], score }` with the
+   *   expected Score (same depth rules as above); `win-in`/`loss-in` only
+   *   when forced whatever the dice.
    * - A terminal `position` yields exactly one `{ depth: 0, lines: [] }`.
    * - Once `signal` aborts, the stream ends promptly (no bound on buffered
    *   Analyses already completed).
