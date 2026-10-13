@@ -3,6 +3,7 @@ import {
   type ChanceGameRules,
   type GameRules,
   hasChance,
+  pickChance,
 } from "@boardwright/core";
 
 export interface ContractOptions {
@@ -207,12 +208,30 @@ function runContract<Position, Move, Chance>(
       Math.abs(sum - 1) <= PROBABILITY_EPSILON,
       `chance probabilities sum to ${sum}, not 1`,
     );
-    let u = rand();
-    for (const e of events) {
-      u -= e.probability;
-      if (u < 0) return e.chance;
+    // Results seen elsewhere but not offered here must be refused.
+    const offered = new Set(texts);
+    for (const text of chancePool.sample(samples)) {
+      if (offered.has(text)) continue;
+      let candidate: Chance;
+      try {
+        candidate = c.notation.decodeChance(text, position);
+      } catch {
+        continue; // not even decodable in this Position
+      }
+      if (offered.has(c.notation.encodeChance(candidate))) continue;
+      assertThrows(
+        () => c.resolveChance(position, candidate),
+        Error,
+        undefined,
+        `resolveChance accepted ${text}, which is not offered in ${encoded}`,
+      );
+      assertEquals(
+        n.encodePosition(position),
+        encoded,
+        "failed resolveChance mutated its input position",
+      );
     }
-    return events[events.length - 1]!.chance;
+    return pickChance(events, rand());
   }
 
   let reachedTerminal = false;

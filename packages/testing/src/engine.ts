@@ -4,6 +4,7 @@ import {
   type Engine,
   type GameRules,
   hasChance,
+  pickChance,
   type Score,
   type SearchLimits,
 } from "@boardwright/core";
@@ -63,7 +64,9 @@ function wellFormed(s: Score): boolean {
  * For a Game with chance (`hasChance(rules)`), sampling walks resolve Chance
  * events at random by their probabilities, Lines must end at the next Chance
  * event, and a Position with a pending Chance event must yield Analyses with
- * no Lines and a well-formed expected `score` (ADR 0005).
+ * no Lines, a well-formed expected `score` and its perspective `seat` (one of
+ * the Game's Seats) (ADR 0005). Every other Analysis has neither `score` nor
+ * `seat`.
  */
 export async function assertEngineContract<Position, Move>(
   engine: Engine<Position, Move>,
@@ -188,17 +191,7 @@ export async function assertEngineContract<Position, Move>(
       if (ply >= stopAt) return p;
       if (hasChance(rules) && pending(p)) {
         // Resolve the Chance event at random, by its probabilities.
-        const events = rules.chanceEvents(p);
-        let u = rand();
-        let drawn = events[events.length - 1]!.chance;
-        for (const e of events) {
-          u -= e.probability;
-          if (u < 0) {
-            drawn = e.chance;
-            break;
-          }
-        }
-        p = rules.resolveChance(p, drawn);
+        p = rules.resolveChance(p, pickChance(rules.chanceEvents(p), rand()));
         continue;
       }
       const legal = rules.legalMoves(p);
@@ -274,6 +267,10 @@ export async function assertEngineContract<Position, Move>(
             `${at}: malformed expected Score ${JSON.stringify(a.score)}`,
           );
         }
+        check(
+          (a.seat === undefined) === (a.score === undefined),
+          `${at}: seat must be present exactly when score is`,
+        );
         if (pending(position)) {
           check(
             a.lines.length === 0,
@@ -283,8 +280,18 @@ export async function assertEngineContract<Position, Move>(
             a.score !== undefined,
             `${at}: a pending Chance event needs an expected score`,
           );
+          check(
+            rules.seats.includes(a.seat!),
+            `${at}: seat ${
+              JSON.stringify(a.seat)
+            } is not one of the Game's Seats`,
+          );
           return;
         }
+        check(
+          a.score === undefined,
+          `${at}: score is only for a pending Chance event (Lines carry the Scores)`,
+        );
         check(
           a.lines.length >= 1 && a.lines.length <= wanted,
           `${at}: ${a.lines.length} Lines, expected 1..${wanted}`,

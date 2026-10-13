@@ -3,9 +3,11 @@ import {
   assertEquals,
   assertNotEquals,
   assertRejects,
+  assertThrows,
 } from "@std/assert";
+import { pickChance } from "@boardwright/core";
 import { diceRace } from "@boardwright/testing";
-import { drawChance, newChanceSeed, pickChance } from "./chance.ts";
+import { drawChance, newChanceSeed } from "./chance.ts";
 import {
   GameMaster,
   MatchError,
@@ -39,6 +41,7 @@ function setup(options: { store?: MatchStore; seed?: string } = {}) {
     store,
     newMatchId: () => `m${++ids}`,
     newSeed: () => options.seed ?? SEED,
+    rollRetryDelaysMs: [1, 1],
   });
   const events: MatchEvent[] = [];
   master.onMatchChanged((e) => {
@@ -102,6 +105,27 @@ Deno.test("pickChance: by cumulative probability, in the Game's order", () => {
     probability: 0.3,
   }];
   assertEquals(pickChance(short, 0.9), "y");
+  assertThrows(() => pickChance([], 0.5), RangeError);
+});
+
+// Known answers, computed independently of this code, e.g.
+// `printf 's:6' | sha256sum` -> ba7075967b55..., first 12 hex digits / 2^48.
+// They pin the published algorithm: changing it would break the
+// verification of every finished Match's rolls.
+Deno.test("drawChance + pickChance: known answers", async () => {
+  const known: [string, number, number, number][] = [
+    // seed, n, first 48 bits of SHA-256("<seed>:<n>"), dice-race roll
+    ["s", 0, 0x21d0725006cf, 1],
+    ["s", 3, 0xd12d3bcf5e7a, 3],
+    ["s", 6, 0xba7075967b55, 2],
+    ["fixed-test-seed", 0, 0x372641f2d3f3, 1],
+  ];
+  const rolls = diceRace.chanceEvents(diceRace.initialPosition());
+  for (const [seed, n, bits, roll] of known) {
+    const u = await drawChance(seed, n);
+    assertEquals(u, bits / 2 ** 48, `${seed}:${n}`);
+    assertEquals(pickChance(rolls, u), roll, `${seed}:${n}`);
+  }
 });
 
 Deno.test("createMatch resolves the opening Chance event right away", async () => {
@@ -256,7 +280,7 @@ Deno.test("refused changes roll nothing", async () => {
   // No Chance event is pending: the Game master has nothing to roll.
   const refused = await assertMatchError(
     () => master.apply(match.id, GAME_MASTER, { kind: "chance" }),
-    "not-your-turn",
+    "conflict",
   );
   assertEquals(refused.message, "No Chance event is pending");
   assertEquals(events, []);
@@ -277,7 +301,7 @@ Deno.test("Games without chance cannot be rolled for and get no seed", async () 
   assertEquals((await store.get(match.id))?.seed, undefined);
   await assertMatchError(
     () => master.apply(match.id, GAME_MASTER, { kind: "chance" }),
-    "not-your-turn",
+    "conflict",
   );
 });
 
@@ -300,32 +324,128 @@ async function storePending(store: MatchStore): Promise<MatchRecord> {
   return record;
 }
 
-Deno.test("while a Chance event is pending only the Game master acts", async () => {
-  const { master, store, events } = setup();
-  await storePending(store);
-  const pending = await master.getMatch("pending");
-  assertEquals(pending.toMove, null);
-  assertEquals(pending.outcome, null);
-  assertEquals(pending.legalMoves, []);
-  const refused = await assertMatchError(
-    () =>
-      master.apply("pending", { engineSeat: "a" }, { kind: "move", move: "f" }),
-    "not-your-turn",
+/** A store whose roll writes fail `state.failures` times (Infinity: always). */
+function flakyStore() {
+  const inner = new InMemoryMatchStore();
+  const state = { failures: 0 };
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: (id) => inner.get(id),
+    update: (r) =>
+      r.moves.at(-1)?.kind === "chance" && state.failures-- > 0
+        ? Promise.reject(new Error("store down"))
+        : inner.update(r),
+  };
+  return { store, state };
+}
+
+/** Runs `fn` with console.error captured; returns its result and the logged calls. */
+async function quietly<T>(fn: () => Promise<T>) {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    return { result: await fn(), errors };
+  } finally {
+    console.error = original;
+  }
+}
+
+Deno.test("a failed roll is retried automatically with backoff", async () => {
+  const { store, state } = flakyStore();
+  state.failures = 2; // the two retries of rollRetryDelaysMs: [1, 1]
+  const { master, events } = setup({ store });
+  const { result, errors } = await quietly(() =>
+    master.createMatch("dice-race", HUMANS)
+  );
+  assertEquals(errors.length, 2);
+  assertEquals(result.match.version, 2);
+  assertEquals(result.match.toMove, "a");
+  assertEquals(events.map((e) => e.kind), ["created", "chance"]);
+});
+
+Deno.test("a roll that keeps failing: the change stays committed; a refused Move retries it", async () => {
+  const { store, state } = flakyStore();
+  state.failures = Infinity;
+  const { master, events } = setup({ store });
+  const { result, errors } = await quietly(() =>
+    master.createMatch("dice-race", HUMANS)
+  );
+  assertEquals(errors.length, 3); // first try + 2 retries, then gives up
+  const { match, tokens } = result;
+  assertEquals([match.version, match.toMove, match.outcome], [1, null, null]);
+  assertEquals(match.legalMoves, []);
+
+  // While it is pending, Moves and Forfeits are refused with chance-pending.
+  const refused = await quietly(() =>
+    assertMatchError(
+      () =>
+        master.apply(match.id, { token: tokens.a! }, {
+          kind: "move",
+          move: "f",
+        }),
+      "chance-pending",
+    )
   );
   assertEquals(
-    refused.message,
+    refused.result.message,
     "A Chance event is pending; the Game master is to act",
   );
+  await quietly(() =>
+    assertMatchError(
+      () =>
+        master.apply(match.id, GAME_MASTER, {
+          kind: "forfeit",
+          seat: "a",
+          reason: "timeout",
+        }),
+      "chance-pending",
+    )
+  );
+  assertEquals(events.map((e) => e.kind), ["created"]);
+
+  // Once the store works again, the next refused Move triggers the roll.
+  state.failures = 0;
   await assertMatchError(
     () =>
-      master.apply("pending", GAME_MASTER, {
-        kind: "forfeit",
-        seat: "a",
-        reason: "timeout",
-      }),
-    "not-your-turn",
+      master.apply(match.id, { token: tokens.a! }, { kind: "move", move: "f" }),
+    "chance-pending",
   );
-  assertEquals(events, []);
+  assertEquals(events.map((e) => e.kind), ["created", "chance"]);
+  const rolled = (await store.get(match.id))!;
+  assertEquals(rolled.moves, [{
+    kind: "chance",
+    chance: await expectedRoll(SEED, 0, "0:0:a:-"),
+  }]);
+  const moved = await master.apply(match.id, { token: tokens.a! }, {
+    kind: "move",
+    move: "f",
+  });
+  assertEquals(moved.toMove, "b");
+});
+
+Deno.test("reading a Match that waits for a roll queues the roll", async () => {
+  const { store, state } = flakyStore();
+  state.failures = Infinity;
+  const { master, events } = setup({ store });
+  const { result } = await quietly(() =>
+    master.createMatch("dice-race", HUMANS)
+  );
+  state.failures = 0;
+  const seen = await master.getMatch(result.match.id);
+  assertEquals(seen.toMove, null); // the read itself does not wait
+  // An explicit roll queued behind the recovery finds nothing left to do.
+  await assertMatchError(
+    () => master.apply(result.match.id, GAME_MASTER, { kind: "chance" }),
+    "conflict",
+  );
+  assertEquals(events.map((e) => e.kind), ["created", "chance"]);
+  assertEquals((await master.getMatch(result.match.id)).toMove, "a");
+});
+
+Deno.test("the Game master can roll a pending Chance event explicitly", async () => {
+  const { master, store, events } = setup();
+  await storePending(store);
   const rolled = await master.apply("pending", GAME_MASTER, { kind: "chance" });
   assertEquals(rolled.moves, [{
     kind: "chance",
@@ -333,37 +453,6 @@ Deno.test("while a Chance event is pending only the Game master acts", async () 
   }]);
   assertEquals(rolled.toMove, "a");
   assertEquals(events.map((e) => e.kind), ["chance"]);
-});
-
-Deno.test("a roll that fails is logged and leaves the Move committed", async () => {
-  const inner = new InMemoryMatchStore();
-  let failRolls = true;
-  const store: MatchStore = {
-    create: (r) => inner.create(r),
-    get: (id) => inner.get(id),
-    update: (r) =>
-      failRolls && r.moves.at(-1)?.kind === "chance"
-        ? Promise.resolve(false)
-        : inner.update(r),
-  };
-  const { master, events } = setup({ store });
-  const errors: unknown[][] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => errors.push(args);
-  let created: MatchView;
-  try {
-    created = (await master.createMatch("dice-race", HUMANS)).match;
-  } finally {
-    console.error = original;
-  }
-  assertEquals(errors.length, 1);
-  assertEquals(created.version, 1);
-  assertEquals(created.toMove, null);
-  assertEquals(events.map((e) => e.kind), ["created"]);
-  failRolls = false;
-  const view = await master.apply(created.id, GAME_MASTER, { kind: "chance" });
-  assertEquals(view.toMove, "a");
-  assertEquals(view.version, 2);
 });
 
 Deno.test("a seedless record of a Game with chance is a server fault", async () => {

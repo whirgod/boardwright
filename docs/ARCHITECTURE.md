@@ -55,8 +55,10 @@ core  <-  games/*  <-  engines/*
   (`encodeChance`/`decodeChance`). Code that must tell the kinds apart uses the structural
   `hasChance(rules)` guard (`chancePending(rules, position)` for the state). Only the Game master
   resolves Chance events (see `game-master.ts`). While one is pending, Analysis has no Lines but an
-  expected `score` (from `rules.seats[0]`'s view), and a Line ends at the next Chance event.
-  `engines/minimax` refuses Games with chance (type and run time).
+  expected `score` with an explicit `seat` (the Score's perspective, since no Seat is to move);
+  other Analyses have neither. A Line ends at the next Chance event. `pickChance(results, u)` in
+  core is the one selection rule (used by the Game master and the kits). `engines/minimax` refuses
+  Games with chance (type and run time).
 - **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
   (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
   `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine
@@ -69,8 +71,8 @@ core  <-  games/*  <-  engines/*
 ## Server internals (`apps/server/src`)
 
 - `games.ts` — `GameRegistry`: the Games this server hosts, by id.
-- `chance.ts` — how the Game master draws Chance events: `newChanceSeed`, `drawChance(seed, n)`,
-  `pickChance(results, u)` (details under `game-master.ts`).
+- `chance.ts` — how the Game master draws Chance events: `newChanceSeed`, `drawChance(seed, n)`
+  (details under `game-master.ts`; known-answer tests pin the algorithm).
 - `game-master.ts` — `GameMaster`, the referee, independent of HTTP: creates Matches, rebuilds
   the current Position by replaying the stored Move list, and applies **every** Match change
   through one method, `apply(id, actor, change, { expectedVersion? })`:
@@ -82,18 +84,26 @@ core  <-  games/*  <-  engines/*
     `{ kind: "resignation" }` (at any time; the Opponent wins) — or the Game master's
     `ImposedChange`: `{ kind: "forfeit", seat, reason }` (`seat` is to move and failed to play;
     the Opponent wins; `reason` is a `ForfeitReason` code) or `{ kind: "chance" }` (resolve the
-    pending Chance event; refused with `not-your-turn` if none is). Overloads pair Actors with
+    pending Chance event; refused with `conflict` if none is). Overloads pair Actors with
     their kinds of change.
   - Chance events (ADR 0005), branching only via `hasChance`: a Match of a Game with chance gets a
-    secret `seed` (`newSeed` option, default 256 random bits; `chance.ts`). Whenever a change, or
-    creation, leaves a Chance event pending, the Game master applies `{ kind: "chance" }` itself
-    right away, inside the same per-Match queue, as its own versioned change and `chance` event,
-    until a Seat is to move; `apply`/`createMatch` return the view after the rolls. The n-th
-    Chance event of a Match uses `drawChance(seed, n)` (first 48 bits of SHA-256 of
-    `"<seed>:<n>"` over 2^48) and `pickChance` (cumulative probabilities in the Game's order), so
-    the revealed seed verifies every roll. A roll that fails is logged, never thrown (the change
-    before it is committed); the Match then waits for a retried `{ kind: "chance" }`. While one is
-    pending, Moves and Forfeits are refused (`not-your-turn`), a Resignation is allowed.
+    secret `seed` (`newSeed` option, default 256 random bits as 64 lowercase hex digits;
+    `chance.ts`). Whenever a change, or creation, leaves a Chance event pending, the Game master
+    applies `{ kind: "chance" }` itself right away, inside the same per-Match queue, as its own
+    versioned change and `chance` event, until a Seat is to move; `apply`/`createMatch` return the
+    view after the rolls. While one is pending, Moves and Forfeits are refused with
+    `chance-pending` (409: refetch and retry); a Resignation is allowed.
+  - Draw algorithm (public once the seed is revealed): the n-th Chance event of a Match (n = 0, 1,
+    ... counting the Chance events before it in the Move list) takes `u = H / 2^48`, where `H` is
+    the first 48 bits (12 hex digits) of SHA-256 of the UTF-8 text `"<seed>:<n>"` (n in decimal),
+    and picks from the Game's `chanceEvents(position)`, in their order, the first result with
+    `u < p1 + ... + pk` (cumulative sum in floating point), else the last (`pickChance`). E.g. seed
+    `s`, n 6: `printf 's:6' | sha256sum` starts `ba7075967b55`, so `u ≈ 0.728`.
+  - Failed rolls (e.g. a store error) are logged, never thrown (the change before them is
+    committed). Recovery: retried after each delay of `rollRetryDelaysMs` (default 100, 500,
+    2000 ms) inside the Match's queue; after that, the roll is tried again on the next trigger —
+    any Move or Forfeit refused with `chance-pending`, or any `getMatch` of the Match (queued, not
+    awaited, so a polling client heals it).
   - One path for all kinds: load, check `expectedVersion` (`conflict`), authorize the Player,
     refuse a finished Match, judge the change (a pure function per kind), one versioned write
     (`conflict` if another process won), one event. Changes to one Match run one at a time.
@@ -244,15 +254,15 @@ Implemented (JSON; Positions and Moves are Notation strings):
 
 Errors always have the body `{ "error": { "code", "message" } }`:
 
-| Status | Codes                                                                                            |
-| ------ | ------------------------------------------------------------------------------------------------ |
-| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move` |
-| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)       |
-| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                     |
-| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry)                              |
-| 413    | `payload-too-large`                                                                              |
-| 415    | `unsupported-media-type`                                                                         |
-| 500    | `internal`                                                                                       |
+| Status | Codes                                                                                                                        |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move`                             |
+| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)                                   |
+| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                                                 |
+| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry), `chance-pending` (dice being rolled; refetch and retry) |
+| 413    | `payload-too-large`                                                                                                          |
+| 415    | `unsupported-media-type`                                                                                                     |
+| 500    | `internal`                                                                                                                   |
 
 Planned (sketch, not final):
 

@@ -164,6 +164,29 @@ Deno.test("chance contract: detects non-deterministic replay through Chance even
   }, "replay diverged");
 });
 
+Deno.test("chance contract: detects resolveChance accepting a result that is not offered", () => {
+  // B's die only ever shows 1, but resolveChance takes any roll while pending.
+  expectFailure({
+    chanceEvents: (p) =>
+      diceRace.chanceEvents(p).length > 0 && p.turn === "b"
+        ? [{ chance: 1, probability: 1 }]
+        : diceRace.chanceEvents(p),
+    resolveChance(p, roll) {
+      if (diceRace.chanceEvents(p).length === 0) throw new Error("not pending");
+      return { ...p, roll };
+    },
+  }, "which is not offered");
+});
+
+Deno.test("chance contract: detects results listed at a terminal Position", () => {
+  expectFailure({
+    chanceEvents: (p) =>
+      diceRace.outcome(p)
+        ? [{ chance: 1, probability: 1 }]
+        : diceRace.chanceEvents(p),
+  }, "chanceEvents is not empty");
+});
+
 Deno.test("chance contract: fails when no playout meets a Chance event", () => {
   // Starts already rolled and never rolls again: plays like a Game without chance.
   expectFailure({
@@ -177,7 +200,13 @@ Deno.test("chance contract: fails when no playout meets a Chance event", () => {
 
 // --- Engine contract for Games with chance ---------------------------------
 
-type ChanceBug = "lines-while-pending" | "no-score" | "past-chance";
+type ChanceBug =
+  | "lines-while-pending"
+  | "no-score"
+  | "past-chance"
+  | "no-seat"
+  | "bad-seat"
+  | "score-with-lines";
 
 /** A trivial Engine for the dice race: "f" first, one depth. */
 function diceEngine(bug?: ChanceBug): Engine<DiceRacePosition, DiceRaceMove> {
@@ -194,24 +223,28 @@ function diceEngine(bug?: ChanceBug): Engine<DiceRacePosition, DiceRaceMove> {
     await new Promise((r) => setTimeout(r, 1));
     if (signal?.aborted) return;
     const value = position.a - position.b;
+    const score = { kind: "value", value } as const;
     if (chancePending(diceRace, position)) {
       yield bug === "lines-while-pending"
         ? {
           depth: 1,
-          lines: [{ moves: ["f"], score: { kind: "value", value } }],
-          score: { kind: "value", value },
+          lines: [{ moves: ["f"], score }],
+          score,
+          seat: "a",
         }
         : bug === "no-score"
         ? { depth: 1, lines: [] }
-        : { depth: 1, lines: [], score: { kind: "value", value } };
+        : bug === "no-seat"
+        ? { depth: 1, lines: [], score }
+        : { depth: 1, lines: [], score, seat: bug === "bad-seat" ? "c" : "a" };
       return;
     }
     const moves: DiceRaceMove[] = bug === "past-chance" ? ["f", "f"] : ["f"];
-    const lines = [{ moves, score: { kind: "value" as const, value } }];
-    if ((limits.lines ?? 1) > 1) {
-      lines.push({ moves: ["1"], score: { kind: "value", value } });
-    }
-    yield { depth: 1, lines };
+    const lines = [{ moves, score }];
+    if ((limits.lines ?? 1) > 1) lines.push({ moves: ["1"], score });
+    yield bug === "score-with-lines"
+      ? { depth: 1, lines, score, seat: "a" }
+      : { depth: 1, lines };
   }
   return {
     name: "dice",
@@ -256,5 +289,29 @@ Deno.test("engine contract: catches a Line continuing past a Chance event", asyn
     () => assertEngineContract(diceEngine("past-chance"), diceRace),
     Error,
     "continues past a Chance event",
+  );
+});
+
+Deno.test("engine contract: catches an expected score without its seat", async () => {
+  await assertRejects(
+    () => assertEngineContract(diceEngine("no-seat"), diceRace),
+    Error,
+    "seat must be present exactly when score is",
+  );
+});
+
+Deno.test("engine contract: catches a seat that is not a Seat of the Game", async () => {
+  await assertRejects(
+    () => assertEngineContract(diceEngine("bad-seat"), diceRace),
+    Error,
+    "is not one of the Game's Seats",
+  );
+});
+
+Deno.test("engine contract: catches a score where a Seat is to move", async () => {
+  await assertRejects(
+    () => assertEngineContract(diceEngine("score-with-lines"), diceRace),
+    Error,
+    "score is only for a pending Chance event",
   );
 });

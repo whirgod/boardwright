@@ -152,9 +152,30 @@ export function chancePending<Position, Move>(
 }
 
 /**
- * Engine evaluation from the perspective of the Seat to move; while a Chance
- * event is pending (no Seat to move), from the perspective of the Game's
- * first Seat (`rules.seats[0]`).
+ * The result a draw `u` in [0, 1) selects among `results`: the first whose
+ * cumulative probability (summed in the given order) exceeds `u`, i.e.
+ * `acc += probability; if (u < acc) return chance`; the last result if
+ * rounding leaves `u` at or beyond the sum. `results` must not be empty.
+ * The Game master draws Chance events this way, so its rolls can be
+ * checked by anyone who knows the draws.
+ */
+export function pickChance<Chance>(
+  results: readonly ChanceResult<Chance>[],
+  u: number,
+): Chance {
+  let acc = 0;
+  for (const { chance, probability } of results) {
+    acc += probability;
+    if (u < acc) return chance;
+  }
+  const last = results[results.length - 1];
+  if (last === undefined) throw new RangeError("no chance results to pick");
+  return last.chance;
+}
+
+/**
+ * Engine evaluation from the perspective of a Seat: in a {@link Line}, the
+ * Seat to move; for {@link Analysis.score}, the Analysis's `seat`.
  */
 export type Score =
   | { readonly kind: "value"; readonly value: number }
@@ -177,9 +198,16 @@ export interface Analysis<Move> {
   readonly lines: readonly Line<Move>[];
   /**
    * The expected Score of the Position, set while a Chance event is pending
-   * (there are no Lines then). Absent otherwise: the Lines carry the Scores.
+   * (there are no Lines then), from the perspective of `seat`. Absent
+   * otherwise: the Lines carry the Scores.
    */
   readonly score?: Score;
+  /**
+   * The Seat whose perspective `score` takes (no Seat is to move while a
+   * Chance event is pending, so it is explicit). Present exactly when
+   * `score` is; one of the Game's Seats.
+   */
+  readonly seat?: Seat;
 }
 
 export interface SearchLimits {
@@ -208,9 +236,10 @@ export interface Engine<Position, Move> {
    *   distinct Moves, best first. No Move in a Line follows a pending
    *   Chance event.
    * - A Position with a pending Chance event (Games with chance only) has
-   *   no Lines: every Analysis is `{ depth, lines: [], score }` with the
-   *   expected Score (same depth rules as above); `win-in`/`loss-in` only
-   *   when forced whatever the dice.
+   *   no Lines: every Analysis is `{ depth, lines: [], score, seat }` with
+   *   the expected Score from `seat`'s perspective (same depth rules as
+   *   above); `win-in`/`loss-in` only when forced whatever the dice. Other
+   *   Analyses have neither `score` nor `seat`.
    * - A terminal `position` yields exactly one `{ depth: 0, lines: [] }`.
    * - Once `signal` aborts, the stream ends promptly (no bound on buffered
    *   Analyses already completed).
