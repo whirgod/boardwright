@@ -78,7 +78,14 @@ Deno.test("invalid positions are rejected", () => {
       "B:W1:B2:5:garbage",
       "B:W1:B2:5:B/99/2",
       "B:W1:B2:1:2:3",
-      "B:W1,2,3,4,5,6,7,8,9,10,11,12,13:B20",
+      "B:W5,6,7,8,9,10,11,12,13,14,15,16,17:B20", // 13 pieces
+      "B:W1:B2:0",
+      "B:W1:B2:007",
+      "B:WK32:BK1:1:", // trailing separator
+      "B:WK32:BK1:1:B/K32/K1", // wrong turn order
+      "B:WK32:BK1:2:W/K32/K1|W/K32/K1", // turn order
+      "B:WK32,K28:BK1:1:W/K32,K28/K1", // unsorted key
+      "B:WK32:BK1:0:W/K32/K1", // history with clock 0
       "B:W1:B2:",
     ]
   ) {
@@ -97,7 +104,21 @@ Deno.test("move notation", () => {
   assertEquals(n.encodeMove([22, 15, 8]), "22x15x8");
   assertEquals(n.encodeMove([22, 15]), "22x15");
   assertEquals(n.encodeMove([14, 9]), "14-9");
-  for (const bad of ["11-", "x", "11x", "0-4", "33-1", "11-15-19", "1x2-3"]) {
+  for (
+    const bad of [
+      "11-",
+      "x",
+      "11x",
+      "0-4",
+      "33-1",
+      "11-15-19",
+      "1x2-3",
+      "01-05", // leading zero
+      "11x15", // step written as capture
+      "22-15", // capture written as step
+      "5x6", // same row: neither step nor jump
+    ]
+  ) {
     assertThrows(
       () => n.decodeMove(bad, g.initialPosition()),
       Error,
@@ -273,4 +294,178 @@ Deno.test("a short opening plays through", () => {
   p = play(p, "11-15", "22-18", "15x22", "25x18", "8-11", "29-25");
   assertEquals(g.outcome(p), undefined);
   assertEquals(p.turn, "black");
+});
+
+Deno.test("a 12-piece side is accepted", () => {
+  const p = pos("B:W5,6,7,8,9,10,11,12,13,14,15,16:B20");
+  assertEquals(p.board.filter((c) => c === "w").length, 12);
+});
+
+// Standard numbering: neighbours of every square (all four diagonals).
+const STEPS: Record<number, number[]> = {
+  1: [5, 6],
+  2: [6, 7],
+  3: [7, 8],
+  4: [8],
+  5: [1, 9],
+  6: [1, 2, 9, 10],
+  7: [2, 3, 10, 11],
+  8: [3, 4, 11, 12],
+  9: [5, 6, 13, 14],
+  10: [6, 7, 14, 15],
+  11: [7, 8, 15, 16],
+  12: [8, 16],
+  13: [9, 17],
+  14: [9, 10, 17, 18],
+  15: [10, 11, 18, 19],
+  16: [11, 12, 19, 20],
+  17: [13, 14, 21, 22],
+  18: [14, 15, 22, 23],
+  19: [15, 16, 23, 24],
+  20: [16, 24],
+  21: [17, 25],
+  22: [17, 18, 25, 26],
+  23: [18, 19, 26, 27],
+  24: [19, 20, 27, 28],
+  25: [21, 22, 29, 30],
+  26: [22, 23, 30, 31],
+  27: [23, 24, 31, 32],
+  28: [24, 32],
+  29: [25],
+  30: [25, 26],
+  31: [26, 27],
+  32: [27, 28],
+};
+
+// Jumps from each square as "over>landing".
+const JUMPS: Record<number, string[]> = {
+  1: ["6>10"],
+  2: ["6>9", "7>11"],
+  3: ["7>10", "8>12"],
+  4: ["8>11"],
+  5: ["9>14"],
+  6: ["9>13", "10>15"],
+  7: ["10>14", "11>16"],
+  8: ["11>15"],
+  9: ["14>18", "6>2"],
+  10: ["14>17", "15>19", "6>1", "7>3"],
+  11: ["15>18", "16>20", "7>2", "8>4"],
+  12: ["16>19", "8>3"],
+  13: ["17>22", "9>6"],
+  14: ["17>21", "18>23", "9>5", "10>7"],
+  15: ["18>22", "19>24", "10>6", "11>8"],
+  16: ["19>23", "11>7"],
+  17: ["22>26", "14>10"],
+  18: ["22>25", "23>27", "14>9", "15>11"],
+  19: ["23>26", "24>28", "15>10", "16>12"],
+  20: ["24>27", "16>11"],
+  21: ["25>30", "17>14"],
+  22: ["25>29", "26>31", "17>13", "18>15"],
+  23: ["26>30", "27>32", "18>14", "19>16"],
+  24: ["27>31", "19>15"],
+  25: ["22>18"],
+  26: ["22>17", "23>19"],
+  27: ["23>18", "24>20"],
+  28: ["24>19"],
+  29: ["25>22"],
+  30: ["25>21", "26>23"],
+  31: ["26>22", "27>24"],
+  32: ["27>23"],
+};
+
+const byNumber = (a: number, b: number) => a - b;
+
+Deno.test("step adjacency of every square matches standard numbering", () => {
+  for (let s = 1; s <= 32; s++) {
+    const all = STEPS[s]!;
+    const dests = (m: string[]) =>
+      m.map((t) => Number(t.split("-")[1])).sort(byNumber);
+    // Lone king (either Seat): all neighbours.
+    assertEquals(dests(moves(pos(`B:W:BK${s}`))), all, `black king ${s}`);
+    assertEquals(dests(moves(pos(`W:WK${s}:B`))), all, `white king ${s}`);
+    // Black men move towards 32, white men towards 1 (crown row is invalid).
+    if (s <= 28) {
+      assertEquals(
+        dests(moves(pos(`B:W:B${s}`))),
+        all.filter((d) => d > s),
+        `black man ${s}`,
+      );
+    }
+    if (s >= 5) {
+      assertEquals(
+        dests(moves(pos(`W:W${s}:B`))),
+        all.filter((d) => d < s),
+        `white man ${s}`,
+      );
+    }
+  }
+});
+
+Deno.test("jump geometry of every square matches standard numbering", () => {
+  for (let s = 1; s <= 32; s++) {
+    const jumps = JUMPS[s]!;
+    // Consistency of the two tables: a jump spans neighbour then neighbour.
+    for (const j of jumps) {
+      assertEquals(STEPS[s]!.includes(Number(j.split(">")[0])), true);
+    }
+    for (const over of STEPS[s]!) {
+      // King with one enemy king on a single neighbour and nothing else.
+      const landing = jumps.find((j) => j.startsWith(`${over}>`))?.split(
+        ">",
+      )[1];
+      const got = moves(pos(`B:WK${over}:BK${s}`));
+      if (landing) {
+        assertEquals(got, [`${s}x${landing}`], `${s} over ${over}`);
+      } else {
+        assertEquals(
+          got,
+          STEPS[s]!.filter((d) => d !== over).map((d) => `${s}-${d}`).sort(),
+          `${s} cannot jump ${over}`,
+        );
+      }
+    }
+    // Landing square occupied: the jump is not available.
+    for (const j of jumps) {
+      const [over, land] = j.split(">").map(Number);
+      const got = moves(pos(`B:WK${over},K${land}:BK${s}`));
+      assertEquals(
+        got.some((m) => m.includes("x")),
+        false,
+        `${s} blocked landing ${land}`,
+      );
+    }
+  }
+});
+
+Deno.test("three-jump man sequence", () => {
+  // From 5: over 9 to 14, over 18 to 23, over 27 to 32.
+  const p = pos("B:W9,18,27:B5");
+  assertEquals(moves(p), ["5x14x23x32"]);
+  // Reaching 32 crowns, ending the Move.
+  const q = play(p, "5x14x23x32");
+  assertEquals(n.encodePosition(q), "W:W:BK32");
+});
+
+Deno.test("a king's jump sequence can branch", () => {
+  // King on 14: over 10 to 7, or over 18 to 23; each continues differently.
+  const p = pos("B:W10,18,15,11:BK14");
+  const got = moves(p);
+  // From 7: over 11 to 16 (then over 19? absent); from 23: nothing.
+  assertEquals(got, ["14x23", "14x7x16"]);
+});
+
+Deno.test("a circuit never jumps a captured piece again", () => {
+  // After the full circuit the king is back on 14 next to captured 18; it
+  // could jump 18 again (23 is empty) but captured pieces stay and are not
+  // jumpable twice, so both Moves end after four jumps.
+  const p = pos("B:W10,11,18,19:BK14");
+  for (const m of moves(p)) assertEquals(m.split("x").length, 5);
+});
+
+Deno.test("loss takes precedence over the draw rules", () => {
+  const blocked = pos("B:WK32:B28:80");
+  assertEquals(g.outcome(blocked), {
+    winner: "white",
+    reason: "no-legal-moves",
+  });
 });

@@ -5,7 +5,8 @@ English draughts / American checkers as a `GameRules` package (`checkers`).
 ## Rules
 
 - 8x8 board, 12 men each on the dark squares; Seats `black` and `white`; black moves first.
-- Squares are numbered 1-32 (standard): 1-4 is the top row from black's side, black starts on
+- Squares are numbered 1-32 (standard) with white at the bottom: 1 = b8, 4 = h8, 29 = a1, 32 = g1.
+  Black starts on
   1-12 and moves towards 32, white starts on 21-32 and moves towards 1.
 - Men step diagonally forward; kings step in all four diagonal directions (one square).
 - Captures are mandatory. A Move is a whole jump sequence, which must be completed (a partial
@@ -37,3 +38,8 @@ English draughts / American checkers as a `GameRules` package (`checkers`).
 
 `CheckersPosition` is `{ board, turn, clock, history }`; a `CheckersMove` is the list of squares
 visited (`[22, 15, 8]`). `legalMoves` returns `[]` on terminal Positions.
+
+Decoding is strict so text is canonical: no leading zeros, `-` only for steps and `x` only for
+captures, a clock that is a positive integer without leading zeros (omitted when 0), no trailing
+separators, and history entries that are sorted, alternate in turn and number at most `clock`. The
+current Position may legitimately appear in the history (that is a repetition).

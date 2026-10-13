@@ -18,8 +18,8 @@ export interface CheckersPosition {
   readonly clock: number;
   /**
    * Keys of the earlier Positions since the last capture or man move
-   * (oldest first), used for threefold repetition. Never contains the
-   * current Position.
+   * (oldest first), used for threefold repetition. May contain the current
+   * Position again (that is a repetition).
    */
   readonly history: readonly string[];
 }
@@ -150,16 +150,26 @@ const notation: Notation<CheckersPosition, CheckersMove> = {
     const board = decodeBoard(w!.slice(1), b!.slice(1), text);
     let clock = 0;
     if (clockText !== undefined) {
-      if (!/^\d{1,3}$/.test(clockText)) bad("clock");
+      // Canonical: the encoder omits a zero clock.
+      if (!/^[1-9]\d{0,2}$/.test(clockText)) bad("clock");
       clock = Number(clockText);
     }
-    const history = historyText ? historyText.split("|") : [];
+    const history = historyText === undefined ? [] : historyText.split("|");
     if (history.length > clock) bad("history longer than clock");
-    for (const k of history) {
-      const m = /^[BW]\/([^/]*)\/([^/]*)$/.exec(k);
+    history.forEach((k, i) => {
+      const m = /^([BW])\/([^/]*)\/([^/]*)$/.exec(k);
       if (!m) bad("history entry");
-      decodeBoard(m![1]!, m![2]!, text);
-    }
+      const earlier = decodeBoard(m![2]!, m![3]!, text);
+      // Entries must be canonical, or they could never match `key()`.
+      if (
+        key({ board: earlier, turn: m![1] === "B" ? "black" : "white" }) !== k
+      ) {
+        bad("non-canonical history entry");
+      }
+      // Plies alternate, so entry i (of n) was `n - i` plies ago.
+      const sameTurn = (history.length - i) % 2 === 0;
+      if ((m![1] === turnText) !== sameTurn) bad("history turn order");
+    });
     return {
       board,
       turn: turnText === "B" ? "black" : "white",
@@ -174,11 +184,14 @@ const notation: Notation<CheckersPosition, CheckersMove> = {
     return move.join(jump ? "x" : "-");
   },
   decodeMove(text) {
-    if (!/^\d{1,2}(?:-\d{1,2}|(?:x\d{1,2})+)$/.test(text)) {
+    if (!/^[1-9]\d?(?:-[1-9]\d?|(?:x[1-9]\d?)+)$/.test(text)) {
       throw new Error(`Invalid checkers move: ${JSON.stringify(text)}`);
     }
     const squares = text.split(/[-x]/).map(Number);
-    if (squares.some((s) => s < 1 || s > SQUARES)) {
+    // Canonical text only: the separator must match the geometry.
+    if (
+      squares.some((s) => s > SQUARES) || notation.encodeMove(squares) !== text
+    ) {
       throw new Error(`Invalid checkers move: ${JSON.stringify(text)}`);
     }
     return squares;
