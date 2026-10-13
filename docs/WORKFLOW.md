@@ -38,7 +38,9 @@ Tasks are **GitHub issues** (the source of truth across sessions), labelled:
    - Branch from up-to-date `main`; read `AGENTS.md` and the issue first.
    - Small commits; `deno task check` must pass (fmt, lint, typecheck, tests, coverage thresholds).
    - Tests cover the acceptance criteria, including edge cases and error paths.
-   - Update docs (`AGENTS.md`, `docs/`, `GLOSSARY.md`, ADRs) in the same PR when affected.
+   - Update docs (`AGENTS.md`, `docs/`, `GLOSSARY.md`, ADRs) in the same PR when affected —
+     **except `docs/ROADMAP.md`**, which only the coordinator edits (at merge) to avoid every
+     parallel PR conflicting on it.
    - Push and open a PR with `gh pr create` using the PR template; body contains `Closes #<issue>`.
    - Report back: PR URL, summary, anything uncertain.
 3. **Validate**: CI (`.github/workflows/ci.yml`) runs `deno task check` on every PR. A red PR is
@@ -57,6 +59,9 @@ Tasks are **GitHub issues** (the source of truth across sessions), labelled:
    remain (cap: 3 rounds, then the coordinator decides or asks the user).
 6. **Merge** (coordinator): CI green + no open `[major]` → squash-merge
    (`gh pr merge --squash --delete-branch`). Unaddressed `[minor]`s become follow-up issues.
+   `main` requires branches to be up to date: if the PR is behind or conflicts only in docs, the
+   coordinator rebases it in a scratch worktree, resolves, re-runs `deno task check`, pushes
+   (`--force-with-lease`) and merges; code conflicts go back to the implementer.
    Update `docs/ROADMAP.md` if a roadmap item is complete. Then start dependent tasks.
 
 ## Usage limits
@@ -68,10 +73,16 @@ loses work, so pace and checkpoint.
   `~/.claude/state/rate-limits.json`. The snapshot is written by the user's status line
   (`~/.claude/statusline-command.sh`) and refreshes while the coordinator session is active;
   it lags the agents' real consumption, so keep margins. If missing, ask the user to run `/usage`.
-- **When to check**: coordinator before spawning anything and whenever a subagent reports;
+- **Heartbeat**: while subagents run, the coordinator schedules a recurring check (CronCreate,
+  ~every 7 min) that runs the script and applies the thresholds. This also keeps the snapshot
+  fresh for implementers, since it only refreshes while the coordinator session is active.
+  Delete the heartbeat when no subagents are running.
+- **When to check**: coordinator before spawning anything, on every heartbeat and whenever a
+  subagent reports;
   implementers before each major step (e.g. every commit).
 - **Thresholds** (5-hour window; treat the 7-day window ≥ 90% the same as 5h ≥ 85%):
-  - `< 70%` — normal. Typically ≤ 3 implementers in parallel.
+  - `< 70%` — normal. Typically ≤ 3 implementers in parallel (plus reviewers). Expect roughly
+    1–2 % of the 5h window per minute with 3–4 agents running; plan waves accordingly.
   - `70–85%` — start nothing new; let running agents finish their current step.
   - `≥ 85%` — **checkpoint**: implementers commit and push WIP (open a **draft** PR if none),
     write a resume note (what's done, what's next, open questions) as a PR or issue comment,
