@@ -32,33 +32,39 @@ worktrees, PRs, reviews on GitHub, fix loop, usage-limit checkpoints. Tasks are 
 packages/core     contracts: GameRules, Notation, Engine, Analysis (no deps)
 packages/testing  contract test kit for Games (assertGameRulesContract)
 apps/server       Hono API + host of the web UI
-apps/web          (planned) browser UI
+apps/web          browser UI: Preact, bundled to apps/web/dist (ADR 0004)
 games/<id>        one GameRules package per Game     (@boardwright/game-<id>)
 engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>, e.g. minimax)
 engines/<game>-<name>  one Engine per Game (library + evaluation)  (@boardwright/engine-<game>-<name>)
 ```
 
 Dependencies flow `core <- games <- engines <- server`; never import the server from a Game or Engine.
+`apps/web` imports only `core` and Games (to decode Positions for its board renderers), never the server.
 `testing` depends only on `core` (+ `@std/assert`) and is used only by Games' tests.
 
 ## Commands
 
-Deno 2.x; tasks are defined in `deno.json` (no npm, no `node_modules`).
+Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifiers, no `node_modules`).
 
 - `deno task check` — `fmt --check`, `lint`, `check`, `test` + coverage thresholds (`deno.json`);
   must pass before committing. CI runs it on every PR; `main` requires it to pass.
-- `deno task dev:server` — run the server with watch mode on port 3000
+- `deno task dev` — rebuild the web UI on change and run the server in watch mode; open
+  http://127.0.0.1:3000 (`dev:web` / `dev:server` run one side only)
+- `deno task start` — build the web UI (`build:web`), then run the server
 - `scripts/claude-usage.sh [--gate N]` — Claude plan usage snapshot (see `docs/WORKFLOW.md`)
 - `deno add jsr:<pkg>` / `npm:<pkg>` in the member that needs it; prefer JSR packages
 
 ## Conventions
 
 - Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
-  `exports`. Import local files with the `.ts` extension; no build step.
+  `exports`. Import local files with the `.ts` extension; no build step (except the web UI bundle).
 - Every Game runs `assertGameRulesContract` from `@boardwright/testing` in its tests (`games/README.md`).
 - Every Engine runs `assertEngineContract` from `@boardwright/testing` in its tests (checks the `Engine.analyze` guarantees).
 - Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`. Entry points (`main.ts`)
   are excluded from coverage; keep them thin.
+- Web UI: logic goes in DOM-free `.ts` modules with tests; `.tsx` components stay thin (only
+  modules a test loads count toward coverage). A Game's board is a `BoardRenderer` in
+  `apps/web/src/renderers/` (see `docs/ARCHITECTURE.md`).
 - Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
 - Use `GLOSSARY.md` terms (Match, not "game instance"; Position, not "board state"; Seat, not "color").

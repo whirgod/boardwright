@@ -21,4 +21,14 @@ const master = new GameMaster({
 });
 new EngineDriver(master);
 
-Deno.serve({ port, hostname }, buildApp({ master }).fetch);
+// Built by `deno task build:web` (ADR 0004); `deno task start` builds it first.
+const webRoot = `${import.meta.dirname}/../../web/dist`;
+try {
+  await Deno.stat(`${webRoot}/index.html`);
+} catch {
+  console.warn(
+    "Web UI not built: run `deno task build:web`. Serving the API only.",
+  );
+}
+
+Deno.serve({ port, hostname }, buildApp({ master, webRoot }).fetch);

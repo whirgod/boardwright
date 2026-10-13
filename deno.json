@@ -18,7 +18,8 @@
   },
   "exclude": [
     ".agents/",
-    ".claude/worktrees/"
+    ".claude/worktrees/",
+    "apps/web/dist/"
   ],
   "coverage": {
     "thresholds": {
@@ -29,7 +30,18 @@
   },
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check && deno task test",
+    "dev": {
+      "description": "Rebuild the web UI on change and run the server in watch mode",
+      "dependencies": ["dev:web", "dev:server"]
+    },
     "dev:server": "deno task --cwd apps/server dev",
+    "dev:web": "deno task --cwd apps/web watch",
+    "build:web": "deno task --cwd apps/web build",
+    "start": {
+      "description": "Build the web UI, then run the server",
+      "command": "deno task --cwd apps/server start",
+      "dependencies": ["build:web"]
+    },
     "start:server": "deno task --cwd apps/server start",
     "test": "deno test --allow-read=apps,engines,games,packages --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
