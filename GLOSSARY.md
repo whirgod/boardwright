@@ -15,7 +15,7 @@ One concrete playing of a Game between Players, from the initial Position to an 
 _Avoid_: Game (for a single playing), session, round
 
 **Move list**:
-The Moves played in a Match, in order from its initial Position.
+The Moves and Chance events of a Match, in order from its initial Position.
 _Avoid_: History, record, score sheet
 
 **Position**:
@@ -73,7 +73,7 @@ A Game-agnostic search algorithm (e.g. minimax) that becomes an Engine once give
 _Avoid_: Engine (for the library itself), framework
 
 **Analysis**:
-An Engine's assessment of a Position: one or more Lines, best first.
+An Engine's assessment of a Position: one or more Lines, best first; while a Chance event is pending, only an expected Score.
 _Avoid_: Evaluation (that is the Score)
 
 **Line**:
