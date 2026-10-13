@@ -17,7 +17,8 @@
     "proseWrap": "preserve"
   },
   "exclude": [
-    ".agents/"
+    ".agents/",
+    ".claude/worktrees/"
   ],
   "coverage": {
     "thresholds": {
