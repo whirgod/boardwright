@@ -529,3 +529,37 @@ Deno.test("a permanently failing roll is retried once per cooldown, not per requ
   assertEquals(result, { bounded: 3, after: 6 });
   assertEquals(errors.length, 6);
 });
+
+Deno.test("an explicit roll ignores the cooldown; a successful roll ends it", async () => {
+  const { store, state } = flakyStore();
+  state.failures = Infinity;
+  const { master, events } = setup({
+    store,
+    now: () => new Date(0),
+    rollCooldownMs: 1_000_000,
+  });
+  const { result } = await quietly(() =>
+    master.createMatch("dice-race", HUMANS)
+  );
+  const { match, tokens } = result;
+  const move = { kind: "move", move: "f" } as const;
+  // Cooling down: a refused Move does not retry, even though the store works.
+  state.failures = 0;
+  await assertMatchError(
+    () => master.apply(match.id, { token: tokens.a! }, move),
+    "chance-pending",
+  );
+  assertEquals(events.map((e) => e.kind), ["created"]);
+  // An explicit roll ignores the cooldown and succeeds.
+  await master.apply(match.id, GAME_MASTER, { kind: "chance" });
+  assertEquals(events.map((e) => e.kind), ["created", "chance"]);
+  // The success cleared the cooldown: the Match plays on, and its next
+  // roll happens at once.
+  await master.apply(match.id, { token: tokens.a! }, move);
+  assertEquals(events.map((e) => e.kind), [
+    "created",
+    "chance",
+    "move",
+    "chance",
+  ]);
+});

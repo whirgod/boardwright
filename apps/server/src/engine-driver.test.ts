@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { diceRace } from "@boardwright/testing";
 import { buildApp } from "./app.ts";
@@ -705,6 +705,17 @@ Deno.test("the driver forgets the least recently active Match beyond maxMatches"
     assertEquals((await master.getMatch(id)).moves.length, 4);
   } finally {
     await driver.close();
+  }
+});
+
+Deno.test("maxMatches must be a positive integer", () => {
+  const { master } = setup();
+  const runner = new EngineRunner({ adapter: testWorkerAdapter() });
+  for (const maxMatches of [0, -1, 1.5, NaN]) {
+    assertThrows(
+      () => new EngineDriver(master, { runner, maxMatches }),
+      RangeError,
+    );
   }
 });
 

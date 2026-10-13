@@ -550,10 +550,12 @@ export class GameMaster {
           error,
         );
         if (delay === undefined) {
-          this.#rollCooldowns.set(
-            id,
-            this.#now().getTime() + this.#rollCooldownMs,
-          );
+          const now = this.#now().getTime();
+          // Prune expired entries so abandoned Matches cannot accumulate.
+          for (const [other, until] of this.#rollCooldowns) {
+            if (until <= now) this.#rollCooldowns.delete(other);
+          }
+          this.#rollCooldowns.set(id, now + this.#rollCooldownMs);
           return last;
         }
         await new Promise((resolve) => setTimeout(resolve, delay));
@@ -833,7 +835,9 @@ function judge(
 /**
  * `store` with every call bounded by `ms`: a call that has not settled by
  * then rejects (its write, if any, may still land later; the next change
- * reloads the Match, so a late write is picked up as a newer version).
+ * reloads the Match, so a late write is picked up as a newer version). A
+ * write that lands late emits no MatchEvent: listeners (clients, the
+ * EngineDriver) never see that version, only the next event after it.
  */
 function withTimeouts(store: MatchStore, ms: number): MatchStore {
   const bounded = <T>(what: string, call: () => Promise<T>): Promise<T> => {

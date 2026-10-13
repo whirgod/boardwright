@@ -861,6 +861,7 @@ Deno.test("a store call that waits for a change to its own Match is cut off, not
     create: (r) => inner.create(r),
     get: async (id) => {
       if (ref.reenter) {
+        ref.reenter = false; // one-shot: no timer chain after the test
         // Waits for a change queued behind the one that is calling this.
         await ref.master!.apply(id, GAME_MASTER, {
           kind: "forfeit",
@@ -885,4 +886,48 @@ Deno.test("a store call that waits for a change to its own Match is cut off, not
     Error,
     "did not settle",
   );
+  // Drain: the queued forfeit still runs behind the timed-out change.
+  await assertMatchError(
+    () => master.apply(match.id, { token: "" }, mv("a1")),
+    "invalid-token",
+  ); // queued behind the forfeit, so it has run by now
+  assertEquals((await master.getMatch(match.id)).outcome?.kind, "forfeit");
+});
+
+Deno.test("a write that commits after its timeout emits no event, and the next change sees it", async () => {
+  const inner = new InMemoryMatchStore();
+  const late: { release?: () => void } = {};
+  let slow = false;
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: (id) => inner.get(id),
+    update: (r) => {
+      if (!slow) return inner.update(r);
+      return new Promise<boolean>((resolve) => {
+        late.release = () => resolve(inner.update(r));
+      });
+    },
+  };
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store,
+    storeTimeoutMs: 20,
+  });
+  const events = recordEvents(master);
+  const { match, tokens } = await master.createMatch("tic-tac-toe", HUMANS);
+  slow = true;
+  await assertRejects(
+    () => master.apply(match.id, { token: tokens.x! }, mv("a1")),
+    Error,
+    "did not settle",
+  );
+  slow = false;
+  late.release!(); // the write lands after the Game master gave up
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assertEquals(events.map((e) => e.kind), ["created"]);
+  const view = await master.getMatch(match.id);
+  assertEquals([view.version, played(view)], [2, ["a1"]]);
+  const next = await master.apply(match.id, { token: tokens.o! }, mv("b1"));
+  assertEquals(played(next), ["a1", "b1"]);
+  assertEquals(events.map((e) => e.kind), ["created", "move"]);
 });

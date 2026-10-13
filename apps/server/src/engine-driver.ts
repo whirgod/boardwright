@@ -22,7 +22,7 @@ export interface EngineDriverOptions {
   readonly attempts?: number;
   /**
    * How many Matches the driver remembers (default 1000); beyond that the
-   * least recently active one is forgotten and loaded again on its next
+   * Match least recently seen taking a turn is forgotten and loaded again on its next
    * event. Bounds memory for Matches that are abandoned without an Outcome.
    */
   readonly maxMatches?: number;
@@ -74,7 +74,11 @@ export class EngineDriver {
     this.#master = master;
     this.#attempts = options.attempts ?? 2;
     this.#runner = options.runner;
-    this.#maxMatches = Math.max(1, options.maxMatches ?? 1000);
+    const max = options.maxMatches ?? 1000;
+    if (!Number.isInteger(max) || max < 1) {
+      throw new RangeError(`maxMatches must be a positive integer, got ${max}`);
+    }
+    this.#maxMatches = max;
     this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
   }
 

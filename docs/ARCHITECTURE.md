@@ -138,7 +138,7 @@ core  <-  games/*  <-  engines/*
   master imposes a Forfeit with a `ForfeitReason` code (`engine-error`, `worker-error`, `timeout`,
   `illegal-move`, `not-registered`, ...; raw error text is only logged), so a Match never hangs.
   `close()` aborts searches in flight (no forfeit); `idle()` awaits them (tests).
-  The per-Match memory is bounded (`maxMatches`, default 1000, least recently active forgotten and
+  The per-Match memory is bounded (`maxMatches`, default 1000, least recently moved forgotten and
   reloaded on its next event) and a load that a concurrent finish outran is not cached.
 - `engine-runner.ts` — `EngineRunner`, the one place the server runs Engines. `main.ts` creates
   the one runner; the driver requires it, and the Analysis stream of #9 must reuse it, so the cap
@@ -191,7 +191,8 @@ core  <-  games/*  <-  engines/*
   persistent adapters (#13) set their own timeouts. The Game master runs one change per Match at a
   time, so a hung call would block that Match; as a safety net it fails any call after
   `storeTimeoutMs` (default 10 s). It cannot cancel the call, so a timed-out `update` may still
-  commit later (seen as a newer version by the next change). Store calls must not call back into
+  commit later: no `MatchEvent` is emitted for it, so listeners (clients, the `EngineDriver`) miss that
+  version, and the next change sees it as a newer version. Store calls must not call back into
   the Game master, and nothing may await `apply` for a Match from inside a change to that Match
   (it queues behind itself and deadlocks).
   Failed Chance rolls are retried with backoff; recovery triggers (`getMatch`, a refused Move) then
