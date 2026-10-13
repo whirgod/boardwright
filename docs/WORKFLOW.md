@@ -42,6 +42,8 @@ Tasks are **GitHub issues** (the source of truth across sessions), labelled:
      **except `docs/ROADMAP.md`**, which only the coordinator edits (at merge) to avoid every
      parallel PR conflicting on it.
    - Push and open a PR with `gh pr create` using the PR template; body contains `Closes #<issue>`.
+   - Before reporting back, finish or kill every background command it started (test runs, CI
+     watches) — completed agents must not leave processes running.
    - Report back: PR URL, summary, anything uncertain.
 3. **Validate**: CI (`.github/workflows/ci.yml`) runs `deno task check` on every PR. A red PR is
    sent back to its implementer before review.
@@ -62,7 +64,8 @@ Tasks are **GitHub issues** (the source of truth across sessions), labelled:
    `main` requires branches to be up to date: if the PR is behind or conflicts only in docs, the
    coordinator rebases it in a scratch worktree, resolves, re-runs `deno task check`, pushes
    (`--force-with-lease`) and merges; code conflicts go back to the implementer.
-   Update `docs/ROADMAP.md` if a roadmap item is complete. Then start dependent tasks.
+   Update `docs/ROADMAP.md` if a roadmap item is complete, remove the agent's worktree and local
+   branches (`git worktree remove`, `git branch -D`). Then start dependent tasks.
 
 ## Usage limits
 
@@ -83,7 +86,9 @@ loses work, so pace and checkpoint.
 - **Thresholds** (5-hour window; treat the 7-day window ≥ 90% the same as 5h ≥ 85%):
   - `< 70%` — normal. Typically ≤ 3 implementers in parallel (plus reviewers). Expect roughly
     1–2 % of the 5h window per minute with 3–4 agents running; plan waves accordingly.
-  - `70–85%` — start nothing new; let running agents finish their current step.
+  - `70–85%` — start no new implementers; running agents finish their current step. Reviews and
+    fix rounds may still run (they are short), one at a time. Small PRs may be reviewed by the
+    coordinator directly.
   - `≥ 85%` — **checkpoint**: implementers commit and push WIP (open a **draft** PR if none),
     write a resume note (what's done, what's next, open questions) as a PR or issue comment,
     add the `paused` label, and stop. The coordinator records the plan state on the issues,
