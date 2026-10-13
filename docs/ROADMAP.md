@@ -9,12 +9,12 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Monorepo scaffold: Deno workspace, TypeScript, `deno fmt`/`lint`/`check`/`test`, CI
 - [x] Draft contracts in `packages/core` (`GameRules`, `Notation`, `Engine`, `Analysis`)
 - [x] Server skeleton: `/api/health`, `/api/games`
+- [x] Reference Game tic-tac-toe + `GameRules` contract test kit (`@boardwright/testing`) (#2)
 
 ## Next
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-0. **Foundation** — reference Game tic-tac-toe + `GameRules` contract test kit (#2).
 1. **First Games, Engine library, Match lifecycle** — nine men's morris (#3), checkers (#4),
    generic alpha-beta Engine library (#5), server Match lifecycle for humans (#6).
 2. **Engines in play** — Engine Players in Matches, run in Web Workers (#7); morris and checkers
