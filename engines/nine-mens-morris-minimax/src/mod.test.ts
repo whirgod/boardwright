@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import { type MorrisMove, POINTS } from "@boardwright/game-nine-mens-morris";
-import { seededRandom } from "@boardwright/testing";
+import { assertEngineContract, seededRandom } from "@boardwright/testing";
 import { engine, evaluate, rules, WEIGHTS } from "./mod.ts";
 
 /** Position text for the given pieces; `hands` are `white:black` in hand. */
@@ -209,4 +209,8 @@ Deno.test("terminal Position yields no Lines", async () => {
   });
   assertEquals(a.depth, 0);
   assertEquals(a.lines, []);
+});
+
+Deno.test("honours the Engine contract", async () => {
+  await assertEngineContract(engine, rules, { positions: 3, maxDepth: 2 });
 });
