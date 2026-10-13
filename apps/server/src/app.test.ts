@@ -319,6 +319,7 @@ Deno.test("a lost concurrent update is 409 conflict", async () => {
   const inner = new InMemoryMatchStore();
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => inner.get(id),
     update: () => Promise.resolve(false),
   };
@@ -334,6 +335,7 @@ Deno.test("a lost concurrent update is 409 conflict", async () => {
 Deno.test("unexpected failures are 500 with the error shape", async () => {
   const store: MatchStore = {
     create: () => Promise.reject(new Error("disk on fire")),
+    list: () => Promise.reject(new Error("disk on fire")),
     get: () => Promise.reject(new Error("disk on fire")),
     update: () => Promise.reject(new Error("disk on fire")),
   };

@@ -4,6 +4,7 @@
  * shape without a schema library dependency.
  */
 import type { GameId, SearchLimits, Seat } from "@boardwright/core";
+import type { MatchCursor, MatchQuery } from "./match-store.ts";
 import { parseLimits, parsePlayer, type Player } from "./players.ts";
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; problem: string };
@@ -169,4 +170,74 @@ export function parseJsonObject(
   return isObject(value)
     ? { ok: true, value }
     : { ok: false, problem: "message must be a JSON object" };
+}
+
+export const DEFAULT_PAGE_SIZE = 20;
+export const MAX_PAGE_SIZE = 100;
+
+/** The opaque `cursor` of a listing: URL-safe base64 of `[createdAt, id]`. */
+export function encodeCursor(cursor: MatchCursor): string {
+  const json = JSON.stringify([cursor.createdAt, cursor.id]);
+  return btoa(String.fromCharCode(...new TextEncoder().encode(json)))
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function decodeCursor(text: string): MatchCursor | undefined {
+  try {
+    const base64 = text.replaceAll("-", "+").replaceAll("_", "/");
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (
+      Array.isArray(value) && value.length === 2 &&
+      typeof value[0] === "string" && typeof value[1] === "string"
+    ) {
+      return { createdAt: value[0], id: value[1] };
+    }
+  } catch {
+    // falls through: not a cursor
+  }
+  return undefined;
+}
+
+/** `?game=<id>&finished=true|false&limit=<1..100>&cursor=<opaque>`; all optional. */
+export function parseListQuery(params: URLSearchParams): Parsed<MatchQuery> {
+  const known = ["game", "finished", "limit", "cursor"];
+  const extra = [...new Set(params.keys())].filter((k) => !known.includes(k));
+  if (extra.length > 0) {
+    return {
+      ok: false,
+      problem: `unexpected parameter(s): ${extra.join(", ")}`,
+    };
+  }
+  const game = params.get("game");
+  if (game === "") return { ok: false, problem: "`game` must not be empty" };
+  const finished = params.get("finished");
+  if (finished !== null && finished !== "true" && finished !== "false") {
+    return { ok: false, problem: "`finished` must be true or false" };
+  }
+  const limitText = params.get("limit");
+  let limit = DEFAULT_PAGE_SIZE;
+  if (limitText !== null) {
+    limit = /^\d+$/.test(limitText) ? Number(limitText) : NaN;
+    if (!(limit >= 1 && limit <= MAX_PAGE_SIZE)) {
+      return {
+        ok: false,
+        problem: `\`limit\` must be an integer from 1 to ${MAX_PAGE_SIZE}`,
+      };
+    }
+  }
+  const cursorText = params.get("cursor");
+  const after = cursorText === null ? undefined : decodeCursor(cursorText);
+  if (cursorText !== null && !after) {
+    return { ok: false, problem: "`cursor` is not a cursor of this server" };
+  }
+  return {
+    ok: true,
+    value: {
+      limit,
+      ...(game !== null ? { gameId: game } : {}),
+      ...(finished !== null ? { finished: finished === "true" } : {}),
+      ...(after ? { after } : {}),
+    },
+  };
 }

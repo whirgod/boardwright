@@ -339,6 +339,7 @@ function flakyStore() {
   const state = { failures: 0 };
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => inner.get(id),
     update: (r) =>
       r.moves.at(-1)?.kind === "chance" && state.failures-- > 0
@@ -482,6 +483,7 @@ Deno.test("a permanently failing roll is retried once per cooldown, not per requ
   const inner = new InMemoryMatchStore();
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => inner.get(id),
     update: (r) => {
       if (r.moves.at(-1)?.kind !== "chance") return inner.update(r);

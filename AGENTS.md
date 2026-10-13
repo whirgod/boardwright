@@ -53,7 +53,8 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
   must pass before committing. CI runs it on every PR; `main` requires it to pass.
 - `deno task dev` — rebuild the web UI on change and run the server in watch mode; open
   http://127.0.0.1:3000 (`dev:web` / `dev:server` run one side only)
-- `deno task start` — build the web UI (`build:web`), then run the server
+- `deno task start` — build the web UI (`build:web`), then run the server; Matches persist in
+  `data/matches.db` (ADR 0007; `BOARDWRIGHT_DATA_DIR` overrides, needs a matching grant)
 - `scripts/claude-usage.sh [--gate N]` — Claude plan usage snapshot (see `docs/WORKFLOW.md`)
 - `deno add jsr:<pkg>` / `npm:<pkg>` in the member that needs it; prefer JSR packages
 

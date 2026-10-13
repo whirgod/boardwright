@@ -44,9 +44,39 @@ export interface MatchRecord {
   readonly updatedAt: string;
 }
 
+/** Position in a listing: the `createdAt` and id of the last Match of a page. */
+export interface MatchCursor {
+  readonly createdAt: string;
+  readonly id: MatchId;
+}
+
+/** Which Matches `MatchStore.list` returns; newest first. */
+export interface MatchQuery {
+  /** Only Matches of this Game. */
+  readonly gameId?: GameId;
+  /** `true`: only Matches with an Outcome; `false`: only running ones. */
+  readonly finished?: boolean;
+  /** Page size, at least 1. */
+  readonly limit: number;
+  /** Continue after this Match (the `next` of the previous page). */
+  readonly after?: MatchCursor;
+}
+
+export interface MatchPage {
+  readonly matches: readonly MatchRecord[];
+  /** Pass as `after` for the next page; absent on the last page. */
+  readonly next?: MatchCursor;
+}
+
+/** Orders Matches newest first: by `createdAt`, then id, both descending. */
+export function compareNewestFirst(a: MatchCursor, b: MatchCursor): number {
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+  return a.id === b.id ? 0 : a.id < b.id ? 1 : -1;
+}
+
 /**
- * Where Matches live. The in-memory store is the default; a persistent store
- * implements the same interface (#13) and must pass `assertMatchStoreContract`.
+ * Where Matches live. The in-memory store is the default; `SqliteMatchStore`
+ * (ADR 0007) persists them. Every store must pass `assertMatchStoreContract`.
  *
  * Liveness: every call must settle (resolve or reject) in bounded time, so
  * an adapter sets its own timeouts on the database or file it talks to. The
@@ -67,6 +97,13 @@ export interface MatchStore {
    * update got there first.
    */
   update(record: MatchRecord): Promise<boolean>;
+  /**
+   * One page of Matches, newest first (`createdAt`, then id, descending),
+   * filtered by `query`. A Match is finished when it has an Outcome. The
+   * records are complete, including seed and token hashes: callers strip
+   * what clients must not see.
+   */
+  list(query: MatchQuery): Promise<MatchPage>;
 }
 
 /** Keeps Matches in a Map; they are lost when the process exits. */
@@ -95,5 +132,24 @@ export class InMemoryMatchStore implements MatchStore {
     }
     this.#matches.set(record.id, structuredClone(record));
     return Promise.resolve(true);
+  }
+
+  list(query: MatchQuery): Promise<MatchPage> {
+    const matching = [...this.#matches.values()]
+      .filter((m) =>
+        (query.gameId === undefined || m.gameId === query.gameId) &&
+        (query.finished === undefined ||
+          (m.outcome !== undefined) === query.finished) &&
+        (query.after === undefined || compareNewestFirst(m, query.after) > 0)
+      )
+      .sort(compareNewestFirst);
+    const page = matching.slice(0, query.limit);
+    const last = page.at(-1);
+    return Promise.resolve({
+      matches: structuredClone(page),
+      ...(matching.length > page.length && last
+        ? { next: { createdAt: last.createdAt, id: last.id } }
+        : {}),
+    });
   }
 }
