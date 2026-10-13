@@ -4,7 +4,7 @@
 /** Stable identifier of a Game, e.g. "chess", "nine-mens-morris". */
 export type GameId = string;
 
-/** A participant slot in a Game, e.g. "white" / "black". Not a person. */
+/** One of the two sides of a Game that a Player occupies, e.g. "white" / "black". Not a person. */
 export type Seat = string;
 
 /** Result of a finished Match. `winner` is absent on a draw. */
@@ -48,7 +48,7 @@ export type Score =
   | { readonly kind: "win-in"; readonly plies: number }
   | { readonly kind: "loss-in"; readonly plies: number };
 
-/** A principal variation: a sequence of Moves the Engine expects. */
+/** A sequence of Moves an Engine expects from a Position, with its Score. */
 export interface Line<Move> {
   readonly moves: readonly Move[];
   readonly score: Score;

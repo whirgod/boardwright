@@ -7,6 +7,7 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 ```
 packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
+                  (hosts only the tic-tac-toe Game and its minimax Engine until the hosted catalog, #36, lands)
 apps/web          (planned) Browser UI: board rendering, play, review, analysis overlay
 packages/testing  Contract test kit every Game runs (assertGameRulesContract)
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
@@ -44,7 +45,7 @@ core  <-  games/*  <-  engines/*
 - **Positions and Moves are opaque** outside their Game. Everything crossing a process or
   network boundary uses the Game's `Notation` (strings), so the server, API, storage and UI
   stay game-agnostic.
-- **Analysis is a stream.** `Engine.analyze` yields progressively deeper `Analysis`
+- **Analysis is a stream** _(planned, #9)_. `Engine.analyze` yields progressively deeper `Analysis`
   (multiple `Line`s with a `Score`), which the server forwards to the UI for live overlays.
   "Best move" = first Move of the best Line once the search stops.
 - **In-process first, out-of-process later** _(open question)_: Engines start as TypeScript
