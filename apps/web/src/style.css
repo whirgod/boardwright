@@ -8,6 +8,10 @@
   --grid: #5c4a2e;
   --piece-x: #1d3c78;
   --piece-o: #9b2c2c;
+  --square-dark: #8a6a3d;
+  --disc-white: #f4efe6;
+  --disc-black: #2a2622;
+  --hl-effect: rgba(220, 60, 60, 0.35);
   --hl-last: rgba(255, 196, 0, 0.35);
   --hl-selected: rgba(45, 108, 223, 0.35);
   --hl-destination: rgba(45, 108, 223, 0.18);
@@ -25,6 +29,7 @@
     --grid: #c9b48a;
     --piece-x: #9ec1ff;
     --piece-o: #ff9e9e;
+    --square-dark: #5a4528;
   }
 }
 
@@ -135,6 +140,43 @@ svg.board .piece-x {
 
 svg.board .piece-o {
   stroke: var(--piece-o);
+}
+
+svg.board .point {
+  fill: var(--grid);
+}
+
+svg.board .square-dark {
+  fill: var(--square-dark);
+}
+
+svg.board .disc {
+  stroke-width: 4;
+}
+
+svg.board .disc-white {
+  fill: var(--disc-white);
+  stroke: var(--disc-black);
+}
+
+svg.board .disc-black {
+  fill: var(--disc-black);
+  stroke: var(--disc-white);
+}
+
+svg.board .king-mark {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 6;
+}
+
+svg.board .caption {
+  fill: var(--fg);
+  font-size: 24px;
+}
+
+svg.board .highlight-last-move-effect {
+  fill: var(--hl-effect);
 }
 
 svg.board .highlight-last-move {
