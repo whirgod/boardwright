@@ -1,4 +1,9 @@
-import type { GameRules, Notation, Outcome, Seat } from "@boardwright/core";
+import type {
+  GameRules,
+  Notation,
+  RulesOutcome,
+  Seat,
+} from "@boardwright/core";
 import {
   BK,
   Board,
@@ -99,10 +104,11 @@ const other = (s: ChessSeat): ChessSeat => s === "white" ? "black" : "white";
 
 function toBoard(p: ChessPosition): Board {
   const b = new Board();
+  // Positions come from `decodePosition`/`play` (frozen, validated), so every
+  // cell is a FEN letter or "." (PIECES.indexOf(".") is 0, empty).
   p.board.forEach((c, i) => {
     b.sq[i] = PIECES.indexOf(c) & 15;
   });
-  // PIECES.indexOf(".") is 0 (empty).
   b.black = p.turn === "black";
   b.castling = (p.castling.includes("K") ? WK : 0) |
     (p.castling.includes("Q") ? WQ : 0) |
@@ -253,6 +259,22 @@ function parsePlacement(text: string, fen: string): Cell[] {
   return board;
 }
 
+/** Pawn squares plus the sorted other pieces: unchanged by reversible Moves. */
+function materialOf(board: readonly Cell[]): string {
+  const pawns = board.map((c) => c === "P" || c === "p" ? c : ".").join("");
+  return pawns + board.filter((c) => !".Pp".includes(c)).sort().join("");
+}
+
+/**
+ * Freezes a Position deeply: the legal-Move cache is keyed by identity, so
+ * Positions must not change after creation.
+ */
+function freeze(p: ChessPosition): ChessPosition {
+  Object.freeze(p.board);
+  Object.freeze(p.history);
+  return Object.freeze(p);
+}
+
 const CASTLING_RE = /^(?:-|K?Q?k?q?)$/;
 const COUNT_RE = /^(?:0|[1-9]\d{0,3})$/;
 
@@ -300,6 +322,10 @@ const notation: Notation<ChessPosition, ChessMove> = {
       fail("move counters", text);
     }
     const halfmoveClock = Number(half);
+    // At most every ply so far was reversible.
+    if (halfmoveClock > 2 * (Number(full) - 1) + (turn === "black" ? 1 : 0)) {
+      fail("halfmove clock exceeds plies played", text);
+    }
     let enPassant: Square | null = null;
     if (epText !== "-") {
       if (!/^[a-h][36]$/.test(epText)) fail("en passant square", text);
@@ -312,7 +338,7 @@ const notation: Notation<ChessPosition, ChessMove> = {
         halfmoveClock !== 0
       ) fail("impossible en passant square", text);
     }
-    const position: ChessPosition = {
+    const position: ChessPosition = freeze({
       board,
       turn,
       castling: rights,
@@ -320,25 +346,30 @@ const notation: Notation<ChessPosition, ChessMove> = {
       halfmoveClock,
       fullmoveNumber: Number(full),
       history: hist === undefined ? [] : hist.split("|"),
-    };
+    });
     const b = toBoard(position);
     if (b.attacked(b.kings[b.black ? 0 : 1]!, b.black)) {
       fail("side not to move is in check", text);
     }
     const n = position.history.length;
+    // No capture or pawn Move happened in the chain: same pawns, same pieces.
+    const material = materialOf(board);
     if (n > halfmoveClock) fail("history longer than halfmove clock", text);
     position.history.forEach((key, i) => {
       const m = /^([^:]+):([wb]):([^:]+):(-|[a-h][36])$/.exec(key);
       if (!m) return fail("history entry", text);
       const earlier = parsePlacement(m[1]!, text);
       if (placement(earlier) !== m[1]) fail("history entry", text);
+      if (materialOf(earlier) !== material) fail("history material", text);
       // Losing castling rights clears the history.
       if (m[3] !== castling) fail("history castling rights", text);
       // Plies alternate, so entry i (of n) was `n - i` plies ago.
       if ((m[2] === turnText) !== ((n - i) % 2 === 0)) {
         fail("history turn order", text);
       }
-      if (m[4] !== "-" && (m[4]![1] === "6") !== (m[2] === "w")) {
+      // Only a double push (irreversible) creates an en passant square, so
+      // only the oldest entry can have one.
+      if (m[4] !== "-" && (i > 0 || (m[4]![1] === "6") !== (m[2] === "w"))) {
         fail("history en passant square", text);
       }
     });
@@ -397,7 +428,7 @@ export const chess: GameRules<ChessPosition, ChessMove> = {
     b.make(m);
     const castling = castlingText(b.castling);
     const keep = !irreversible && castling === position.castling;
-    return {
+    return freeze({
       board: cellsOf(b),
       turn: other(position.turn),
       castling,
@@ -406,9 +437,9 @@ export const chess: GameRules<ChessPosition, ChessMove> = {
       fullmoveNumber: position.fullmoveNumber +
         (position.turn === "black" ? 1 : 0),
       history: keep ? [...position.history, info(position).key] : [],
-    };
+    });
   },
-  outcome(position): Outcome | undefined {
+  outcome(position): RulesOutcome | undefined {
     const i = info(position);
     if (i.moves.length === 0) {
       return i.inCheck
@@ -491,17 +522,22 @@ function sanOf(b: Board, m: IMove, legal: readonly IMove[]): string {
 }
 
 /**
- * Parses SAN for a legal Move in `position`. The check suffix (`+`/`#`) and
- * trailing annotations (`!`, `?`) are optional; everything else must be
- * exactly as `formatSan` writes it. Throws if no legal Move matches.
+ * Parses SAN for a legal Move in `position`. Trailing annotations (`!`,
+ * `?`) and the check suffix (`+`/`#`) are optional, but a suffix that is
+ * given must be right; everything else must be exactly as `formatSan` writes
+ * it. Throws if no legal Move matches.
  */
 export function parseSan(position: ChessPosition, san: string): ChessMove {
-  const core = san.replace(/[+#]?[!?]{0,2}$/, "");
+  const core = san.replace(/[!?]{1,2}$/, "");
+  const suffixed = /[+#]$/.test(core);
   if (!chess.outcome(position)) {
     const b = toBoard(position);
     const legal = info(position).moves;
     for (const m of legal) {
-      if (sanOf(b, m, legal).replace(/[+#]$/, "") === core) return toPublic(m);
+      const text = sanOf(b, m, legal);
+      if ((suffixed ? text : text.replace(/[+#]$/, "")) === core) {
+        return toPublic(m);
+      }
     }
   }
   throw new Error(

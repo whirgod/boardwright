@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
 import { assertGameRulesContract } from "@boardwright/testing";
 import {
+  type Cell,
   chess as g,
   type ChessPosition,
   INITIAL_FEN,
@@ -89,6 +90,8 @@ Deno.test("invalid positions are rejected", () => {
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w  - 0 1",
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 01 1",
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0",
+      "4k3/8/8/8/8/8/8/4K3 w - - 3 2", // more reversible plies than played
+      "4k3/8/8/8/8/8/8/4K3 b - - 2 1",
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - -1 1",
       "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq e3 0 1", // ep
       "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e4 0 1",
@@ -263,6 +266,13 @@ Deno.test("history notation is validated", () => {
       `${base} ${entry0.replace("8/8/8/8", "44/8/8/8")}|${entry1}`,
       `${base} ${entry0.replace("KQkq", "Kkq")}|${entry1}`,
       `${base} ${entry0.replace(":-", ":e3")}|${entry1}`,
+      // A pawn moved or a piece vanished within the chain.
+      `${base} ${
+        entry0.replace("PPPPPPPP/RNBQKBNR:w", "PPPPPPP1/RNBQKBNR:w")
+      }|${entry1}`,
+      `${base} ${entry0.replace("RNBQKBNR:w", "RNBQKBN1:w")}|${entry1}`,
+      // En passant squares only in the oldest entry.
+      `${base} ${entry0}|${entry1.replace(":-", ":e3")}`,
     ]
   ) {
     assertThrows(() => pos(bad), Error, undefined, bad);
@@ -309,4 +319,73 @@ Deno.test("insufficient material", () => {
   // A capture that leaves bare kings ends the Match.
   const p = play(pos("8/8/8/4k3/8/8/4q3/4K3 w - - 0 1"), "e1e2");
   assertEquals(g.outcome(p), { reason: "insufficient-material" });
+});
+
+Deno.test("Positions are frozen, so the identity-keyed cache cannot go stale", () => {
+  for (const p of [g.initialPosition(), play(g.initialPosition(), "g1f3")]) {
+    assert(Object.isFrozen(p));
+    assertThrows(() => {
+      (p.board as Cell[])[12] = ".";
+    }, TypeError);
+    assertThrows(() => {
+      (p.history as string[]).push("x");
+    }, TypeError);
+  }
+});
+
+Deno.test("a FEN whose history holds the current key twice is threefold", () => {
+  const cycle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+  const text = fen(play(g.initialPosition(), ...cycle, ...cycle));
+  const p = pos(text);
+  const key = text.split(" ")[6]!.split("|")[0]!;
+  assertEquals(p.history.filter((h) => h === key).length, 2);
+  assertEquals(g.outcome(p), { reason: "threefold-repetition" });
+});
+
+Deno.test("outcome precedence", () => {
+  // Stalemate stays stalemate at the fifty-move limit.
+  assertEquals(g.outcome(pos("7k/5Q2/6K1/8/8/8/8/8 b - - 100 80")), {
+    reason: "stalemate",
+  });
+  // Insufficient material wins over the clock.
+  assertEquals(g.outcome(pos("4k3/8/8/8/8/8/8/4K3 w - - 100 80")), {
+    reason: "insufficient-material",
+  });
+  // Fifty-move limit and third repetition at once: fifty-move rule.
+  const cycle = ["a2b2", "e8d8", "b2a2", "d8e8"];
+  const p = play(pos("4k3/8/8/8/8/8/R7/K7 w - - 92 80"), ...cycle, ...cycle);
+  assertEquals(p.halfmoveClock, 100);
+  assertEquals(p.history.length, 8);
+  assertEquals(g.outcome(p), { reason: "fifty-move-rule" });
+});
+
+Deno.test("repetition needs equal castling rights and Seat to move", () => {
+  // Rooks out and back: the first occurrence had more castling rights, so
+  // the third occurrence of this placement is only the second repetition.
+  const cycle = ["a1b1", "a8b8", "b1a1", "b8a8"];
+  const start = pos("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+  const twice = play(start, ...cycle, ...cycle);
+  assertEquals(twice.board, start.board);
+  assertEquals(twice.castling, "Kk");
+  assertEquals(g.outcome(twice), undefined);
+  // The Position after the first a8b8 (rights already lost) recurs a third time.
+  assertEquals(g.outcome(play(twice, "a1b1", "a8b8")), {
+    reason: "threefold-repetition",
+  });
+  // The same placement twice with each Seat to move is no repetition.
+  let q = pos("4k3/8/8/8/8/8/8/R3K3 w - - 0 1");
+  q = play(q, "a1a2", "e8d8", "a2a1", "d8e8"); // white to move, 2nd time
+  q = play(q, "a1a2", "e8d8", "a2a3", "d8e8", "a3a1"); // black to move
+  q = play(q, "e8d8", "a1a2", "d8e8", "a2a1"); // black to move, 2nd time
+  assertEquals(q.turn, "black");
+  assertEquals(g.outcome(q), undefined);
+});
+
+Deno.test("repetition does not depend on the move order", () => {
+  const q1 = play(g.initialPosition(), "g1f3", "g8f6", "b1c3", "b8c6");
+  const q2 = play(q1, "f3g1", "f6g8", "g1f3", "g8f6");
+  assertEquals(q2.board, q1.board);
+  assertEquals(g.outcome(q2), undefined);
+  const q3 = play(q2, "c3b1", "c6b8", "b1c3", "b8c6");
+  assertEquals(g.outcome(q3), { reason: "threefold-repetition" });
 });

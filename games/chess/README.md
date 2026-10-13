@@ -54,9 +54,11 @@ Decoding is strict so text is canonical and the Position is reachable-looking:
   on their initial squares;
 - an en passant square on rank 6 (white to move) or 3 (black to move), empty, with the empty square
   behind it and the pushed pawn in front, and a halfmove clock of 0;
-- counters without leading zeros (up to 4 digits), fullmove number >= 1;
-- history entries that are canonical, alternate in turn ending with the Opponent, share the
-  current castling rights, and number at most the halfmove clock.
+- counters without leading zeros (up to 4 digits; real Matches end long before move 10000),
+  fullmove number >= 1, and a halfmove clock no larger than the plies played so far;
+- history entries that are canonical, alternate in turn ending with the Opponent, number at most
+  the halfmove clock, share the current castling rights, pawn squares and piece counts (no capture
+  or pawn Move happened in between), and only the oldest may have an en passant square.
 
 ## SAN helpers
 
@@ -65,7 +67,8 @@ Decoding is strict so text is canonical and the Position is reachable-looking:
 **legal** Moves of the same piece type to the same square (a pinned piece does not force
 disambiguation) — `x` for captures (pawns name their file: `exd6`, also en passant), `=Q` for
 promotions, `O-O` / `O-O-O`, and a `+` or `#` suffix. `parseSan(position, text)` is the inverse;
-the check suffix and trailing `!`/`?` annotations are optional. Both throw on illegal Moves.
+trailing `!`/`?` annotations and the check suffix are optional, but a suffix that is given must
+be right (`Nf3+` is rejected when Nf3 does not check). Both throw on illegal Moves.
 
 ## TypeScript
 
@@ -75,7 +78,9 @@ see `squareName`/`parseSquare`). A `ChessMove` is `{ from, to, promotion? }`. `l
 `[]` on terminal Positions.
 
 Internally Moves are generated on a mutable mailbox board with make/unmake (`src/board.ts`); the
-public API wraps it immutably and memoizes legal Moves per Position object.
+public API wraps it immutably and memoizes legal Moves per Position object. Positions from
+`decodePosition`, `initialPosition` and `play` are deeply frozen so that cache cannot go stale;
+build Positions through them rather than by hand.
 
 ## Tests and perft
 

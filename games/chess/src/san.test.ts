@@ -59,7 +59,8 @@ Deno.test("SAN: parsing", () => {
   assertEquals(parseSan(promo, "bxa8=N"), { from: 49, to: 56, promotion: "n" });
   assertEquals(parseSan(promo, "b8=Q+").promotion, "q");
   assertEquals(parseSan(promo, "b8=Q").promotion, "q");
-  for (const bad of ["nf3", "Ng1f3", "e5", "O-O", "", "Nf3++"]) {
+  // A given check suffix must be right.
+  for (const bad of ["nf3", "Ng1f3", "e5", "O-O", "", "Nf3++", "Nf3+", "e4#"]) {
     assertThrows(() => parseSan(p, bad), Error, undefined, bad);
   }
   const mated = pos(
@@ -75,4 +76,50 @@ Deno.test("SAN: illegal moves throw", () => {
     "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
   );
   assertThrows(() => san(mated, "e1f2"));
+});
+
+Deno.test("SAN: check suffixes on castling, en passant and promotion", () => {
+  assertEquals(san(pos("5k2/8/8/8/8/8/8/4K2R w K - 0 1"), "e1g1"), "O-O+");
+  assertEquals(
+    san(pos("4k3/8/8/8/3pP3/8/5K2/8 b - e3 0 1"), "d4e3"),
+    "dxe3+",
+  );
+  const mate = pos("k7/4P3/1K6/8/8/8/8/8 w - - 0 1");
+  assertEquals(san(mate, "e7e8q"), "e8=Q#");
+  assertEquals(san(mate, "e7e8r"), "e8=R#");
+  assertEquals(san(mate, "e7e8b"), "e8=B");
+  assertEquals(parseSan(mate, "e8=Q#"), { from: 52, to: 60, promotion: "q" });
+  // The rook on e2 is pinned along the file: it may still move on the file
+  // (so e5 needs disambiguation), but not to d2 (so d2 does not).
+  const pinned = pos("4r1k1/8/8/3R4/8/8/4R3/4K3 w - - 0 1");
+  assertEquals(san(pinned, "d5d2"), "Rd2");
+  assertEquals(san(pinned, "e2e5"), "Ree5");
+  assertEquals(san(pinned, "d5e5"), "Rde5");
+});
+
+const SAN_FENS = [
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+  "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+  "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+  "r2q1rk1/pP1p2pp/Q4n2/bbp1p3/Np6/1B3NBn/pPPP1PPP/R3K2R b KQ - 0 1",
+  "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+  "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+  "4k3/8/8/8/8/Q7/8/Q1Q1K3 w - - 0 1",
+];
+
+Deno.test("SAN: format/parse round trip over the perft trees (depth 2)", () => {
+  let checked = 0;
+  const visit = (p: ChessPosition, depth: number) => {
+    const legal = g.legalMoves(p);
+    const texts = legal.map((m) => formatSan(p, m));
+    assertEquals(new Set(texts).size, texts.length, n.encodePosition(p));
+    legal.forEach((m, i) => {
+      assertEquals(parseSan(p, texts[i]!), m, texts[i]);
+      checked++;
+      if (depth > 1) visit(g.play(p, m), depth - 1);
+    });
+  };
+  for (const text of SAN_FENS) visit(pos(text), 2);
+  assertEquals(checked > 6_000, true, `${checked}`);
 });
