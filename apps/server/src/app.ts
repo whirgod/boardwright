@@ -60,7 +60,7 @@ const STATUS: Record<ErrorCode, ContentfulStatusCode> = {
   "illegal-move": 400,
   "invalid-token": 403,
   "not-your-turn": 403,
-  "not-server-driven": 403,
+  "not-engine-seat": 403,
   "unknown-game": 404,
   "unknown-match": 404,
   "not-found": 404,
@@ -177,7 +177,9 @@ export function buildApp(options: AppOptions): Hono {
     const body = await readBody(c, parsePlayMoveBody);
     if (!body.ok) return fail(c, body.code, body.problem);
     const { move, token } = body.value;
-    return c.json(await master.playMove(c.req.param("id"), move, token));
+    return c.json(
+      await master.apply(c.req.param("id"), { token }, { kind: "move", move }),
+    );
   });
 
   app.notFound((c) =>

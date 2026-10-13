@@ -1,11 +1,11 @@
 import type { GameId, Outcome, Seat } from "@boardwright/core";
-import type { PlayerSpec } from "./players.ts";
+import type { Player } from "./players.ts";
 
 export type MatchId = string;
 
 /** One Seat of a stored Match: who plays it and, for token holders, the token's hash. */
 export interface SeatRecord {
-  readonly player: PlayerSpec;
+  readonly player: Player;
   /** SHA-256 (hex) of the seat token; absent for Players that need none. */
   readonly tokenHash?: string;
 }
@@ -21,6 +21,7 @@ export interface MatchRecord {
   readonly seats: Readonly<Record<Seat, SeatRecord>>;
   /** Moves in play order, each in the Game's Notation. */
   readonly moves: readonly string[];
+  /** Set once the Match has ended, whatever the kind of ending. */
   readonly outcome?: Outcome;
   /** Incremented on every update; used for optimistic concurrency. */
   readonly version: number;

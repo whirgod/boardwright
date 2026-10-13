@@ -7,11 +7,45 @@ export type GameId = string;
 /** One of the two sides of a Game that a Player occupies, e.g. "white" / "black". Not a person. */
 export type Seat = string;
 
-/** Result of a finished Match. `winner` is absent on a draw. */
-export interface Outcome {
+/**
+ * What a Game's rules decide for a terminal Position: the winning Seat
+ * (absent on a draw) and `reason`, a short code such as "three-in-a-row".
+ * The Game master records it as an {@link Outcome} of kind `rules`.
+ */
+export interface RulesOutcome {
   readonly winner?: Seat;
   readonly reason: string;
 }
+
+/**
+ * How a Match ended (GLOSSARY: Outcome), stating its kind:
+ * - `rules`: the Game's rules ended it; `winner`/`reason` as in
+ *   {@link RulesOutcome}.
+ * - `resignation`: `seat` resigned; the Opponent is `winner`.
+ * - `forfeit`: the Game master ended it because `seat` failed to play; the
+ *   Opponent is `winner`. `reason` is a short code such as "timeout"; the
+ *   set is open (the server defines the codes it uses).
+ *
+ * Every kind has `winner`, absent only on a draw by the rules, so a draw
+ * check never needs the kind.
+ */
+export type Outcome =
+  | {
+    readonly kind: "rules";
+    readonly winner?: Seat;
+    readonly reason: string;
+  }
+  | {
+    readonly kind: "resignation";
+    readonly winner: Seat;
+    readonly seat: Seat;
+  }
+  | {
+    readonly kind: "forfeit";
+    readonly winner: Seat;
+    readonly seat: Seat;
+    readonly reason: string;
+  };
 
 /**
  * The rules of one Game. Pure and deterministic: the server uses it to
@@ -28,7 +62,7 @@ export interface GameRules<Position, Move> {
   legalMoves(position: Position): readonly Move[];
   /** Throws if `move` is not legal in `position`; never mutates `position`. */
   play(position: Position, move: Move): Position;
-  outcome(position: Position): Outcome | undefined;
+  outcome(position: Position): RulesOutcome | undefined;
   readonly notation: Notation<Position, Move>;
 }
 

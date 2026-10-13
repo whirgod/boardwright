@@ -1,4 +1,9 @@
-import type { GameRules, Notation, Outcome, Seat } from "@boardwright/core";
+import type {
+  GameRules,
+  Notation,
+  RulesOutcome,
+  Seat,
+} from "@boardwright/core";
 
 export type CheckersSeat = "black" | "white";
 
@@ -317,7 +322,7 @@ export const checkers: GameRules<CheckersPosition, CheckersMove> = {
       history: irreversible ? [] : [...position.history, key(position)],
     };
   },
-  outcome(position): Outcome | undefined {
+  outcome(position): RulesOutcome | undefined {
     if (generate(position).length === 0) {
       return { winner: other(position.turn), reason: "no-legal-moves" };
     }

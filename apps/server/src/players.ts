@@ -5,22 +5,22 @@ import type { SearchLimits } from "@boardwright/core";
  * the union without reshaping the API: requests, stored records and
  * responses all carry this object as-is.
  */
-export type PlayerSpec = HumanPlayerSpec | EnginePlayerSpec;
+export type Player = HumanPlayer | EnginePlayer;
 
 /** A human Player; moves by presenting the Seat's seat token. */
-export interface HumanPlayerSpec {
+export interface HumanPlayer {
   readonly kind: "human";
 }
 
 /** An Engine of the Match's Game; the server asks it for its Moves. */
-export interface EnginePlayerSpec {
+export interface EnginePlayer {
   readonly kind: "engine";
   readonly engineId: string;
   /** Applied to every search of this Seat; Unset `maxTimeMs` becomes the server default (`DEFAULT_SEARCH_TIME_MS`). */
   readonly limits: SearchLimits;
 }
 
-export type PlayerKind = PlayerSpec["kind"];
+export type PlayerKind = Player["kind"];
 
 /** Longest `maxTimeMs` a client may ask for. */
 export const MAX_SEARCH_TIME_MS = 60_000;
@@ -29,19 +29,19 @@ const MAX_DEPTH = 1000;
 const MAX_LINES = 100;
 
 /** Whether Moves for this Player arrive over the API with a seat token. */
-export function isTokenHolder(player: PlayerSpec): boolean {
+export function usesSeatToken(player: Player): boolean {
   return player.kind === "human";
 }
 
 type ParsedPlayer =
-  | { ok: true; player: PlayerSpec }
+  | { ok: true; player: Player }
   | { ok: false; problem: string };
 
 /**
- * Validate an untrusted JSON value as a PlayerSpec. Returns the parsed spec, or
+ * Validate an untrusted JSON value as a Player. Returns the parsed Player, or
  * a human-readable problem description.
  */
-export function parsePlayerSpec(value: unknown): ParsedPlayer {
+export function parsePlayer(value: unknown): ParsedPlayer {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, problem: "must be an object with a `kind`" };
   }

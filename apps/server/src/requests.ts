@@ -4,13 +4,13 @@
  * shape without a schema library dependency.
  */
 import type { GameId, Seat } from "@boardwright/core";
-import { parsePlayerSpec, type PlayerSpec } from "./players.ts";
+import { parsePlayer, type Player } from "./players.ts";
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; problem: string };
 
 export interface CreateMatchBody {
   readonly gameId: GameId;
-  readonly seats: Readonly<Record<Seat, PlayerSpec>>;
+  readonly seats: Readonly<Record<Seat, Player>>;
 }
 
 export interface PlayMoveBody {
@@ -32,7 +32,7 @@ function unexpectedFields(
     : undefined;
 }
 
-/** `{ gameId, seats: { <seat>: PlayerSpec } }` */
+/** `{ gameId, seats: { <seat>: Player } }` */
 export function parseCreateMatchBody(body: unknown): Parsed<CreateMatchBody> {
   if (!isObject(body)) {
     return { ok: false, problem: "body must be a JSON object" };
@@ -49,9 +49,9 @@ export function parseCreateMatchBody(body: unknown): Parsed<CreateMatchBody> {
       problem: "`seats` must be an object of Seat to Player",
     };
   }
-  const players: Record<Seat, PlayerSpec> = {};
+  const players: Record<Seat, Player> = {};
   for (const [seat, value] of Object.entries(seats)) {
-    const parsed = parsePlayerSpec(value);
+    const parsed = parsePlayer(value);
     if (!parsed.ok) {
       return { ok: false, problem: `\`seats.${seat}\` ${parsed.problem}` };
     }

@@ -1,7 +1,14 @@
-import { type GameMaster, MatchError, type MatchView } from "./game-master.ts";
+import type { GameId, Seat } from "@boardwright/core";
+import {
+  type ForfeitReason,
+  type GameMaster,
+  MatchError,
+  type MatchEvent,
+} from "./game-master.ts";
+import type { MatchId } from "./match-store.ts";
+import type { EnginePlayer, Player } from "./players.ts";
 import {
   SearchError,
-  type SearchFailure,
   searchInWorker,
   type SearchRequest,
 } from "./engine-search.ts";
@@ -23,16 +30,27 @@ export interface EngineDriverOptions {
   readonly search?: typeof searchInWorker;
 }
 
+/** What the driver remembers of a running Match: its Game and Engine Seats. */
+interface Seating {
+  readonly gameId: GameId;
+  /** Only the Seats whose Player is an Engine. */
+  readonly engines: Readonly<Record<Seat, EnginePlayer>>;
+}
+
 /**
- * Plays the Engine Seats of a GameMaster's Matches. After every Match change
- * where an Engine Seat is to move, it asks that Engine (in a Web Worker, so
- * the server keeps answering requests) and plays the Move through
- * `GameMaster.playAs`, i.e. through the same referee checks as human Moves.
+ * Plays the Engine Seats of a GameMaster's Matches. It remembers each
+ * running Match's Engine Seats from its `created` event (or loads the Match
+ * once, for Matches created before it subscribed) and, after every event
+ * that leaves an Engine Seat to move, asks that Engine for a Move from the
+ * event's Position (in a Web Worker, so the server keeps answering requests).
+ * It plays the Move with `GameMaster.apply` as that Engine Seat, expecting
+ * the event's version, i.e. through the same referee checks as human Moves;
+ * if the Match moved on meanwhile (e.g. a Resignation), the Move is dropped.
  *
  * A search that errors, hangs past its deadline or returns a Move the referee
  * refuses is retried with a fresh worker; when the attempts are used up the
- * Seat forfeits (Outcome reason `engine-failure: <engineId> for <seat>: <code>`, no raw error text), so a Match never
- * hangs on a broken Engine.
+ * Game master imposes a Forfeit on the Seat (reason: a {@link ForfeitReason}
+ * code, no raw error text), so a Match never hangs on a broken Engine.
  */
 export class EngineDriver {
   readonly #master: GameMaster;
@@ -45,6 +63,8 @@ export class EngineDriver {
   readonly #running = new Set<Promise<void>>();
   readonly #abort = new AbortController();
   readonly #unsubscribe: () => void;
+  /** Running Matches seen so far; dropped when they end. */
+  readonly #seatings = new Map<MatchId, Seating>();
 
   constructor(master: GameMaster, options: EngineDriverOptions = {}) {
     this.#master = master;
@@ -52,7 +72,7 @@ export class EngineDriver {
     this.#attempts = options.attempts ?? 2;
     this.#maxConcurrent = options.maxConcurrent ?? 4;
     this.#search = options.search ?? searchInWorker;
-    this.#unsubscribe = master.onMatchChanged((match) => this.#onChange(match));
+    this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
   }
 
   /** Resolves when no Engine is searching or about to play. For tests and shutdown. */
@@ -82,31 +102,56 @@ export class EngineDriver {
     else this.#active--;
   }
 
-  #onChange(match: MatchView): void {
-    if (match.outcome || match.toMove === null) return;
-    const player = match.seats[match.toMove];
-    if (player?.kind !== "engine") return;
-    const task = this.#play(match, match.toMove).finally(() =>
-      this.#running.delete(task)
-    );
+  #onEvent(event: MatchEvent): void {
+    if (event.kind === "created") {
+      this.#seatings.set(event.matchId, seating(event.gameId, event.seats));
+    }
+    if (event.outcome !== null) {
+      this.#seatings.delete(event.matchId);
+      return;
+    }
+    if (event.toMove === null) return;
+    const task = this.#onTurn(event, event.toMove)
+      .finally(() => this.#running.delete(task));
     this.#running.add(task);
   }
 
-  async #play(match: MatchView, seat: string): Promise<void> {
-    const player = match.seats[seat];
-    if (player?.kind !== "engine") return;
-    const entry = this.#master.engines.get(match.gameId, player.engineId);
-    // Public failure reason; details only go to the server log.
-    let failure: SearchFailure | "illegal-move" | "not-registered" =
-      "not-registered";
-    for (let attempt = 1; attempt <= this.#attempts; attempt++) {
-      if (this.#abort.signal.aborted) return;
-      if (!entry) {
-        break;
+  async #onTurn(event: MatchEvent, seat: Seat): Promise<void> {
+    let known = this.#seatings.get(event.matchId);
+    if (!known) {
+      // A Match created before this driver subscribed: load it once.
+      try {
+        const match = await this.#master.getMatch(event.matchId);
+        if (match.outcome === null) {
+          known = seating(match.gameId, match.seats);
+          this.#seatings.set(event.matchId, known);
+        }
+        // The Match moved on while loading; its newer event is handled on its own.
+        if (!known || match.version !== event.version) return;
+      } catch (error) {
+        console.error(`Could not load Match ${event.matchId}:`, error);
+        return;
       }
+    }
+    const player = known.engines[seat];
+    if (player) await this.#play(event, known.gameId, seat, player);
+  }
+
+  async #play(
+    event: MatchEvent,
+    gameId: GameId,
+    seat: Seat,
+    player: EnginePlayer,
+  ): Promise<void> {
+    const id = event.matchId;
+    const expect = { expectedVersion: event.version };
+    const entry = this.#master.engines.get(gameId, player.engineId);
+    // Public failure reason; details only go to the server log.
+    let failure: ForfeitReason = "not-registered";
+    for (let attempt = 1; entry && attempt <= this.#attempts; attempt++) {
       const request: SearchRequest = {
         module: entry.module,
-        position: match.position,
+        position: event.position,
         limits: {
           ...player.limits,
           maxTimeMs: player.limits.maxTimeMs ?? DEFAULT_SEARCH_TIME_MS,
@@ -124,7 +169,12 @@ export class EngineDriver {
         } finally {
           this.#release();
         }
-        await this.#master.playAs(match.id, seat, move);
+        await this.#master.apply(
+          id,
+          { engineSeat: seat },
+          { kind: "move", move },
+          expect,
+        );
         return;
       } catch (error) {
         if (this.#abort.signal.aborted) return;
@@ -133,25 +183,45 @@ export class EngineDriver {
           return;
         }
         console.error(
-          `Engine ${player.engineId} failed in Match ${match.id} (attempt ${attempt}):`,
+          `Engine ${player.engineId} failed in Match ${id} (attempt ${attempt}):`,
           error,
         );
-        failure = error instanceof MatchError
-          ? "illegal-move"
-          : error instanceof SearchError
-          ? error.code
-          : "engine-error";
+        failure = forfeitReason(error);
       }
     }
     if (this.#abort.signal.aborted) return;
-    const reason = `engine-failure: ${player.engineId} for ${seat}: ${failure}`;
     try {
-      await this.#master.forfeit(match.id, seat, reason);
+      await this.#master.apply(id, { gameMaster: true }, {
+        kind: "forfeit",
+        seat,
+        reason: failure,
+      }, expect);
     } catch (error) {
-      console.error(`Could not forfeit ${seat} in Match ${match.id}:`, error);
+      console.error(`Could not forfeit ${seat} in Match ${id}:`, error);
     }
   }
 }
 
 /** Referee refusals that blame the Engine's Move (rather than a stale Match). */
 const REFUSED: ReadonlySet<string> = new Set(["invalid-move", "illegal-move"]);
+
+function seating(
+  gameId: GameId,
+  seats: Readonly<Record<Seat, Player>>,
+): Seating {
+  const engines: Record<Seat, EnginePlayer> = {};
+  for (const [seat, player] of Object.entries(seats)) {
+    if (player.kind === "engine") engines[seat] = player;
+  }
+  return { gameId, engines };
+}
+
+/** The public Forfeit reason for an attempt that failed with `error`. */
+function forfeitReason(error: unknown): ForfeitReason {
+  if (error instanceof MatchError) return "illegal-move";
+  // `aborted` only happens on close(), which never forfeits.
+  if (error instanceof SearchError && error.code !== "aborted") {
+    return error.code;
+  }
+  return "engine-error";
+}
