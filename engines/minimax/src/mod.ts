@@ -12,7 +12,7 @@ import type {
   Engine,
   GameRules,
   Line,
-  Outcome,
+  RulesOutcome,
   Score,
   SearchLimits,
   Seat,
@@ -283,7 +283,7 @@ async function* analyze<Position, Move>(
 }
 
 /** Score of a terminal Position reached at `ply`, for the Seat that moved into it. */
-function terminalScore(outcome: Outcome, seat: Seat, ply: number): number {
+function terminalScore(outcome: RulesOutcome, seat: Seat, ply: number): number {
   if (outcome.winner === undefined) return 0;
   return outcome.winner === seat ? MATE - ply : -(MATE - ply);
 }

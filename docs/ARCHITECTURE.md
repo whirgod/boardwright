@@ -62,40 +62,48 @@ core  <-  games/*  <-  engines/*
 - `games.ts` — `GameRegistry`: the Games this server hosts, by id.
 - `game-master.ts` — `GameMaster`, the referee, independent of HTTP: creates Matches, rebuilds
   the current Position by replaying the stored Move list, and applies **every** Match change
-  through one method, `apply(id, actor, change)`:
-  - `actor`: `{ token }` (a Player proving its Seat) or `{ seat }` (the server acting for a Seat
-    it drives, i.e. an Engine; token-holding Seats are refused with `not-server-driven`).
-  - `change` (`MatchChange`): `{ kind: "move", move }` (Notation; only the Seat to move, only
-    Moves among `legalMoves`, compared in Notation since Moves are opaque), `{ kind:
-    "resignation" }` (at any time; the Opponent wins) or `{ kind: "forfeit", reason }` (only by
-    the server, for its Seat that is to move and failed to play; the Opponent wins).
-  - One path for all kinds: load, authorize the Actor, refuse a finished Match, judge the change
-    (a pure function per kind), one versioned write (`conflict` if another change won), one
-    event. Refusals are `MatchError`s with a `code` and change nothing; a Game that refuses a Move
-    its own `legalMoves` listed is a server fault (500). A stored Outcome ends the Match
-    regardless of the Position. A later Chance event (#15) is one more `MatchChange` kind.
-  - Outcomes state their kind (`MatchOutcome` in `packages/core`): `{ kind: "rules", winner?,
-    reason }` (the Game's code), `{ kind: "resignation", winner, seat }` or `{ kind: "forfeit",
-    winner, seat, reason }` (`seat` is the Seat that resigned or forfeited).
-  - `onMatchChanged(listener)` delivers one frozen `MatchEvent` per committed change: `kind`
-    (`created`, `move`, `resignation`, `forfeit`), `matchId`, `version` (1 on create, +1 per
-    change, equal to `MatchView.version`), `at`, the resulting `position`/`toMove`/`outcome`,
-    plus `seat`/`move` (or `gameId`/`seats` on `created`). Snapshots stay with `getMatch`; a
-    consumer holding a view of version n applies only later events. Listeners may be async;
-    errors and rejections are logged; returns an unsubscribe.
+  through one method, `apply(id, actor, change, { expectedVersion? })`:
+  - `actor`: `{ token }` (a human Player proving its Seat), `{ engineSeat }` (the server playing
+    for the Engine in that Seat; other Seats are refused with `not-engine-seat`) or
+    `{ gameMaster: true }` (the Game master imposing a change).
+  - `change`: a Player's `PlayerChange` — `{ kind: "move", move }` (Notation; only the Seat to
+    move, only Moves among `legalMoves`, compared in Notation since Moves are opaque) or
+    `{ kind: "resignation" }` (at any time; the Opponent wins) — or the Game master's
+    `ImposedChange`: `{ kind: "forfeit", seat, reason }` (`seat` is to move and failed to play;
+    the Opponent wins; `reason` is a `ForfeitReason` code). Overloads pair Actors with their
+    kinds of change. A Chance event (#15) becomes one more imposed change.
+  - One path for all kinds: load, check `expectedVersion` (`conflict`), authorize the Player,
+    refuse a finished Match, judge the change (a pure function per kind), one versioned write
+    (`conflict` if another process won), one event. Changes to one Match run one at a time.
+    Refusals are `MatchError`s with a `code`, change nothing and emit nothing; a Game that refuses
+    a Move its own `legalMoves` listed is a server fault (500). A stored Outcome ends the Match
+    regardless of the Position.
+  - Outcomes state their kind (`Outcome` in `packages/core`; Games return a `RulesOutcome`):
+    `{ kind: "rules", winner?, reason }` (the Game's code), `{ kind: "resignation", winner,
+    seat }` or `{ kind: "forfeit", winner, seat, reason }` (`seat` is the Seat that resigned or
+    forfeited).
+  - `onMatchChanged(listener)` delivers exactly one frozen `MatchEvent` per committed change:
+    `kind` (`created`, `move`, `resignation`, `forfeit`), `matchId`, `version` (1 on create, +1
+    per change, equal to `MatchView.version`), `at`, the resulting `position`/`toMove`/`outcome`,
+    plus `seat`/`move` (or `gameId`/`seats` on `created`). A Match's events arrive in version
+    order. To follow a Match: subscribe first, then `getMatch` (version n), then apply only
+    events with `version > n`. Listeners may be async; errors and rejections are logged; returns
+    an unsubscribe.
   - `createMatch` refuses Engine Seats whose Engine the Game does not have (`invalid-seats`).
-- `players.ts` — `PlayerSpec`, a union discriminated by `kind`: `human` and
+- `players.ts` — `Player`, a union discriminated by `kind`: `human` and
   `{ kind: "engine", engineId, limits }` (limits: `maxDepth`, `maxTimeMs` <= 60 s, `lines`;
   optional, default none). Engine Seats have no seat token.
 - `engines.ts` — `EngineRegistry`: Engines per Game (`id`, `name`, `module` URL).
-- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`; on an event that leaves a
-  Seat to move it loads the Match and, if still at that event's version and the Seat is an
-  Engine's, searches and plays the result with `apply(id, { seat }, { kind: "move" })`, i.e.
-  through the referee. A search that throws, exceeds `limits.maxTimeMs` + a grace period (default
-  5 s), returns no Move or a Move the referee refuses is retried once with a fresh Worker; then the
-  Seat forfeits with a `ForfeitReason` code (`engine-error`, `worker-error`, `timeout`,
-  `illegal-move`, `not-registered`, ...; raw error text is only logged), so a Match never hangs. An
-  unset `limits.maxTimeMs` becomes `DEFAULT_SEARCH_TIME_MS` (5 s) when searching, so no search is
+- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`. It remembers each running
+  Match's Engine Seats from its `created` event (loading a Match once if it was created before the
+  driver subscribed) and, on an event that leaves an Engine Seat to move, searches from the event's
+  Position and plays the result with `apply(id, { engineSeat }, move, { expectedVersion })`, i.e.
+  through the referee; a Match that moved on meanwhile drops the Move. A search that throws,
+  exceeds `limits.maxTimeMs` + a grace period (default 5 s), returns no Move or a Move the referee
+  refuses is retried once with a fresh Worker; then the Game master imposes a Forfeit with a
+  `ForfeitReason` code (`engine-error`, `worker-error`, `timeout`, `illegal-move`,
+  `not-registered`, ...; raw error text is only logged), so a Match never hangs. An unset
+  `limits.maxTimeMs` becomes `DEFAULT_SEARCH_TIME_MS` (5 s) when searching, so no search is
   unbounded. At most `maxConcurrent` (default 4) searches run at once; the rest queue. `close()`
   aborts searches in flight (no forfeit); `idle()` awaits them (tests).
 - `engine-search.ts` / `engine-worker.ts` — one Web Worker per search, always terminated
@@ -131,7 +139,7 @@ Implemented (JSON; Positions and Moves are Notation strings):
   Engine Seats move on their own: poll `GET /api/matches/:id` (live push comes with the WebSocket).
 - `GET  /api/matches/:id` → `MatchView`: `{ id, gameId, seats: { <seat>: { kind } }, moves,
   position, toMove, legalMoves, outcome, version, createdAt, updatedAt }` (`toMove`/`outcome`
-  are `null` when absent; `outcome` is a `MatchOutcome` with a `kind`: `rules`, `resignation` or
+  are `null` when absent; `outcome` is an `Outcome` with a `kind`: `rules`, `resignation` or
   `forfeit`; `version` counts changes, matching Match events). Never contains tokens.
 - `POST /api/matches/:id/moves` `{ move, token }` → updated `MatchView`.
 
@@ -140,7 +148,7 @@ Errors always have the body `{ "error": { "code", "message" } }`:
 | Status | Codes                                                                                            |
 | ------ | ------------------------------------------------------------------------------------------------ |
 | 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move` |
-| 403    | `invalid-token`, `not-your-turn`, `not-server-driven` (internal `{ seat }` Actor only)           |
+| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)       |
 | 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                     |
 | 409    | `match-finished`, `conflict` (concurrent update; refetch and retry)                              |
 | 413    | `payload-too-large`                                                                              |

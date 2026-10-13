@@ -8,26 +8,33 @@ export type GameId = string;
 export type Seat = string;
 
 /**
- * An Outcome by the rules, as a Game decides it for a terminal Position.
- * `winner` is absent on a draw; `reason` is a short code such as
- * "three-in-a-row".
+ * What a Game's rules decide for a terminal Position: the winning Seat
+ * (absent on a draw) and `reason`, a short code such as "three-in-a-row".
+ * The Game master records it as an {@link Outcome} of kind `rules`.
  */
-export interface Outcome {
+export interface RulesOutcome {
   readonly winner?: Seat;
   readonly reason: string;
 }
 
 /**
- * How a Match ended, stating its kind (GLOSSARY: Outcome):
- * - `rules`: the Game's rules ended it; `winner`/`reason` as in {@link Outcome}.
+ * How a Match ended (GLOSSARY: Outcome), stating its kind:
+ * - `rules`: the Game's rules ended it; `winner`/`reason` as in
+ *   {@link RulesOutcome}.
  * - `resignation`: `seat` resigned; the Opponent is `winner`.
- * - `forfeit`: the Game master ended it because `seat` failed to play;
- *   the Opponent is `winner`, `reason` is a code such as "timeout".
+ * - `forfeit`: the Game master ended it because `seat` failed to play; the
+ *   Opponent is `winner`. `reason` is a short code such as "timeout"; the
+ *   set is open (the server defines the codes it uses).
  *
- * Every kind has an optional `winner`, so a draw check never needs the kind.
+ * Every kind has `winner`, absent only on a draw by the rules, so a draw
+ * check never needs the kind.
  */
-export type MatchOutcome =
-  | ({ readonly kind: "rules" } & Outcome)
+export type Outcome =
+  | {
+    readonly kind: "rules";
+    readonly winner?: Seat;
+    readonly reason: string;
+  }
   | {
     readonly kind: "resignation";
     readonly winner: Seat;
@@ -55,7 +62,7 @@ export interface GameRules<Position, Move> {
   legalMoves(position: Position): readonly Move[];
   /** Throws if `move` is not legal in `position`; never mutates `position`. */
   play(position: Position, move: Move): Position;
-  outcome(position: Position): Outcome | undefined;
+  outcome(position: Position): RulesOutcome | undefined;
   readonly notation: Notation<Position, Move>;
 }
 

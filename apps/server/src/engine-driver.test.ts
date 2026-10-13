@@ -11,7 +11,7 @@ import { type EngineEntry, EngineRegistry } from "./engines.ts";
 import { GameMaster, type MatchView } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
-import type { PlayerSpec } from "./players.ts";
+import type { Player } from "./players.ts";
 
 const minimaxModule = import.meta.resolve(
   "@boardwright/engine-tic-tac-toe-minimax",
@@ -34,8 +34,8 @@ const ENGINES = new EngineRegistry([
 ]);
 
 const X_A1 = { kind: "move", move: "a1" } as const;
-const human: PlayerSpec = { kind: "human" };
-const engine = (engineId: string, limits = {}): PlayerSpec => ({
+const human: Player = { kind: "human" };
+const engine = (engineId: string, limits = {}): Player => ({
   kind: "engine",
   engineId,
   limits,
@@ -316,6 +316,161 @@ Deno.test("a Resignation while the Engine searches ends the Match without a forf
     const view = await master.getMatch(match.id);
     assertEquals(view.outcome, { kind: "resignation", winner: "o", seat: "x" });
     assertEquals(view.moves, ["a1"]);
+  } finally {
+    await driver.close();
+  }
+});
+
+/** An in-memory store whose n-th `get` from now can be held back or failed. */
+class GatedStore extends InMemoryMatchStore {
+  #countdown = 0;
+  #gate: Promise<void> | undefined;
+
+  /** Gate the `n`-th `get` after this call until `release` or `fail`. */
+  hold(n: number): { release(): void; fail(): void } {
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    this.#countdown = n;
+    this.#gate = promise;
+    promise.catch(() => {}); // Rejected only for the gated `get` to throw.
+    return { release: resolve, fail: () => reject(new Error("store down")) };
+  }
+
+  /** Number of `get` calls so far. */
+  gets = 0;
+
+  override async get(id: string) {
+    this.gets++;
+    if (this.#gate && --this.#countdown === 0) {
+      const gate = this.#gate;
+      this.#gate = undefined;
+      await gate;
+    }
+    return super.get(id);
+  }
+}
+
+/**
+ * A Match (human x, Engine o) created before the driver subscribes, so the
+ * driver must load it on its first event.
+ */
+async function lateDriver(options: EngineDriverOptions) {
+  const store = new GatedStore();
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store,
+    engines: ENGINES,
+  });
+  const { match, tokens } = await master.createMatch("tic-tac-toe", {
+    x: human,
+    o: engine("minimax"),
+  });
+  const driver = new EngineDriver(master, options);
+  const x = { token: tokens.x! };
+  return { store, master, driver, id: match.id, x };
+}
+
+async function captureErrors<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; logged: string[] }> {
+  const original = console.error;
+  const logged: string[] = [];
+  console.error = (...args: unknown[]) => logged.push(args.join(" "));
+  try {
+    return { result: await fn(), logged };
+  } finally {
+    console.error = original;
+  }
+}
+
+Deno.test("an event that is stale by the time the Match is loaded is skipped", async () => {
+  let searches = 0;
+  const { store, master, driver, id, x } = await lateDriver({
+    search: () => {
+      searches++;
+      return Promise.resolve("b1");
+    },
+  });
+  try {
+    // get #1: the Move's own load; get #2: the driver's load, held back.
+    const gate = store.hold(2);
+    await master.apply(id, x, X_A1);
+    // While the driver waits for the Match, x resigns (version 3).
+    await master.apply(id, x, { kind: "resignation" });
+    gate.release();
+    await driver.idle();
+    assertEquals(searches, 0);
+    const view = await master.getMatch(id);
+    assertEquals(view.outcome?.kind, "resignation");
+    assertEquals(view.moves, ["a1"]);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("a Match the driver cannot load is logged and left alone", async () => {
+  let searches = 0;
+  const { store, master, driver, id, x } = await lateDriver({
+    search: () => {
+      searches++;
+      return Promise.resolve("b1");
+    },
+  });
+  try {
+    const { logged } = await captureErrors(async () => {
+      store.hold(2).fail();
+      await master.apply(id, x, X_A1);
+      await driver.idle();
+    });
+    assertEquals(searches, 0);
+    assert(logged.some((line) => line.includes("Could not load Match")));
+    assertEquals((await master.getMatch(id)).outcome, null);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("a loaded Match is remembered: its later turns need no load", async () => {
+  let searches = 0;
+  const { store, master, driver, id, x } = await lateDriver({
+    search: () => Promise.resolve(++searches === 1 ? "b1" : "b2"),
+  });
+  try {
+    await master.apply(id, x, X_A1);
+    await driver.idle();
+    const before = store.gets;
+    await master.apply(id, x, { kind: "move", move: "c1" });
+    await driver.idle();
+    // One load each for x's Move and the Engine's Move; none by the driver.
+    assertEquals(store.gets - before, 2);
+    assertEquals((await master.getMatch(id)).moves, ["a1", "b1", "c1", "b2"]);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("a forfeit that comes too late is logged, not applied", async () => {
+  const ref: { resign?: () => Promise<unknown> } = {};
+  const { master, driver } = setup({
+    attempts: 1,
+    search: async () => {
+      await ref.resign!();
+      throw new Error("engine broke");
+    },
+  });
+  try {
+    const { match, tokens } = await master.createMatch("tic-tac-toe", {
+      x: human,
+      o: engine("minimax"),
+    });
+    ref.resign = () =>
+      master.apply(match.id, { token: tokens.x! }, { kind: "resignation" });
+    const { logged } = await captureErrors(async () => {
+      await master.apply(match.id, { token: tokens.x! }, X_A1);
+      await driver.idle();
+    });
+    assert(logged.some((line) => line.includes("Could not forfeit o")));
+    const view = await master.getMatch(match.id);
+    assertEquals(view.outcome, { kind: "resignation", winner: "o", seat: "x" });
   } finally {
     await driver.close();
   }

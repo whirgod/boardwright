@@ -60,7 +60,7 @@ const STATUS: Record<ErrorCode, ContentfulStatusCode> = {
   "illegal-move": 400,
   "invalid-token": 403,
   "not-your-turn": 403,
-  "not-server-driven": 403,
+  "not-engine-seat": 403,
   "unknown-game": 404,
   "unknown-match": 404,
   "not-found": 404,

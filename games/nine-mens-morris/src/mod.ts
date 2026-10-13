@@ -1,4 +1,9 @@
-import type { GameRules, Notation, Outcome, Seat } from "@boardwright/core";
+import type {
+  GameRules,
+  Notation,
+  RulesOutcome,
+  Seat,
+} from "@boardwright/core";
 
 export type MorrisSeat = "white" | "black";
 /** Content of a point: `w` white piece, `b` black piece, `.` empty. */
@@ -350,7 +355,7 @@ export const nineMensMorris: GameRules<MorrisPosition, MorrisMove> = {
         : [...position.history, key],
     };
   },
-  outcome(position): Outcome | undefined {
+  outcome(position): RulesOutcome | undefined {
     for (const s of ["white", "black"] as const) {
       if (total(position, s) < 3) {
         return { winner: other(s), reason: "fewer-than-three-pieces" };

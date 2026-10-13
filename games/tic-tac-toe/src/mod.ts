@@ -1,4 +1,9 @@
-import type { GameRules, Notation, Outcome, Seat } from "@boardwright/core";
+import type {
+  GameRules,
+  Notation,
+  RulesOutcome,
+  Seat,
+} from "@boardwright/core";
 
 export type TicTacToeSeat = "x" | "o";
 export type Cell = TicTacToeSeat | ".";
@@ -111,7 +116,7 @@ export const ticTacToe: GameRules<TicTacToePosition, TicTacToeMove> = {
     cells[index] = position.turn;
     return { cells, turn: position.turn === "x" ? "o" : "x" };
   },
-  outcome(position): Outcome | undefined {
+  outcome(position): RulesOutcome | undefined {
     const w = winner(position.cells);
     if (w) return { winner: w, reason: "three-in-a-row" };
     if (position.cells.every((c) => c !== ".")) return { reason: "board-full" };

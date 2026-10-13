@@ -5,14 +5,15 @@ import {
   assertNotEquals,
   assertRejects,
 } from "@std/assert";
-import type { GameRules, MatchOutcome } from "@boardwright/core";
+import type { GameRules, Outcome } from "@boardwright/core";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import {
   GameMaster,
-  type MatchChange,
+  type ImposedChange,
   MatchError,
   type MatchErrorCode,
   type MatchEvent,
+  type PlayerChange,
 } from "./game-master.ts";
 import { EngineRegistry } from "./engines.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
@@ -22,10 +23,12 @@ import {
   type MatchStore,
 } from "./match-store.ts";
 import { hashToken } from "./tokens.ts";
-import type { PlayerSpec } from "./players.ts";
+import type { Player } from "./players.ts";
+
+const GAME_MASTER = { gameMaster: true } as const;
 
 /** A Move change, in Notation. */
-const mv = (move: string): MatchChange => ({ kind: "move", move });
+const mv = (move: string): PlayerChange => ({ kind: "move", move });
 
 const HUMANS = { x: { kind: "human" }, o: { kind: "human" } } as const;
 
@@ -279,30 +282,30 @@ Deno.test("unknown Match ids are reported", async () => {
     "unknown-match",
   );
   await assertMatchError(
-    () => master.apply("nope", { seat: "x" }, mv("a1")),
+    () => master.apply("nope", { engineSeat: "x" }, mv("a1")),
     "unknown-match",
   );
 });
 
-// No server-driven Player kind exists yet (Engines come in #7), so these tests
-// store a record whose Seats are a stand-in kind that holds no token.
-const SERVER_DRIVEN = { kind: "engine" } as unknown as PlayerSpec;
+// A stored Match with two Engine Seats (stored directly, so the Engine need
+// not be registered).
+const ENGINE: Player = { kind: "engine", engineId: "e", limits: {} };
 
-const FORFEITED: MatchOutcome = {
+const FORFEITED: Outcome = {
   kind: "forfeit",
   winner: "x",
   seat: "o",
   reason: "timeout",
 };
 
-async function storeServerDrivenMatch(
+async function storeEngineMatch(
   store: MatchStore,
   overrides: Partial<MatchRecord> = {},
 ): Promise<string> {
   await store.create({
     id: "auto",
     gameId: "tic-tac-toe",
-    seats: { x: { player: SERVER_DRIVEN }, o: { player: SERVER_DRIVEN } },
+    seats: { x: { player: ENGINE }, o: { player: ENGINE } },
     moves: [],
     version: 1,
     createdAt: "",
@@ -312,49 +315,49 @@ async function storeServerDrivenMatch(
   return "auto";
 }
 
-Deno.test("a server-driven Seat moves, with the same referee checks", async () => {
+Deno.test("an Engine Seat moves, with the same referee checks", async () => {
   const { master, store } = setup();
-  const id = await storeServerDrivenMatch(store);
+  const id = await storeEngineMatch(store);
   await assertMatchError(
-    () => master.apply(id, { seat: "o" }, mv("a1")),
+    () => master.apply(id, { engineSeat: "o" }, mv("a1")),
     "not-your-turn",
   );
-  const view = await master.apply(id, { seat: "x" }, {
+  const view = await master.apply(id, { engineSeat: "x" }, {
     kind: "move",
     move: "a1",
   });
   assertEquals(view.moves, ["a1"]);
   await assertMatchError(
-    () => master.apply(id, { seat: "o" }, mv("a1")),
+    () => master.apply(id, { engineSeat: "o" }, mv("a1")),
     "illegal-move",
   );
   await assertMatchError(
-    () => master.apply(id, { seat: "o" }, mv("zz")),
+    () => master.apply(id, { engineSeat: "o" }, mv("zz")),
     "invalid-move",
   );
 });
 
-Deno.test("acting as a Seat refuses token-holding and unknown Seats", async () => {
+Deno.test("acting as an Engine Seat refuses human and unknown Seats", async () => {
   const { master } = setup();
   const m = await newMatch(master);
   await assertMatchError(
-    () => master.apply(m.id, { seat: "x" }, mv("a1")),
-    "not-server-driven",
+    () => master.apply(m.id, { engineSeat: "x" }, mv("a1")),
+    "not-engine-seat",
   );
   await assertMatchError(
-    () => master.apply(m.id, { seat: "z" }, mv("a1")),
-    "not-server-driven",
+    () => master.apply(m.id, { engineSeat: "z" }, mv("a1")),
+    "not-engine-seat",
   );
   await assertMatchError(
-    () => master.apply(m.id, { seat: "__proto__" }, mv("a1")),
-    "not-server-driven",
+    () => master.apply(m.id, { engineSeat: "__proto__" }, mv("a1")),
+    "not-engine-seat",
   );
   assertEquals((await master.getMatch(m.id)).moves, []);
 });
 
 Deno.test("a stored Outcome ends the Match even if the Position does not", async () => {
   const { master, store } = setup();
-  const id = await storeServerDrivenMatch(store, {
+  const id = await storeEngineMatch(store, {
     moves: ["a1"],
     outcome: FORFEITED,
   });
@@ -364,7 +367,7 @@ Deno.test("a stored Outcome ends the Match even if the Position does not", async
   assertEquals(view.legalMoves, []);
   assertEquals(view.outcome, FORFEITED);
   await assertMatchError(
-    () => master.apply(id, { seat: "o" }, mv("b1")),
+    () => master.apply(id, { engineSeat: "o" }, mv("b1")),
     "match-finished",
   );
 });
@@ -446,9 +449,10 @@ Deno.test("games exposes the registry", () => {
   assertEquals(master.games.get("tic-tac-toe"), ticTacToe);
 });
 
-Deno.test("concurrent Moves for the same turn: exactly one wins", async () => {
+Deno.test("concurrent Moves for the same turn: exactly one wins, one event", async () => {
   const { master } = setup();
   const m = await newMatch(master);
+  const events = recordEvents(master);
   const results = await Promise.allSettled([
     master.apply(m.id, { token: m.x }, mv("a1")),
     master.apply(m.id, { token: m.x }, mv("b1")),
@@ -456,11 +460,33 @@ Deno.test("concurrent Moves for the same turn: exactly one wins", async () => {
   assertEquals(results.filter((r) => r.status === "fulfilled").length, 1);
   const rejected = results.find((r) => r.status === "rejected");
   assert(rejected?.reason instanceof MatchError);
-  assert(["conflict", "not-your-turn"].includes(rejected.reason.code));
+  // Changes to one Match are applied one at a time: the loser sees the new turn.
+  assertEquals(rejected.reason.code, "not-your-turn");
   assertEquals((await master.getMatch(m.id)).moves.length, 1);
+  assertEquals(events.map((e) => [e.kind, e.version]), [["move", 2]]);
 });
 
-Deno.test("a lost store update is reported as a conflict", async () => {
+Deno.test("expectedVersion: a stale change is a conflict and emits nothing", async () => {
+  const { master } = setup();
+  const m = await newMatch(master);
+  const events = recordEvents(master);
+  const expect = { expectedVersion: 1 };
+  const results = await Promise.allSettled([
+    master.apply(m.id, { token: m.x }, mv("a1"), expect),
+    master.apply(m.id, { token: m.x }, { kind: "resignation" }, expect),
+  ]);
+  assertEquals(results[0].status, "fulfilled");
+  assert(results[1].status === "rejected");
+  assert(results[1].reason instanceof MatchError);
+  assertEquals(results[1].reason.code, "conflict");
+  assertEquals(events.map((e) => [e.kind, e.version]), [["move", 2]]);
+  const view = await master.apply(m.id, { token: m.o }, mv("b1"), {
+    expectedVersion: 2,
+  });
+  assertEquals(view.version, 3);
+});
+
+Deno.test("a lost store update is reported as a conflict and emits nothing", async () => {
   const inner = new InMemoryMatchStore();
   const store: MatchStore = {
     create: (r) => inner.create(r),
@@ -469,11 +495,20 @@ Deno.test("a lost store update is reported as a conflict", async () => {
   };
   const { master } = setup({ store });
   const m = await newMatch(master);
+  const events = recordEvents(master);
   await assertMatchError(
     () => master.apply(m.id, { token: m.x }, mv("a1")),
     "conflict",
   );
+  assertEquals(events, []);
 });
+
+/** Records every event the master emits. */
+function recordEvents(master: GameMaster): MatchEvent[] {
+  const events: MatchEvent[] = [];
+  master.onMatchChanged((e) => void events.push(e));
+  return events;
+}
 
 Deno.test("a stored Match of an unregistered Game is an internal error", async () => {
   const { master, store } = setup();
@@ -557,7 +592,7 @@ Deno.test("Moves are compared and stored in canonical Notation", async () => {
 const ENGINE_REGISTRY = new EngineRegistry([
   { id: "e", name: "E", gameId: "tic-tac-toe", module: "file:///unused.ts" },
 ]);
-const engineSeat: PlayerSpec = { kind: "engine", engineId: "e", limits: {} };
+const engineSeat: Player = { kind: "engine", engineId: "e", limits: {} };
 
 function setupWithEngines() {
   return new GameMaster({
@@ -586,13 +621,6 @@ Deno.test("createMatch refuses an Engine the Game does not have", async () => {
   );
 });
 
-/** Records every event the master emits. */
-function recordEvents(master: GameMaster): MatchEvent[] {
-  const events: MatchEvent[] = [];
-  master.onMatchChanged((e) => void events.push(e));
-  return events;
-}
-
 Deno.test("events state each change kind, with consecutive versions", async () => {
   const master = setupWithEngines();
   const events = recordEvents(master);
@@ -601,8 +629,9 @@ Deno.test("events state each change kind, with consecutive versions", async () =
     o: engineSeat,
   });
   const moved = await master.apply(match.id, { token: tokens.x! }, mv("a1"));
-  const ended = await master.apply(match.id, { seat: "o" }, {
+  const ended = await master.apply(match.id, GAME_MASTER, {
     kind: "forfeit",
+    seat: "o",
     reason: "timeout",
   });
   assertEquals(events, [
@@ -692,19 +721,19 @@ Deno.test("a Player may resign at any time; the Opponent wins", async () => {
   assertEquals(events.length, 3);
 });
 
-Deno.test("a server-driven Seat may resign", async () => {
+Deno.test("an Engine Seat may resign", async () => {
   const master = setupWithEngines();
   const { match } = await master.createMatch("tic-tac-toe", {
     x: { kind: "human" },
     o: engineSeat,
   });
-  const view = await master.apply(match.id, { seat: "o" }, {
+  const view = await master.apply(match.id, { engineSeat: "o" }, {
     kind: "resignation",
   });
   assertEquals(view.outcome, { kind: "resignation", winner: "x", seat: "o" });
 });
 
-Deno.test("an Engine Seat gets no token and forfeit ends the Match", async () => {
+Deno.test("an Engine Seat gets no token and the Game master forfeits it", async () => {
   const master = setupWithEngines();
   const seen = recordEvents(master);
   const { match, tokens } = await master.createMatch("tic-tac-toe", {
@@ -714,14 +743,18 @@ Deno.test("an Engine Seat gets no token and forfeit ends the Match", async () =>
   assertEquals(Object.keys(tokens), ["x"]);
   assertEquals(match.seats.o, engineSeat);
 
-  const forfeit: MatchChange = { kind: "forfeit", reason: "illegal-move" };
+  const forfeit: ImposedChange = {
+    kind: "forfeit",
+    seat: "o",
+    reason: "illegal-move",
+  };
   // Not o's turn yet: a stale forfeit is refused.
   await assertMatchError(
-    () => master.apply(match.id, { seat: "o" }, forfeit),
+    () => master.apply(match.id, GAME_MASTER, forfeit),
     "not-your-turn",
   );
   await master.apply(match.id, { token: tokens.x! }, mv("a1"));
-  const forfeited = await master.apply(match.id, { seat: "o" }, forfeit);
+  const forfeited = await master.apply(match.id, GAME_MASTER, forfeit);
   assertEquals(forfeited.outcome, {
     kind: "forfeit",
     winner: "x",
@@ -734,31 +767,40 @@ Deno.test("an Engine Seat gets no token and forfeit ends the Match", async () =>
   assertEquals((await master.getMatch(match.id)).outcome, forfeited.outcome);
 
   await assertMatchError(
-    () => master.apply(match.id, { seat: "o" }, forfeit),
+    () => master.apply(match.id, GAME_MASTER, forfeit),
     "match-finished",
   );
 });
 
-Deno.test("forfeit is only for server-driven Seats of existing Matches", async () => {
+Deno.test("the Game master may forfeit a human Seat that is to move", async () => {
   const { master } = setup();
   const m = await newMatch(master);
-  const forfeit: MatchChange = { kind: "forfeit", reason: "timeout" };
+  const view = await master.apply(m.id, GAME_MASTER, {
+    kind: "forfeit",
+    seat: "x",
+    reason: "timeout",
+  });
+  assertEquals(view.outcome?.winner, "o");
   await assertMatchError(
-    () => master.apply(m.id, { seat: "x" }, forfeit),
-    "not-server-driven",
-  );
-  await assertMatchError(
-    () => master.apply(m.id, { seat: "toString" }, forfeit),
-    "not-server-driven",
-  );
-  // A Player cannot forfeit itself; it resigns instead.
-  await assertMatchError(
-    () => master.apply(m.id, { token: m.x }, forfeit),
-    "not-server-driven",
-  );
-  await assertMatchError(
-    () => master.apply("nope", { seat: "x" }, forfeit),
+    () =>
+      master.apply("nope", GAME_MASTER, {
+        kind: "forfeit",
+        seat: "x",
+        reason: "timeout",
+      }),
     "unknown-match",
   );
-  assertEquals((await master.getMatch(m.id)).outcome, null);
+});
+
+Deno.test("only the Game master imposes changes, and it makes no Player's", async () => {
+  const { master } = setup();
+  const m = await newMatch(master);
+  const forfeit = { kind: "forfeit", seat: "x", reason: "timeout" } as const;
+  // The overloads rule these out at compile time; at run time they are bugs.
+  const anyApply = master.apply.bind(master) as (
+    ...args: unknown[]
+  ) => Promise<unknown>;
+  await assertRejects(() => anyApply(m.id, { token: m.x }, forfeit), TypeError);
+  await assertRejects(() => anyApply(m.id, GAME_MASTER, mv("a1")), TypeError);
+  assertEquals((await master.getMatch(m.id)).version, 1);
 });

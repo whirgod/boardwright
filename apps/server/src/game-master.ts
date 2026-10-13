@@ -1,4 +1,4 @@
-import type { GameId, MatchOutcome, Seat } from "@boardwright/core";
+import type { GameId, Outcome, RulesOutcome, Seat } from "@boardwright/core";
 import { EngineRegistry } from "./engines.ts";
 import type { AnyGameRules, GameRegistry } from "./games.ts";
 import type {
@@ -7,7 +7,7 @@ import type {
   MatchStore,
   SeatRecord,
 } from "./match-store.ts";
-import { isTokenHolder, type PlayerSpec } from "./players.ts";
+import { type Player, usesSeatToken } from "./players.ts";
 import { hashToken, newSeatToken, sameHash } from "./tokens.ts";
 
 /** Why a Match operation was refused. The HTTP layer maps each code to a status. */
@@ -19,7 +19,7 @@ export type MatchErrorCode =
   | "illegal-move"
   | "invalid-token"
   | "not-your-turn"
-  | "not-server-driven"
+  | "not-engine-seat"
   | "match-finished"
   | "conflict";
 
@@ -35,7 +35,7 @@ export interface MatchView {
   readonly id: MatchId;
   readonly gameId: GameId;
   /** Seats in the Game's order, each with its Player. */
-  readonly seats: Readonly<Record<Seat, PlayerSpec>>;
+  readonly seats: Readonly<Record<Seat, Player>>;
   /** Moves in play order, in the Game's Notation. */
   readonly moves: readonly string[];
   /** Current Position in the Game's Notation. */
@@ -44,7 +44,7 @@ export interface MatchView {
   readonly toMove: Seat | null;
   /** Legal Moves for `toMove`, in the Game's Notation. */
   readonly legalMoves: readonly string[];
-  readonly outcome: MatchOutcome | null;
+  readonly outcome: Outcome | null;
   /** 1 when created, +1 per change: the `version` of the last {@link MatchEvent}. */
   readonly version: number;
   readonly createdAt: string;
@@ -59,24 +59,62 @@ export interface CreatedMatch {
 
 /**
  * Who asks for a Match change:
- * - `{ token }`: a Player proving its Seat with its seat token.
- * - `{ seat }`: the server acting for a Seat it drives itself (an Engine);
- *   Seats of token-holding Players are refused with `not-server-driven`.
+ * - `{ token }`: a human Player proving its Seat with its seat token.
+ * - `{ engineSeat }`: the server playing for the Engine in that Seat; a Seat
+ *   whose Player is not an Engine is refused with `not-engine-seat`.
+ * - `{ gameMaster: true }`: the Game master itself, imposing a change on the
+ *   Match (a Forfeit now, a Chance event later).
  */
-export type Actor = { readonly token: string } | { readonly seat: Seat };
+export type Actor = PlayerActor | GameMasterActor;
+export type PlayerActor =
+  | { readonly token: string }
+  | { readonly engineSeat: Seat };
+export type GameMasterActor = { readonly gameMaster: true };
 
 /**
- * A change to a running Match, made for the Actor's Seat:
- * - `move`: play `move` (Notation); only the Seat to move, only legal Moves.
- * - `resignation`: the Seat concedes, at any time; the Opponent wins.
- * - `forfeit`: the Game master ends the Match because the Seat, which is to
- *   move, failed to play (`reason` is a public code such as "timeout"); the
- *   Opponent wins. Only for server-driven Seats.
+ * Why the Game master imposes a Forfeit; stored as the Outcome's `reason`.
+ * All current codes are Engine failures (details only go to the server log):
+ * the search threw (`engine-error`), its Worker failed (`worker-error`) or
+ * answered garbage (`unreadable-reply`), it ran past its deadline
+ * (`timeout`), its Move was refused (`illegal-move`), or the server no longer
+ * offers the Engine (`not-registered`).
  */
-export type MatchChange =
+export type ForfeitReason =
+  | "engine-error"
+  | "worker-error"
+  | "unreadable-reply"
+  | "timeout"
+  | "illegal-move"
+  | "not-registered";
+
+/**
+ * A change a Player makes for its own Seat:
+ * - `move`: play `move` (Notation); only the Seat to move, only legal Moves.
+ * - `resignation`: concede, at any time; the Opponent wins.
+ */
+export type PlayerChange =
   | { readonly kind: "move"; readonly move: string }
-  | { readonly kind: "resignation" }
-  | { readonly kind: "forfeit"; readonly reason: string };
+  | { readonly kind: "resignation" };
+
+/**
+ * A change the Game master imposes:
+ * - `forfeit`: `seat`, which is to move, failed to play; the Opponent wins.
+ */
+export type ImposedChange = {
+  readonly kind: "forfeit";
+  readonly seat: Seat;
+  readonly reason: ForfeitReason;
+};
+
+export type MatchChange = PlayerChange | ImposedChange;
+
+export interface ApplyOptions {
+  /**
+   * Refuse with `conflict` unless the Match is still at this version, e.g.
+   * the version of the event or view a decision was based on.
+   */
+  readonly expectedVersion?: number;
+}
 
 /** Fields every {@link MatchEvent} has: the Match's state right after it. */
 export interface MatchEventBase {
@@ -90,7 +128,7 @@ export interface MatchEventBase {
   /** Seat to move after the event; `null` once the Match has an Outcome. */
   readonly toMove: Seat | null;
   /** Set by the event that ended the Match, else `null`. */
-  readonly outcome: MatchOutcome | null;
+  readonly outcome: Outcome | null;
 }
 
 /**
@@ -102,7 +140,7 @@ export type MatchEvent =
   | MatchEventBase & {
     readonly kind: "created";
     readonly gameId: GameId;
-    readonly seats: Readonly<Record<Seat, PlayerSpec>>;
+    readonly seats: Readonly<Record<Seat, Player>>;
   }
   | MatchEventBase & {
     readonly kind: "move";
@@ -111,7 +149,11 @@ export type MatchEvent =
     readonly move: string;
   }
   | MatchEventBase & { readonly kind: "resignation"; readonly seat: Seat }
-  | MatchEventBase & { readonly kind: "forfeit"; readonly seat: Seat };
+  | MatchEventBase & {
+    readonly kind: "forfeit";
+    /** The Seat that forfeited. */
+    readonly seat: Seat;
+  };
 
 /**
  * Called with a frozen {@link MatchEvent} after every committed change. May
@@ -131,7 +173,7 @@ export interface GameMasterOptions {
 /** What judging a change decided: the record's new contents and the event. */
 interface Verdict {
   readonly moves: readonly string[];
-  readonly outcome?: MatchOutcome;
+  readonly outcome?: Outcome;
   readonly position: unknown;
   readonly event:
     | { readonly kind: "move"; readonly seat: Seat; readonly move: string }
@@ -152,6 +194,8 @@ export class GameMaster {
   readonly #now: () => Date;
   readonly #newMatchId: () => MatchId;
   readonly #listeners = new Set<MatchListener>();
+  /** Per Match, the tail of its queue of changes (see `#serialize`). */
+  readonly #queues = new Map<MatchId, Promise<unknown>>();
 
   constructor(options: GameMasterOptions) {
     this.#games = options.games;
@@ -164,7 +208,7 @@ export class GameMaster {
   /** Start a Match of `gameId` with one Player per Seat of the Game. */
   async createMatch(
     gameId: GameId,
-    players: Readonly<Record<Seat, PlayerSpec>>,
+    players: Readonly<Record<Seat, Player>>,
   ): Promise<CreatedMatch> {
     const game = this.#games.get(gameId);
     if (!game) {
@@ -211,7 +255,7 @@ export class GameMaster {
     const tokens: Record<Seat, string> = {};
     for (const seat of game.seats) {
       const player = players[seat]!;
-      if (isTokenHolder(player)) {
+      if (usesSeatToken(player)) {
         const token = newSeatToken();
         tokens[seat] = token;
         seats[seat] = { player, tokenHash: await hashToken(token) };
@@ -252,13 +296,22 @@ export class GameMaster {
   }
 
   /**
-   * Observe Matches: `listener` receives one {@link MatchEvent} per committed
-   * create or change (e.g. to let an Engine Seat move or to push updates to
-   * clients, #9), never for refused changes. Versions of one Match increase
-   * by one per event, so a consumer holding a `MatchView` of version n
-   * applies only events after n. Listeners are started synchronously and not
-   * awaited; errors they throw or reject with are logged, not propagated.
-   * Returns a function that unsubscribes.
+   * Observe Matches: `listener` receives exactly one {@link MatchEvent} per
+   * committed create or change (e.g. to let an Engine Seat move or to push
+   * updates to clients, #9), never one for a refused change.
+   *
+   * Ordering: changes to one Match are applied one at a time, and each event
+   * is delivered right after its write, so the events of one Match arrive in
+   * version order (1, 2, 3, ...) without gaps while subscribed. Events of
+   * different Matches may interleave.
+   *
+   * To follow a Match from a snapshot: subscribe first, then `getMatch`
+   * (version n), then apply only events with `version > n`; events up to n
+   * are already in the snapshot. (Snapshot-then-subscribe can miss events.)
+   *
+   * Listeners are started synchronously and not awaited; errors they throw or
+   * reject with are logged, not propagated. Returns a function that
+   * unsubscribes.
    */
   onMatchChanged(listener: MatchListener): () => void {
     this.#listeners.add(listener);
@@ -272,27 +325,80 @@ export class GameMaster {
   }
 
   /**
-   * Apply `change` to Match `id` for the Seat of `actor`, and return the
-   * updated Match. Every change goes through the same guards, in this order:
-   * the Match exists (`unknown-match`), the Actor holds a Seat
-   * (`invalid-token`, `not-server-driven`), the Match is not finished
+   * Apply `change` to Match `id` and return the updated Match. A Player
+   * (`{ token }` or `{ engineSeat }`) makes a {@link PlayerChange} for its
+   * own Seat; the Game master (`{ gameMaster: true }`) imposes an
+   * {@link ImposedChange}. Every change goes through the same guards, in
+   * this order: the Match exists (`unknown-match`), it is still at
+   * `options.expectedVersion` if given (`conflict`), the Player holds a Seat
+   * (`invalid-token`, `not-engine-seat`), the Match is not finished
    * (`match-finished`), then the change's own rules (`not-your-turn`,
-   * `invalid-move`, `illegal-move`, `not-server-driven`). Then one versioned
-   * write (`conflict` if another change got there first) and one event to
-   * listeners. Refusals change nothing and emit nothing.
+   * `invalid-move`, `illegal-move`). Then one versioned write (`conflict` if
+   * another server process got there first) and one event to listeners.
+   * Refusals change nothing and emit nothing. Changes to one Match are
+   * applied one at a time, in call order.
    */
-  async apply(
+  apply(
+    id: MatchId,
+    actor: PlayerActor,
+    change: PlayerChange,
+    options?: ApplyOptions,
+  ): Promise<MatchView>;
+  apply(
+    id: MatchId,
+    actor: GameMasterActor,
+    change: ImposedChange,
+    options?: ApplyOptions,
+  ): Promise<MatchView>;
+  apply(
     id: MatchId,
     actor: Actor,
     change: MatchChange,
+    options: ApplyOptions = {},
+  ): Promise<MatchView> {
+    return this.#serialize(id, () => this.#apply(id, actor, change, options));
+  }
+
+  /** Run `task` after every earlier task for Match `id` has settled. */
+  #serialize<T>(id: MatchId, task: () => Promise<T>): Promise<T> {
+    const previous = this.#queues.get(id) ?? Promise.resolve();
+    const run = previous.then(task);
+    const tail = run.then(() => {}, () => {});
+    this.#queues.set(id, tail);
+    void tail.then(() => {
+      if (this.#queues.get(id) === tail) this.#queues.delete(id);
+    });
+    return run;
+  }
+
+  async #apply(
+    id: MatchId,
+    actor: Actor,
+    change: MatchChange,
+    { expectedVersion }: ApplyOptions,
   ): Promise<MatchView> {
     const record = await this.#load(id);
-    const seat = await this.#seatOf(record, actor);
+    if (expectedVersion !== undefined && record.version !== expectedVersion) {
+      throw new MatchError(
+        "conflict",
+        `The Match is at version ${record.version}, not ${expectedVersion}`,
+      );
+    }
+    const imposed = change.kind === "forfeit";
+    if (imposed !== "gameMaster" in actor) {
+      // The overloads rule this out; reaching it is a server bug.
+      throw new TypeError(
+        `A ${change.kind} cannot be made by ${JSON.stringify(actor)}`,
+      );
+    }
+    const seat = "gameMaster" in actor
+      ? undefined
+      : await this.#seatOf(record, actor);
     const { game, position } = this.#restore(record);
     if (record.outcome || game.toMove(position) === undefined) {
       throw new MatchError("match-finished", "The Match is finished");
     }
-    const verdict = judge(game, record, position, seat, change, actor);
+    const verdict = judge(game, record, position, change, seat);
 
     const { outcome: _previous, ...rest } = record;
     const updated: MatchRecord = {
@@ -338,19 +444,20 @@ export class GameMaster {
     return record;
   }
 
-  /** The Seat `actor` speaks for, or a refusal. */
-  async #seatOf(record: MatchRecord, actor: Actor): Promise<Seat> {
-    if ("seat" in actor) {
-      const seatRecord = Object.hasOwn(record.seats, actor.seat)
-        ? record.seats[actor.seat]
+  /** The Seat a Player acts for, or a refusal. */
+  async #seatOf(record: MatchRecord, actor: PlayerActor): Promise<Seat> {
+    if ("engineSeat" in actor) {
+      const seat = actor.engineSeat;
+      const seatRecord = Object.hasOwn(record.seats, seat)
+        ? record.seats[seat]
         : undefined;
-      if (!seatRecord || isTokenHolder(seatRecord.player)) {
+      if (seatRecord?.player.kind !== "engine") {
         throw new MatchError(
-          "not-server-driven",
-          `Seat ${quote(actor.seat)} is not played by the server`,
+          "not-engine-seat",
+          `Seat ${quote(seat)} is not played by an Engine`,
         );
       }
-      return actor.seat;
+      return seat;
     }
     if (actor.token !== "") {
       const hash = await hashToken(actor.token);
@@ -386,7 +493,7 @@ export class GameMaster {
 
   #view(record: MatchRecord, game: AnyGameRules, position: unknown): MatchView {
     const { notation } = game;
-    const seats: Record<Seat, PlayerSpec> = {};
+    const seats: Record<Seat, Player> = {};
     for (const seat of game.seats) seats[seat] = record.seats[seat]!.player;
     // A stored Outcome (e.g. a Forfeit) ends the Match whatever the Position says.
     const finished = record.outcome !== undefined;
@@ -409,44 +516,41 @@ export class GameMaster {
 }
 
 /**
- * Decide a change to a running Match for `seat`: pure, no I/O. Throws a
- * `MatchError` to refuse it.
+ * Decide a change to a running Match: pure, no I/O. `player` is the Seat of
+ * the Player making a {@link PlayerChange}, `undefined` for an imposed one.
+ * Throws a `MatchError` to refuse it.
  */
 function judge(
   game: AnyGameRules,
   record: MatchRecord,
   position: unknown,
-  seat: Seat,
   change: MatchChange,
-  actor: Actor,
+  player: Seat | undefined,
 ): Verdict {
   switch (change.kind) {
     case "move": {
+      const seat = player!;
       requireTurn(game, position, seat);
       const { move, next } = playLegal(game, position, change.move);
       const outcome = game.outcome(next);
       return {
         moves: [...record.moves, move],
-        ...(outcome ? { outcome: { kind: "rules", ...outcome } } : {}),
+        ...(outcome ? { outcome: byTheRules(outcome) } : {}),
         position: next,
         event: { kind: "move", seat, move },
       };
     }
-    case "resignation":
+    case "resignation": {
+      const seat = player!;
       return {
         moves: record.moves,
         outcome: { kind: "resignation", winner: opponent(game, seat), seat },
         position,
         event: { kind: "resignation", seat },
       };
-    case "forfeit":
-      // Imposed by the Game master on a Seat it drives, never asked by a Player.
-      if (!("seat" in actor)) {
-        throw new MatchError(
-          "not-server-driven",
-          "Only the server forfeits a Seat",
-        );
-      }
+    }
+    case "forfeit": {
+      const { seat, reason } = change;
       requireTurn(game, position, seat);
       return {
         moves: record.moves,
@@ -454,12 +558,22 @@ function judge(
           kind: "forfeit",
           winner: opponent(game, seat),
           seat,
-          reason: change.reason,
+          reason,
         },
         position,
         event: { kind: "forfeit", seat },
       };
+    }
   }
+}
+
+/** The Outcome to record for a Game's verdict: only the known fields. */
+function byTheRules(outcome: RulesOutcome): Outcome {
+  return {
+    kind: "rules",
+    ...(outcome.winner !== undefined ? { winner: outcome.winner } : {}),
+    reason: outcome.reason,
+  };
 }
 
 function requireTurn(game: AnyGameRules, position: unknown, seat: Seat): void {

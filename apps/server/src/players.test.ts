@@ -1,19 +1,19 @@
 import { assertEquals, assertMatch } from "@std/assert";
-import { MAX_SEARCH_TIME_MS, parsePlayerSpec } from "./players.ts";
+import { MAX_SEARCH_TIME_MS, parsePlayer } from "./players.ts";
 
 function problem(value: unknown): string {
-  const parsed = parsePlayerSpec(value);
+  const parsed = parsePlayer(value);
   if (parsed.ok) throw new Error("expected a problem");
   return parsed.problem;
 }
 
 Deno.test("parses humans and Engines", () => {
-  assertEquals(parsePlayerSpec({ kind: "human" }), {
+  assertEquals(parsePlayer({ kind: "human" }), {
     ok: true,
     player: { kind: "human" },
   });
   assertEquals(
-    parsePlayerSpec({
+    parsePlayer({
       kind: "engine",
       engineId: "minimax",
       limits: { maxDepth: 3, maxTimeMs: 50, lines: 2 },
@@ -28,7 +28,7 @@ Deno.test("parses humans and Engines", () => {
     },
   );
   // Limits are optional and default to none.
-  assertEquals(parsePlayerSpec({ kind: "engine", engineId: "m" }), {
+  assertEquals(parsePlayer({ kind: "engine", engineId: "m" }), {
     ok: true,
     player: { kind: "engine", engineId: "m", limits: {} },
   });
