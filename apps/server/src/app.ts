@@ -7,6 +7,7 @@ import {
   type MatchErrorCode,
   quote,
 } from "./game-master.ts";
+import type { EngineRegistry } from "./engines.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore, type MatchStore } from "./match-store.ts";
 import {
@@ -25,6 +26,8 @@ export interface BuildMasterOptions {
   readonly games: readonly AnyGameRules[];
   /** Defaults to a fresh in-memory store. */
   readonly store?: MatchStore;
+  /** Engines that may be seated; defaults to none. */
+  readonly engines?: EngineRegistry;
   /** Clock for Match timestamps; defaults to the system clock. */
   readonly now?: () => Date;
 }
@@ -32,7 +35,7 @@ export interface BuildMasterOptions {
 export interface ExistingMasterOptions {
   /**
    * The referee to serve. Build it yourself to wire other parts to it first,
-   * e.g. Engine drivers via `onMatchChanged` (#7).
+   * e.g. an `EngineDriver`.
    */
   readonly master: GameMaster;
 }
@@ -111,6 +114,7 @@ export function buildApp(options: AppOptions): Hono {
   const master = "master" in options ? options.master : new GameMaster({
     games: new GameRegistry(options.games),
     store: options.store ?? new InMemoryMatchStore(),
+    ...(options.engines ? { engines: options.engines } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
   const { games } = master;
@@ -139,6 +143,16 @@ export function buildApp(options: AppOptions): Hono {
         })),
       ),
   );
+
+  app.get("/api/games/:gameId/engines", (c) => {
+    const gameId = c.req.param("gameId");
+    if (!games.get(gameId)) {
+      return fail(c, "unknown-game", `Unknown Game ${quote(gameId)}`);
+    }
+    return c.json(
+      master.engines.list(gameId).map(({ id, name }) => ({ id, name })),
+    );
+  });
 
   app.post("/api/matches", async (c) => {
     const body = await readBody(c, parseCreateMatchBody);

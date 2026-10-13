@@ -1,4 +1,5 @@
 import type { GameId, Outcome, Seat } from "@boardwright/core";
+import { EngineRegistry } from "./engines.ts";
 import type { AnyGameRules, GameRegistry } from "./games.ts";
 import type {
   MatchId,
@@ -63,6 +64,8 @@ export type MatchListener = (match: MatchView) => void | Promise<void>;
 export interface GameMasterOptions {
   readonly games: GameRegistry;
   readonly store: MatchStore;
+  /** Engines that may be seated; defaults to none. */
+  readonly engines?: EngineRegistry;
   readonly now?: () => Date;
   readonly newMatchId?: () => MatchId;
 }
@@ -75,6 +78,7 @@ export interface GameMasterOptions {
 export class GameMaster {
   readonly #games: GameRegistry;
   readonly #store: MatchStore;
+  readonly #engines: EngineRegistry;
   readonly #now: () => Date;
   readonly #newMatchId: () => MatchId;
   readonly #listeners = new Set<MatchListener>();
@@ -82,6 +86,7 @@ export class GameMaster {
   constructor(options: GameMasterOptions) {
     this.#games = options.games;
     this.#store = options.store;
+    this.#engines = options.engines ?? new EngineRegistry();
     this.#now = options.now ?? (() => new Date());
     this.#newMatchId = options.newMatchId ?? (() => crypto.randomUUID());
   }
@@ -117,6 +122,21 @@ export class GameMaster {
       );
     }
 
+    for (const seat of game.seats) {
+      const player = players[seat]!;
+      if (
+        player.kind === "engine" &&
+        !this.#engines.get(gameId, player.engineId)
+      ) {
+        throw new MatchError(
+          "invalid-seats",
+          `Seat ${quote(seat)}: no Engine ${
+            quote(player.engineId)
+          } for ${game.id}`,
+        );
+      }
+    }
+
     const seats: Record<Seat, SeatRecord> = {};
     const tokens: Record<Seat, string> = {};
     for (const seat of game.seats) {
@@ -146,18 +166,23 @@ export class GameMaster {
     return { match, tokens };
   }
 
-  /**
-   * Observe Match changes: `listener` runs after every create and accepted
-   * Move (e.g. to let an Engine Seat move, #7, or push updates to clients,
-   * #9). Listeners are started synchronously and not awaited; errors they
-   * throw or reject with are logged, not propagated. Returns a function that
-   * unsubscribes.
-   */
   /** The Games this referee hosts. */
   get games(): GameRegistry {
     return this.#games;
   }
 
+  /** The Engines that may be seated in Matches. */
+  get engines(): EngineRegistry {
+    return this.#engines;
+  }
+
+  /**
+   * Observe Match changes: `listener` runs after every create, accepted Move
+   * and forfeit (e.g. to let an Engine Seat move or to push updates to
+   * clients, #9). Listeners are started synchronously and not awaited; errors
+   * they throw or reject with are logged, not propagated. Returns a function
+   * that unsubscribes.
+   */
   onMatchChanged(listener: MatchListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -207,6 +232,48 @@ export class GameMaster {
       );
     }
     return this.#play(record, seat, move);
+  }
+
+  /**
+   * End the Match because the server-driven `seat` failed (e.g. its Engine
+   * crashed): the other Seat wins when the Game has exactly two, else there
+   * is no winner. `reason` becomes the Outcome's reason.
+   */
+  async forfeit(id: MatchId, seat: Seat, reason: string): Promise<MatchView> {
+    const record = await this.#load(id);
+    const seatRecord = Object.hasOwn(record.seats, seat)
+      ? record.seats[seat]
+      : undefined;
+    if (!seatRecord || isTokenHolder(seatRecord.player)) {
+      throw new MatchError(
+        "not-server-driven",
+        `Seat ${quote(seat)} is not played by the server`,
+      );
+    }
+    const { game, position } = this.#restore(record);
+    if (record.outcome || game.toMove(position) === undefined) {
+      throw new MatchError("match-finished", "The Match is finished");
+    }
+    const others = game.seats.filter((s) => s !== seat);
+    const outcome: Outcome = {
+      ...(others.length === 1 ? { winner: others[0]! } : {}),
+      reason,
+    };
+    const updated: MatchRecord = {
+      ...record,
+      outcome,
+      version: record.version + 1,
+      updatedAt: this.#now().toISOString(),
+    };
+    if (!(await this.#store.update(updated))) {
+      throw new MatchError(
+        "conflict",
+        "The Match changed meanwhile; fetch it and retry",
+      );
+    }
+    const match = this.#view(updated, game, position);
+    this.#notify(match);
+    return match;
   }
 
   async #load(id: MatchId): Promise<MatchRecord> {
@@ -325,7 +392,7 @@ export class GameMaster {
     const { notation } = game;
     const seats: Record<Seat, PlayerSpec> = {};
     for (const seat of game.seats) seats[seat] = record.seats[seat]!.player;
-    // A stored Outcome (e.g. a forfeit, #7) ends the Match whatever the Position says.
+    // A stored Outcome (e.g. a forfeit) ends the Match whatever the Position says.
     const finished = record.outcome !== undefined;
     return {
       id: record.id,

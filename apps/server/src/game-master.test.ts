@@ -13,6 +13,7 @@ import {
   type MatchErrorCode,
   type MatchView,
 } from "./game-master.ts";
+import { EngineRegistry } from "./engines.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import {
   InMemoryMatchStore,
@@ -492,4 +493,84 @@ Deno.test("Moves are compared and stored in canonical Notation", async () => {
   const done = await master.getMatch(match.id);
   assertEquals(done.position, "4");
   assertEquals(done.outcome, { reason: "reached-four" });
+});
+
+const ENGINE_REGISTRY = new EngineRegistry([
+  { id: "e", name: "E", gameId: "tic-tac-toe", module: "file:///unused.ts" },
+]);
+const engineSeat: PlayerSpec = { kind: "engine", engineId: "e", limits: {} };
+
+function setupWithEngines() {
+  return new GameMaster({
+    games: new GameRegistry([ticTacToe as AnyGameRules]),
+    store: new InMemoryMatchStore(),
+    engines: ENGINE_REGISTRY,
+  });
+}
+
+Deno.test("createMatch refuses an Engine the Game does not have", async () => {
+  const error = await assertRejects(
+    () =>
+      setupWithEngines().createMatch("tic-tac-toe", {
+        x: { kind: "human" },
+        o: { kind: "engine", engineId: "nope", limits: {} },
+      }),
+    MatchError,
+  );
+  assertEquals(error.code, "invalid-seats");
+  assertMatch(error.message, /no Engine "nope"/);
+  // No Engines registered at all (the default).
+  await assertRejects(
+    () =>
+      setup().master.createMatch("tic-tac-toe", { x: HUMANS.x, o: engineSeat }),
+    MatchError,
+  );
+});
+
+Deno.test("an Engine Seat gets no token and forfeit ends the Match", async () => {
+  const master = setupWithEngines();
+  const seen: MatchView[] = [];
+  master.onMatchChanged((m) => void seen.push(m));
+  const { match, tokens } = await master.createMatch("tic-tac-toe", {
+    x: { kind: "human" },
+    o: engineSeat,
+  });
+  assertEquals(Object.keys(tokens), ["x"]);
+  assertEquals(match.seats.o, engineSeat);
+
+  const forfeited = await master.forfeit(match.id, "o", "engine-failure: test");
+  assertEquals(forfeited.outcome, {
+    winner: "x",
+    reason: "engine-failure: test",
+  });
+  assertEquals(forfeited.toMove, null);
+  assertEquals(forfeited.legalMoves, []);
+  assertEquals(seen.at(-1)?.outcome?.winner, "x");
+  assertEquals((await master.getMatch(match.id)).outcome, forfeited.outcome);
+
+  const again = await assertRejects(
+    () => master.forfeit(match.id, "o", "twice"),
+    MatchError,
+  );
+  assertEquals(again.code, "match-finished");
+});
+
+Deno.test("forfeit is only for server-driven Seats of existing Matches", async () => {
+  const { master } = setup();
+  const { match } = await master.createMatch("tic-tac-toe", HUMANS);
+  const human = await assertRejects(
+    () => master.forfeit(match.id, "x", "no"),
+    MatchError,
+  );
+  assertEquals(human.code, "not-server-driven");
+  const unknownSeat = await assertRejects(
+    () => master.forfeit(match.id, "toString", "no"),
+    MatchError,
+  );
+  assertEquals(unknownSeat.code, "not-server-driven");
+  const unknown = await assertRejects(
+    () => master.forfeit("nope", "x", "no"),
+    MatchError,
+  );
+  assertEquals(unknown.code, "unknown-match");
 });
