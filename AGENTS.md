@@ -29,14 +29,16 @@ worktrees, PRs, reviews on GitHub, fix loop, usage-limit checkpoints. Tasks are 
 ## Layout
 
 ```
-packages/core   contracts: GameRules, Notation, Engine, Analysis (no deps)
-apps/server     Hono API + host of the web UI
-apps/web        (planned) browser UI
-games/<id>      one GameRules package per Game     (@boardwright/game-<id>)
-engines/<name>  one Engine package per Engine      (@boardwright/engine-<game>-<name>)
+packages/core     contracts: GameRules, Notation, Engine, Analysis (no deps)
+packages/testing  contract test kit for Games (assertGameRulesContract)
+apps/server       Hono API + host of the web UI
+apps/web          (planned) browser UI
+games/<id>        one GameRules package per Game     (@boardwright/game-<id>)
+engines/<name>    one Engine package per Engine      (@boardwright/engine-<game>-<name>)
 ```
 
 Dependencies flow `core <- games <- engines <- server`; never import the server from a Game or Engine.
+`testing` depends only on `core` (+ `@std/assert`) and is used only by Games' tests.
 
 ## Commands
 
@@ -52,6 +54,7 @@ Deno 2.x; tasks are defined in `deno.json` (no npm, no `node_modules`).
 
 - Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
   `exports`. Import local files with the `.ts` extension; no build step.
+- Every Game runs `assertGameRulesContract` from `@boardwright/testing` in its tests (`games/README.md`).
 - Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`. Entry points (`main.ts`)
   are excluded from coverage; keep them thin.
 - Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`), never `-A`.

@@ -8,7 +8,8 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
 apps/web          (planned) Browser UI: board rendering, play, review, analysis overlay
-games/<game>      (planned) One package per Game implementing GameRules, e.g. games/chess
+packages/testing  Contract test kit every Game runs (assertGameRulesContract)
+games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
 engines/<name>    (planned) One package per Engine implementing Engine, e.g. engines/chess-minimax
 ```
 
@@ -24,6 +25,7 @@ core  <-  games/*  <-  engines/*
 ```
 
 - `core` depends on nothing.
+- `testing` depends only on `core` (+ `@std/assert`); only Games' tests import it.
 - A Game depends only on `core`. It is pure: no I/O, no randomness except via inputs.
 - An Engine depends on `core` and on the Game it plays (to generate moves while searching).
 - The server composes Games and Engines; Games and Engines never import the server.
