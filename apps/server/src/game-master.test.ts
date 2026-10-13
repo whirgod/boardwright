@@ -21,11 +21,16 @@ import {
   InMemoryMatchStore,
   type MatchRecord,
   type MatchStore,
+  type MoveListEntry,
 } from "./match-store.ts";
 import { hashToken } from "./tokens.ts";
 import type { Player } from "./players.ts";
 
 const GAME_MASTER = { gameMaster: true } as const;
+
+/** The Move list in Notation, Chance events in brackets. */
+const played = (match: { moves: readonly MoveListEntry[] }) =>
+  match.moves.map((e) => e.kind === "move" ? e.move : `[${e.chance}]`);
 
 /** A Move change, in Notation. */
 const mv = (move: string): PlayerChange => ({ kind: "move", move });
@@ -141,7 +146,7 @@ Deno.test("createMatch requires exactly the Game's Seats", async () => {
 Deno.test("x wins a full Match by three in a row", async () => {
   const { master, store } = setup();
   const { id, view } = await playAll(master, "a1", "a2", "b1", "b2", "c1");
-  assertEquals(view.moves, ["a1", "a2", "b1", "b2", "c1"]);
+  assertEquals(played(view), ["a1", "a2", "b1", "b2", "c1"]);
   assertEquals(view.position, "xxxoo....:o");
   assertEquals(view.outcome, {
     kind: "rules",
@@ -188,7 +193,7 @@ Deno.test("a Move returns the updated Match", async () => {
     kind: "move",
     move: "b2",
   });
-  assertEquals(view.moves, ["b2"]);
+  assertEquals(played(view), ["b2"]);
   assertEquals(view.position, "....x....:o");
   assertEquals(view.toMove, "o");
   assertEquals(view.legalMoves.length, 8);
@@ -209,7 +214,7 @@ Deno.test("turn order: only the Seat to move may play", async () => {
     "not-your-turn",
   );
   await master.apply(m.id, { token: m.o }, mv("b1"));
-  assertEquals((await master.getMatch(m.id)).moves, ["a1", "b1"]);
+  assertEquals(played(await master.getMatch(m.id)), ["a1", "b1"]);
 });
 
 Deno.test("illegal and undecodable Moves are refused without changing the Match", async () => {
@@ -228,7 +233,7 @@ Deno.test("illegal and undecodable Moves are refused without changing the Match"
     () => master.apply(m.id, { token: m.o }, mv("")),
     "invalid-move",
   );
-  assertEquals((await master.getMatch(m.id)).moves, ["a1"]);
+  assertEquals(played(await master.getMatch(m.id)), ["a1"]);
 });
 
 Deno.test("a wrong or empty seat token is refused", async () => {
@@ -326,7 +331,7 @@ Deno.test("an Engine Seat moves, with the same referee checks", async () => {
     kind: "move",
     move: "a1",
   });
-  assertEquals(view.moves, ["a1"]);
+  assertEquals(played(view), ["a1"]);
   await assertMatchError(
     () => master.apply(id, { engineSeat: "o" }, mv("a1")),
     "illegal-move",
@@ -352,13 +357,13 @@ Deno.test("acting as an Engine Seat refuses human and unknown Seats", async () =
     () => master.apply(m.id, { engineSeat: "__proto__" }, mv("a1")),
     "not-engine-seat",
   );
-  assertEquals((await master.getMatch(m.id)).moves, []);
+  assertEquals(played(await master.getMatch(m.id)), []);
 });
 
 Deno.test("a stored Outcome ends the Match even if the Position does not", async () => {
   const { master, store } = setup();
   const id = await storeEngineMatch(store, {
-    moves: ["a1"],
+    moves: [{ kind: "move", move: "a1" }],
     outcome: FORFEITED,
   });
   const view = await master.getMatch(id);
@@ -440,8 +445,8 @@ Deno.test("listeners get frozen events, separate from the returned Match", async
   assertEquals(moved.version, view.version);
   assertEquals(moved.position, view.position);
   // The returned Match and the stored one are unaffected by listeners.
-  (view.moves as string[]).push("tampered");
-  assertEquals((await master.getMatch(m.id)).moves, ["a1"]);
+  (view.moves as MoveListEntry[]).push({ kind: "move", move: "tampered" });
+  assertEquals(played(await master.getMatch(m.id)), ["a1"]);
 });
 
 Deno.test("games exposes the registry", () => {
@@ -568,14 +573,14 @@ Deno.test("Moves are compared and stored in canonical Notation", async () => {
     kind: "move",
     move: "1",
   });
-  assertEquals(view.moves, ["+1"]);
+  assertEquals(played(view), ["+1"]);
   assertEquals(view.legalMoves, ["+1", "+2"]);
   // legalMoves lists +2 but play refuses it: a Game bug, not a client error.
   const bug = await assertRejects(() =>
     master.apply(match.id, { token: tokens.b! }, mv("+2"))
   );
   assert(!(bug instanceof MatchError));
-  assertEquals((await master.getMatch(match.id)).moves, ["+1"]);
+  assertEquals(played(await master.getMatch(match.id)), ["+1"]);
   await master.apply(match.id, { token: tokens.b! }, {
     kind: "move",
     move: "+1",
@@ -700,7 +705,7 @@ Deno.test("a Player may resign at any time; the Opponent wins", async () => {
   });
   const outcome = { kind: "resignation", winner: "o", seat: "x" } as const;
   assertEquals(view.outcome, outcome);
-  assertEquals(view.moves, ["b2"]);
+  assertEquals(played(view), ["b2"]);
   assertEquals(view.position, "....x....:o");
   assertEquals(view.toMove, null);
   assertEquals(view.legalMoves, []);

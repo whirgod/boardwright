@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
+import { diceRace } from "@boardwright/testing";
 import { buildApp } from "./app.ts";
 import { EngineDriver } from "./engine-driver.ts";
 import {
@@ -10,7 +11,7 @@ import {
 } from "./engine-runner.ts";
 import { type EngineEntry, EngineRegistry } from "./engines.ts";
 import { GameMaster, type MatchView } from "./game-master.ts";
-import { GameRegistry } from "./games.ts";
+import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
 import type { Player } from "./players.ts";
 import { testWorkerAdapter } from "./engine-runner.testing.ts";
@@ -36,6 +37,11 @@ const ENGINES = new EngineRegistry([
 ]);
 
 const X_A1 = { kind: "move", move: "a1" } as const;
+
+/** The Moves of the Move list, in Notation. */
+const played = (match: MatchView) =>
+  match.moves.map((e) => e.kind === "move" ? e.move : `[${e.chance}]`);
+
 const human: Player = { kind: "human" };
 const engine = (engineId: string, limits = {}): Player => ({
   kind: "engine",
@@ -192,7 +198,7 @@ Deno.test("an Engine proposing an illegal Move forfeits", async () => {
     seat: "o",
     reason: "illegal-move",
   });
-  assertEquals(view.moves, ["a1"]);
+  assertEquals(played(view), ["a1"]);
 });
 
 Deno.test("an Engine proposing no Move forfeits", async () => {
@@ -318,7 +324,7 @@ Deno.test("the Engine plays the best Line's first Move of the last Analysis that
       o: human,
     });
     await driver.idle();
-    assertEquals((await master.getMatch(match.id)).moves, ["c1"]);
+    assertEquals(played(await master.getMatch(match.id)), ["c1"]);
   } finally {
     await driver.close();
   }
@@ -360,7 +366,7 @@ Deno.test("closing while the referee judges a Move does not forfeit", async () =
   await driver.idle();
   const view = await master.getMatch(match.id);
   assertEquals(view.outcome, null);
-  assertEquals(view.moves, []);
+  assertEquals(played(view), []);
 });
 
 Deno.test("a Resignation while the Engine searches ends the Match without a forfeit", async () => {
@@ -382,7 +388,7 @@ Deno.test("a Resignation while the Engine searches ends the Match without a forf
     await driver.idle();
     const view = await master.getMatch(match.id);
     assertEquals(view.outcome, { kind: "resignation", winner: "o", seat: "x" });
-    assertEquals(view.moves, ["a1"]);
+    assertEquals(played(view), ["a1"]);
   } finally {
     await driver.close();
   }
@@ -468,7 +474,7 @@ Deno.test("an event that is stale by the time the Match is loaded is skipped", a
     assertEquals(searches, 0);
     const view = await master.getMatch(id);
     assertEquals(view.outcome?.kind, "resignation");
-    assertEquals(view.moves, ["a1"]);
+    assertEquals(played(view), ["a1"]);
   } finally {
     await driver.close();
   }
@@ -509,7 +515,7 @@ Deno.test("a loaded Match is remembered: its later turns need no load", async ()
     await driver.idle();
     // One load each for x's Move and the Engine's Move; none by the driver.
     assertEquals(store.gets - before, 2);
-    assertEquals((await master.getMatch(id)).moves, ["a1", "b1", "c1", "b2"]);
+    assertEquals(played(await master.getMatch(id)), ["a1", "b1", "c1", "b2"]);
   } finally {
     await driver.close();
   }
@@ -613,7 +619,7 @@ Deno.test("close() terminates searches in flight without a forfeit", async () =>
   await driver.close();
   const view = await master.getMatch(match.id);
   assertEquals(view.outcome, null);
-  assertEquals(view.moves, []);
+  assertEquals(played(view), []);
 });
 
 Deno.test("Matches without Engine Seats are left alone", async () => {
@@ -621,6 +627,44 @@ Deno.test("Matches without Engine Seats are left alone", async () => {
   try {
     await master.createMatch("tic-tac-toe", { x: human, o: human });
     await driver.idle();
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("Engine Seats of a Game with chance play after each Chance event", async () => {
+  const master = new GameMaster({
+    games: new GameRegistry([diceRace as AnyGameRules]),
+    store: new InMemoryMatchStore(),
+    engines: new EngineRegistry([{
+      id: "forward",
+      name: "Forward",
+      gameId: "dice-race",
+      module: "unused:",
+    }]),
+  });
+  const searched: string[] = [];
+  const driver = newDriver(master, {
+    search: (request) => {
+      searched.push(request.position);
+      return Promise.resolve("f");
+    },
+  });
+  try {
+    const { match } = await master.createMatch("dice-race", {
+      a: engine("forward"),
+      b: engine("forward"),
+    });
+    let view = await master.getMatch(match.id);
+    while (view.outcome === null) {
+      await driver.idle();
+      view = await master.getMatch(match.id);
+    }
+    // Each Move follows a Chance event; Engines never search a pending one.
+    const kinds = view.moves.map((e) => e.kind);
+    kinds.forEach((kind, i) => assertEquals(kind, i % 2 ? "move" : "chance"));
+    assert(searched.every((p) => !p.endsWith(":-")), searched.join(" "));
+    assertEquals(searched.length, kinds.filter((k) => k === "move").length);
   } finally {
     await driver.close();
   }

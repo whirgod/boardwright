@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertMatch } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
+import { diceRace } from "@boardwright/testing";
 import { buildApp, type ErrorBody, type ErrorCode } from "./app.ts";
 import {
   type CreatedMatch,
@@ -152,7 +153,10 @@ Deno.test("POST /api/matches/:id/moves plays a full Match to an Outcome", async 
     });
     assertEquals(res.status, 200);
     view = await res.json();
-    assertEquals(view?.moves, moves.slice(0, i + 1));
+    assertEquals(
+      view?.moves,
+      moves.slice(0, i + 1).map((move) => ({ kind: "move", move })),
+    );
   }
   assertEquals(view?.outcome, {
     kind: "rules",
@@ -591,4 +595,28 @@ Deno.test("POST /api/matches/:id/resign: Engine Seats have no token to resign wi
     `/api/matches/${created.match.id}`,
   )).json();
   assertEquals(view.outcome, null);
+});
+
+Deno.test("a Game with chance: typed Move list, seed revealed only after the Outcome", async () => {
+  const a = buildApp({ games: [diceRace as GameRules<unknown, unknown>] });
+  const res = await post(a, "/api/matches", {
+    gameId: "dice-race",
+    seats: { a: { kind: "human" }, b: { kind: "human" } },
+  });
+  assertEquals(res.status, 201);
+  const { match, tokens }: CreatedMatch = await res.json();
+  assertEquals(match.moves.length, 1);
+  assertEquals(match.moves[0]!.kind, "chance");
+  assertEquals(match.toMove, "a");
+  const path = `/api/matches/${match.id}`;
+  const moved = await post(a, `${path}/moves`, { move: "1", token: tokens.a });
+  const view: MatchView = await moved.json();
+  assertEquals(view.moves.map((e) => e.kind), ["chance", "move", "chance"]);
+  assertEquals(view.moves[1], { kind: "move", move: "1" });
+  assertEquals("seed" in view, false);
+  assertEquals("seed" in await (await a.request(path)).json(), false);
+  const resigned: MatchView = await (await post(a, `${path}/resign`, {
+    token: tokens.b,
+  })).json();
+  assertMatch(resigned.seed!, /^[0-9a-f]{64}$/);
 });

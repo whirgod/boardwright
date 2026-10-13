@@ -21,15 +21,24 @@ export type PlayerSpec =
     readonly limits?: SearchLimits;
   };
 
+/** One entry of the Move list: a Move, or a Chance event (Games with chance). */
+export type MoveListEntry =
+  | { readonly kind: "move"; readonly move: string }
+  | { readonly kind: "chance"; readonly chance: string };
+
 export interface MatchView {
   readonly id: string;
   readonly gameId: GameId;
   readonly seats: Readonly<Record<Seat, PlayerSpec>>;
-  readonly moves: readonly string[];
+  /** The Move list: Moves and Chance events in order, in Notation. */
+  readonly moves: readonly MoveListEntry[];
   readonly position: string;
+  /** `null` once there is an Outcome, or while a Chance event is pending. */
   readonly toMove: Seat | null;
   readonly legalMoves: readonly string[];
   readonly outcome: Outcome | null;
+  /** Seed the Chance events were drawn from; only once there is an Outcome. */
+  readonly seed?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   /** 1 when created, +1 per change. */

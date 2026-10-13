@@ -226,6 +226,14 @@ svg.board .target:focus-visible {
   font-family: ui-monospace, monospace;
 }
 
+.moves .chance {
+  color: var(--muted);
+}
+
+.seed code {
+  word-break: break-all;
+}
+
 .fallback-board pre {
   overflow-x: auto;
 }

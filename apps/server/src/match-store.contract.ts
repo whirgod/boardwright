@@ -1,5 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import type { MatchRecord, MatchStore } from "./match-store.ts";
+import type { MatchRecord, MatchStore, MoveListEntry } from "./match-store.ts";
+
+const mv = (move: string): MoveListEntry => ({ kind: "move", move });
 
 /** A valid record for store tests; override fields as needed. */
 export function sampleRecord(
@@ -37,7 +39,8 @@ export async function assertMatchStoreContract(
   await t.step("create then get round-trips the record", async () => {
     const store = await makeStore();
     const record = sampleRecord({
-      moves: ["a1", "b2"],
+      moves: [mv("a1"), { kind: "chance", chance: "6-1" }, mv("b2")],
+      seed: "s3cret",
       outcome: { kind: "forfeit", winner: "x", seat: "o", reason: "timeout" },
     });
     await store.create(record);
@@ -53,7 +56,7 @@ export async function assertMatchStoreContract(
   await t.step("update replaces the record at the next version", async () => {
     const store = await makeStore();
     await store.create(sampleRecord());
-    const next = sampleRecord({ moves: ["a1"], version: 2 });
+    const next = sampleRecord({ moves: [mv("a1")], version: 2 });
     assertEquals(await store.update(next), true);
     assertEquals(await store.get("m1"), next);
   });
@@ -62,18 +65,18 @@ export async function assertMatchStoreContract(
     const store = await makeStore();
     await store.create(sampleRecord());
     assertEquals(
-      await store.update(sampleRecord({ moves: ["a1"], version: 2 })),
+      await store.update(sampleRecord({ moves: [mv("a1")], version: 2 })),
       true,
     );
     assertEquals(
-      await store.update(sampleRecord({ moves: ["b1"], version: 2 })),
+      await store.update(sampleRecord({ moves: [mv("b1")], version: 2 })),
       false,
     );
     assertEquals(
-      await store.update(sampleRecord({ moves: ["c1"], version: 4 })),
+      await store.update(sampleRecord({ moves: [mv("c1")], version: 4 })),
       false,
     );
-    assertEquals((await store.get("m1"))?.moves, ["a1"]);
+    assertEquals((await store.get("m1"))?.moves, [mv("a1")]);
   });
 
   await t.step("update of an unknown Match returns false", async () => {
@@ -84,11 +87,11 @@ export async function assertMatchStoreContract(
 
   await t.step("records are not shared with callers", async () => {
     const store = await makeStore();
-    const record = sampleRecord({ moves: ["a1"] });
+    const record = sampleRecord({ moves: [mv("a1")] });
     await store.create(record);
-    (record.moves as string[]).push("b1");
+    (record.moves as MoveListEntry[]).push(mv("b1"));
     const read = await store.get("m1");
-    (read!.moves as string[]).push("c1");
-    assertEquals((await store.get("m1"))?.moves, ["a1"]);
+    (read!.moves as MoveListEntry[]).push(mv("c1"));
+    assertEquals((await store.get("m1"))?.moves, [mv("a1")]);
   });
 }

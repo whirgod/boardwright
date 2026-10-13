@@ -29,6 +29,9 @@ export const engine = createMinimaxEngine({
 - Forced results are `win-in` / `loss-in` Scores counted in plies (faster wins and slower
   losses preferred); draws score `value: 0`. Evaluations are clamped to `±MAX_EVALUATION`.
 - A Seat may move several times in a row; perspective flips only when the Seat to move changes.
+- Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
+  `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
+  belongs in its own Engine library (planned `engines/expectiminimax`).
 - No transposition table yet; add one (keyed by `Notation.encodePosition`) when a Game's
   Engine shows it pays off.
 

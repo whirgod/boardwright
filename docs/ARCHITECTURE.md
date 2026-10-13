@@ -5,10 +5,11 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 ## Layout
 
 ```
-packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
+packages/core     Game-agnostic contracts: GameRules (+ ChanceGameRules, ADR 0005), Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
 apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play; planned: Review, analysis overlay
-packages/testing  Contract test kit every Game runs (assertGameRulesContract)
+packages/testing  Contract test kits every Game / Engine runs (assertGameRulesContract,
+                  assertChanceGameRulesContract, assertEngineContract) + diceRace, a tiny Game with chance
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
 engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
@@ -28,7 +29,7 @@ core  <-  games/*  <-  engines/*
 ```
 
 - `core` depends on nothing.
-- `testing` depends only on `core` (+ `@std/assert`); only Games' tests import it.
+- `testing` depends only on `core` (+ `@std/assert`); only tests import it.
 - A Game depends only on `core`. It is pure: no I/O, no randomness except via inputs.
 - An Engine library (`engines/<algorithm>`) depends only on `core`; it searches any Game
   through the `GameRules` it is given.
@@ -47,6 +48,17 @@ core  <-  games/*  <-  engines/*
 - **Analysis is a stream** _(planned, #9)_. `Engine.analyze` yields progressively deeper `Analysis`
   (multiple `Line`s with a `Score`), which the server forwards to the UI for live overlays.
   "Best move" = first Move of the best Line once the search stops.
+- **Chance events** (ADR 0005). A Game with dice implements `ChanceGameRules`, extending
+  `GameRules`: a Position may have a pending Chance event (no Seat to move, no Outcome, no legal
+  Moves), `chanceEvents(position)` lists its results with probabilities and
+  `resolveChance(position, result)` applies one; results have their own Notation
+  (`encodeChance`/`decodeChance`). Code that must tell the kinds apart uses the structural
+  `hasChance(rules)` guard (`chancePending(rules, position)` for the state). Only the Game master
+  resolves Chance events (see `game-master.ts`). While one is pending, Analysis has no Lines but an
+  expected `score` with an explicit `seat` (the Score's perspective, since no Seat is to move);
+  other Analyses have neither. A Line ends at the next Chance event. `pickChance(results, u)` in
+  core is the one selection rule (used by the Game master and the kits). `engines/minimax` refuses
+  Games with chance (type and run time).
 - **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
   (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
   `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine
@@ -59,6 +71,8 @@ core  <-  games/*  <-  engines/*
 ## Server internals (`apps/server/src`)
 
 - `games.ts` — `GameRegistry`: the Games this server hosts, by id.
+- `chance.ts` — how the Game master draws Chance events: `newChanceSeed`, `drawChance(seed, n)`
+  (details under `game-master.ts`; known-answer tests pin the algorithm).
 - `game-master.ts` — `GameMaster`, the referee, independent of HTTP: creates Matches, rebuilds
   the current Position by replaying the stored Move list, and applies **every** Match change
   through one method, `apply(id, actor, change, { expectedVersion? })`:
@@ -69,8 +83,27 @@ core  <-  games/*  <-  engines/*
     move, only Moves among `legalMoves`, compared in Notation since Moves are opaque) or
     `{ kind: "resignation" }` (at any time; the Opponent wins) — or the Game master's
     `ImposedChange`: `{ kind: "forfeit", seat, reason }` (`seat` is to move and failed to play;
-    the Opponent wins; `reason` is a `ForfeitReason` code). Overloads pair Actors with their
-    kinds of change. A Chance event (#15) becomes one more imposed change.
+    the Opponent wins; `reason` is a `ForfeitReason` code) or `{ kind: "chance" }` (resolve the
+    pending Chance event; refused with `conflict` if none is). Overloads pair Actors with
+    their kinds of change.
+  - Chance events (ADR 0005), branching only via `hasChance`: a Match of a Game with chance gets a
+    secret `seed` (`newSeed` option, default 256 random bits as 64 lowercase hex digits;
+    `chance.ts`). Whenever a change, or creation, leaves a Chance event pending, the Game master
+    applies `{ kind: "chance" }` itself right away, inside the same per-Match queue, as its own
+    versioned change and `chance` event, until a Seat is to move; `apply`/`createMatch` return the
+    view after the rolls. While one is pending, Moves and Forfeits are refused with
+    `chance-pending` (409: refetch and retry); a Resignation is allowed.
+  - Draw algorithm (public once the seed is revealed): the n-th Chance event of a Match (n = 0, 1,
+    ... counting the Chance events before it in the Move list) takes `u = H / 2^48`, where `H` is
+    the first 48 bits (12 hex digits) of SHA-256 of the UTF-8 text `"<seed>:<n>"` (n in decimal),
+    and picks from the Game's `chanceEvents(position)`, in their order, the first result with
+    `u < p1 + ... + pk` (cumulative sum in floating point), else the last (`pickChance`). E.g. seed
+    `s`, n 6: `printf 's:6' | sha256sum` starts `ba7075967b55`, so `u ≈ 0.728`.
+  - Failed rolls (e.g. a store error) are logged, never thrown (the change before them is
+    committed). Recovery: retried after each delay of `rollRetryDelaysMs` (default 100, 500,
+    2000 ms) inside the Match's queue; after that, the roll is tried again on the next trigger —
+    any Move or Forfeit refused with `chance-pending`, or any `getMatch` of the Match (queued, not
+    awaited, so a polling client heals it).
   - One path for all kinds: load, check `expectedVersion` (`conflict`), authorize the Player,
     refuse a finished Match, judge the change (a pure function per kind), one versioned write
     (`conflict` if another process won), one event. Changes to one Match run one at a time.
@@ -82,9 +115,11 @@ core  <-  games/*  <-  engines/*
     seat }` or `{ kind: "forfeit", winner, seat, reason }` (`seat` is the Seat that resigned or
     forfeited).
   - `onMatchChanged(listener)` delivers exactly one frozen `MatchEvent` per committed change:
-    `kind` (`created`, `move`, `resignation`, `forfeit`), `matchId`, `version` (1 on create, +1
-    per change, equal to `MatchView.version`), `at`, the resulting `position`/`toMove`/`outcome`,
-    plus `seat`/`move` (or `gameId`/`seats` on `created`). A Match's events arrive in version
+    `kind` (`created`, `move`, `resignation`, `forfeit`, `chance`), `matchId`, `version` (1 on
+    create, +1 per change, equal to `MatchView.version`), `at`, the resulting
+    `position`/`toMove`/`outcome`, plus `seat`/`move` (`chance` on `chance`, `gameId`/`seats` on
+    `created`; `toMove` is `null` on an event that leaves a Chance event pending). Events never
+    carry the seed. A Match's events arrive in version
     order. To follow a Match: subscribe first, then `getMatch` (version n), then apply only
     events with `version > n`. Listeners may be async; errors and rejections are logged; returns
     an unsubscribe.
@@ -147,7 +182,8 @@ core  <-  games/*  <-  engines/*
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
-  strings only (Move list, Outcome, Seats with token hashes, timestamps) and a `version` for
+  strings only (Move list as typed entries `{ kind: "move", move }` / `{ kind: "chance", chance }`,
+  Outcome, Seats with token hashes, the secret Chance `seed`, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
 - `tokens.ts` — seat tokens: 256-bit random hex; only their SHA-256 is stored.
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
@@ -169,7 +205,9 @@ Match has an Outcome (switch to the stream once #9 lands).
 
 - DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`),
   `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
-  `match-state.ts` (Match status, Move list rows, Seat assignment), `outcome.ts` (the only place
+  `match-state.ts` (Match status incl. "rolling" while a Chance event is pending, Move list rows
+  of two Moves each with the Chance events before them, Seat assignment; renderers and invites
+  see Moves only), `outcome.ts` (the only place
   that words an Outcome, by its kind; reason codes are labelled, never parsed), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
 - Seat tokens never leave the browser except in Move requests and share links, and a held token
   is never overwritten or deleted (the server shows it only once). The creator of a human vs
@@ -204,9 +242,11 @@ Implemented (JSON; Positions and Moves are Notation strings):
   only). Seats must be exactly the Game's Seats. Tokens are returned only here. After a Move,
   Engine Seats move on their own: poll `GET /api/matches/:id` (live push comes with the WebSocket).
 - `GET  /api/matches/:id` → `MatchView`: `{ id, gameId, seats: { <seat>: { kind } }, moves,
-  position, toMove, legalMoves, outcome, version, createdAt, updatedAt }` (`toMove`/`outcome`
-  are `null` when absent; `outcome` is an `Outcome` with a `kind`: `rules`, `resignation` or
-  `forfeit`; `version` counts changes, matching Match events). Never contains tokens.
+  position, toMove, legalMoves, outcome, seed?, version, createdAt, updatedAt }` (`moves` is the
+  Move list: `{ kind: "move", move }` and, for Games with chance, `{ kind: "chance", chance }`
+  entries; `toMove`/`outcome` are `null` when absent; `outcome` is an `Outcome` with a `kind`:
+  `rules`, `resignation` or `forfeit`; `seed` only for Games with chance, once there is an
+  Outcome; `version` counts changes, matching Match events). Never contains tokens.
 - `POST /api/matches/:id/moves` `{ move, token }` → updated `MatchView`.
 - `POST /api/matches/:id/resign` `{ token }` → updated `MatchView` with a Resignation Outcome
   (the Opponent wins). Allowed at any time, not only on the Seat's turn; Engine Seats have no
@@ -214,15 +254,15 @@ Implemented (JSON; Positions and Moves are Notation strings):
 
 Errors always have the body `{ "error": { "code", "message" } }`:
 
-| Status | Codes                                                                                            |
-| ------ | ------------------------------------------------------------------------------------------------ |
-| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move` |
-| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)       |
-| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                     |
-| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry)                              |
-| 413    | `payload-too-large`                                                                              |
-| 415    | `unsupported-media-type`                                                                         |
-| 500    | `internal`                                                                                       |
+| Status | Codes                                                                                                                        |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move`                             |
+| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)                                   |
+| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                                                 |
+| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry), `chance-pending` (dice being rolled; refetch and retry) |
+| 413    | `payload-too-large`                                                                                                          |
+| 415    | `unsupported-media-type`                                                                                                     |
+| 500    | `internal`                                                                                                                   |
 
 Planned (sketch, not final):
 
@@ -234,8 +274,6 @@ Planned (sketch, not final):
 
 Track these here until resolved (then record an ADR in `docs/adr/` if it meets the bar):
 
-- Chance (backgammon dice): model rolls as Moves by a "chance" Seat, or as part of `play`
-  with an injected random source? Must keep Games deterministic and Matches replayable.
 - Persistence for Matches: in-memory `MatchStore` today; a persistent store comes with #13.
 - Identity of human Players: per-Seat seat tokens for now (no accounts); accounts/sessions later?
 - Time controls.

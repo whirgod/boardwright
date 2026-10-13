@@ -222,11 +222,24 @@ export function MatchPage(
               <ol class="moves">
                 {moveListRows(match.moves).map((row) => (
                   <li key={row.number} value={row.number}>
-                    {row.moves.join(" ")}
+                    {row.entries.map((entry, i) =>
+                      entry.kind === "move"
+                        ? <span key={i}>{i > 0 && " "}{entry.move}</span>
+                        : (
+                          <span key={i} class="chance" title="Chance event">
+                            {i > 0 && " "}({entry.chance})
+                          </span>
+                        )
+                    )}
                   </li>
                 ))}
               </ol>
             )}
+          {match.seed !== undefined && (
+            <p class="muted seed">
+              Chance events were drawn from seed <code>{match.seed}</code>.
+            </p>
+          )}
         </aside>
       </div>
     </section>
@@ -257,6 +270,8 @@ function StatusText(
             : " (waiting for the Opponent)"}.
         </>
       );
+    case "chance":
+      return <>The Game master is rolling…</>;
   }
 }
 

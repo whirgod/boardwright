@@ -7,19 +7,28 @@
  * const engine = createMinimaxEngine({ rules, evaluate, name: "minimax" });
  * ```
  */
-import type {
-  Analysis,
-  Engine,
-  GameRules,
-  Line,
-  RulesOutcome,
-  Score,
-  SearchLimits,
-  Seat,
+import {
+  type Analysis,
+  type Engine,
+  type GameRules,
+  hasChance,
+  type Line,
+  type RulesOutcome,
+  type Score,
+  type SearchLimits,
+  type Seat,
 } from "@boardwright/core";
 
+/**
+ * A Game without chance. Minimax cannot search Chance events (ADR 0005), so a
+ * `ChanceGameRules` is refused at compile time (and at run time).
+ */
+export type GameRulesWithoutChance<Position, Move> =
+  & GameRules<Position, Move>
+  & { readonly chanceEvents?: never; readonly resolveChance?: never };
+
 export interface MinimaxOptions<Position, Move> {
-  readonly rules: GameRules<Position, Move>;
+  readonly rules: GameRulesWithoutChance<Position, Move>;
   /**
    * Heuristic value of a non-terminal Position from the perspective of the
    * Seat to move (higher is better for that Seat). Called only at the depth
@@ -84,6 +93,12 @@ export function createMinimaxEngine<Position, Move>(
   options: MinimaxOptions<Position, Move>,
 ): Engine<Position, Move> {
   const { rules, evaluate, name } = options;
+  // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
+  if (hasChance(rules as GameRules<Position, Move>)) {
+    throw new TypeError(
+      `minimax cannot search ${rules.id}: it has Chance events (ADR 0005)`,
+    );
+  }
 
   return {
     name,
