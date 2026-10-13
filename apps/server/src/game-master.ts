@@ -211,6 +211,20 @@ export interface GameMasterOptions {
    * `[100, 500, 2000]`. See `GameMaster.apply` for what retries after that.
    */
   readonly rollRetryDelaysMs?: readonly number[];
+  /**
+   * After a roll gave up, how long (ms) the recovery triggers (a refused
+   * Move/Forfeit, `getMatch`) leave that Match alone; default 30000. Bounds
+   * the retry cycles (and log lines) a permanent fault causes while clients
+   * keep polling. An explicit `{ kind: "chance" }` ignores it.
+   */
+  readonly rollCooldownMs?: number;
+  /**
+   * Longest a {@link MatchStore} call may take (ms) before the Game master
+   * treats it as failed; default 10000. A safety net for the store's duty to
+   * settle (see `MatchStore`): without it, one hung call would block every
+   * later change to its Match.
+   */
+  readonly storeTimeoutMs?: number;
 }
 
 /** What judging a change decided: the record's new contents and the event. */
@@ -241,6 +255,9 @@ export class GameMaster {
   readonly #newMatchId: () => MatchId;
   readonly #newSeed: () => string;
   readonly #rollRetryDelaysMs: readonly number[];
+  readonly #rollCooldownMs: number;
+  /** Per Match whose roll gave up, when recovery triggers may try again (ms since epoch). */
+  readonly #rollCooldowns = new Map<MatchId, number>();
   /** Matches with a recovery roll queued by `getMatch`. */
   readonly #healing = new Set<MatchId>();
   readonly #listeners = new Set<MatchListener>();
@@ -249,12 +266,13 @@ export class GameMaster {
 
   constructor(options: GameMasterOptions) {
     this.#games = options.games;
-    this.#store = options.store;
+    this.#store = withTimeouts(options.store, options.storeTimeoutMs ?? 10_000);
     this.#engines = options.engines ?? new EngineRegistry();
     this.#now = options.now ?? (() => new Date());
     this.#newMatchId = options.newMatchId ?? (() => crypto.randomUUID());
     this.#newSeed = options.newSeed ?? newChanceSeed;
     this.#rollRetryDelaysMs = options.rollRetryDelaysMs ?? [100, 500, 2000];
+    this.#rollCooldownMs = options.rollCooldownMs ?? 30_000;
   }
 
   /** Start a Match of `gameId` with one Player per Seat of the Game. */
@@ -420,11 +438,21 @@ export class GameMaster {
    *
    * A roll that fails (e.g. a store error) never fails the change before it.
    * It is retried after each delay of `rollRetryDelaysMs`, inside the
-   * Match's queue; if all fail, the roll is tried again on the next trigger:
+   * Match's queue; if all fail, the roll is tried again on the next trigger
+   * after the cooldown:
    * a Move or Forfeit refused with `chance-pending`, or any `getMatch` of the
-   * Match (e.g. a polling client). An explicit `{ kind: "chance" }` from the
+   * Match (e.g. a polling client), but not within `rollCooldownMs` of the
+   * last give-up: a permanent fault costs one retry cycle per cooldown, not
+   * one per request. An explicit `{ kind: "chance" }` from the
    * Game master also rolls; it is refused with `conflict` when nothing is
    * pending.
+   *
+   * Do not await `apply` for a Match from inside a change to that same Match
+   * (a listener that waits for its own follow-up change, a store call): the
+   * new change queues behind the running one, which waits for it, and the
+   * Match's queue deadlocks. Start it without awaiting (listeners are not
+   * awaited anyway), or from a task outside the queue, as the EngineDriver
+   * does. Store calls must settle; see `MatchStore` and `storeTimeoutMs`.
    */
   apply(
     id: MatchId,
@@ -447,7 +475,10 @@ export class GameMaster {
     return this.#serialize(id, () => this.#apply(id, actor, change, options));
   }
 
-  /** Run `task` after every earlier task for Match `id` has settled. */
+  /**
+   * Run `task` after every earlier task for Match `id` has settled. Tasks
+   * must not await another task of the same Match (deadlock, see `apply`).
+   */
   #serialize<T>(id: MatchId, task: () => Promise<T>): Promise<T> {
     const previous = this.#queues.get(id) ?? Promise.resolve();
     const run = previous.then(task);
@@ -472,7 +503,7 @@ export class GameMaster {
       // Recovery trigger: a change refused because a roll is still pending
       // (an earlier roll failed) makes the Game master try it again now.
       if (error instanceof MatchError && error.code === "chance-pending") {
-        await this.#roll(id);
+        await this.#roll(id, undefined, true);
       }
       throw error;
     }
@@ -484,10 +515,16 @@ export class GameMaster {
    * latest view, or loaded), each as its own imposed change. Runs inside
    * the Match's queue. A failed roll is retried after each delay of
    * `rollRetryDelaysMs`, then given up until the next trigger (a refused
-   * Move/Forfeit or a `getMatch`). Never throws: the change that led here
-   * is already committed.
+   * Move/Forfeit or a `getMatch`) after `rollCooldownMs`. `recovery` marks
+   * such a trigger: it does nothing during the cooldown. Never throws: the
+   * change that led here is already committed.
    */
-  async #roll(id: MatchId, match?: MatchView): Promise<MatchView | undefined> {
+  async #roll(
+    id: MatchId,
+    match?: MatchView,
+    recovery = false,
+  ): Promise<MatchView | undefined> {
+    if (recovery && this.#coolingDown(id)) return match;
     let last = match;
     let current = match;
     let failures = 0;
@@ -495,7 +532,10 @@ export class GameMaster {
       try {
         current ??= await this.#current(id);
         last = current;
-        if (current.outcome !== null || current.toMove !== null) return last;
+        if (current.outcome !== null || current.toMove !== null) {
+          this.#rollCooldowns.delete(id);
+          return last;
+        }
         current = await this.#applyOne(id, GAME_MASTER, { kind: "chance" }, {
           expectedVersion: current.version,
         });
@@ -509,11 +549,25 @@ export class GameMaster {
           }):`,
           error,
         );
-        if (delay === undefined) return last;
+        if (delay === undefined) {
+          this.#rollCooldowns.set(
+            id,
+            this.#now().getTime() + this.#rollCooldownMs,
+          );
+          return last;
+        }
         await new Promise((resolve) => setTimeout(resolve, delay));
         current = undefined; // reload: the Match may have changed meanwhile
       }
     }
+  }
+
+  #coolingDown(id: MatchId): boolean {
+    const until = this.#rollCooldowns.get(id);
+    if (until === undefined) return false;
+    if (this.#now().getTime() < until) return true;
+    this.#rollCooldowns.delete(id);
+    return false;
   }
 
   /**
@@ -522,9 +576,9 @@ export class GameMaster {
    */
   #healPending(match: MatchView): void {
     if (match.outcome !== null || match.toMove !== null) return;
-    if (this.#healing.has(match.id)) return;
+    if (this.#healing.has(match.id) || this.#coolingDown(match.id)) return;
     this.#healing.add(match.id);
-    void this.#serialize(match.id, () => this.#roll(match.id))
+    void this.#serialize(match.id, () => this.#roll(match.id, undefined, true))
       .finally(() => this.#healing.delete(match.id));
   }
 
@@ -774,6 +828,30 @@ function judge(
       };
     }
   }
+}
+
+/**
+ * `store` with every call bounded by `ms`: a call that has not settled by
+ * then rejects (its write, if any, may still land later; the next change
+ * reloads the Match, so a late write is picked up as a newer version).
+ */
+function withTimeouts(store: MatchStore, ms: number): MatchStore {
+  const bounded = <T>(what: string, call: () => Promise<T>): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new Error(`MatchStore.${what} did not settle in ${ms} ms`)),
+        ms,
+      );
+    });
+    return Promise.race([call(), timeout]).finally(() => clearTimeout(timer));
+  };
+  return {
+    create: (record) => bounded("create", () => store.create(record)),
+    get: (id) => bounded("get", () => store.get(id)),
+    update: (record) => bounded("update", () => store.update(record)),
+  };
 }
 
 /** The Outcome to record for a Game's verdict: only the known fields. */

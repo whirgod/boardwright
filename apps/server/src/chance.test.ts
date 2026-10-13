@@ -33,7 +33,14 @@ async function expectedRoll(seed: string, n: number, position: string) {
   return diceRace.notation.encodeChance(roll);
 }
 
-function setup(options: { store?: MatchStore; seed?: string } = {}) {
+function setup(
+  options: {
+    store?: MatchStore;
+    seed?: string;
+    now?: () => Date;
+    rollCooldownMs?: number;
+  } = {},
+) {
   const store = options.store ?? new InMemoryMatchStore();
   let ids = 0;
   const master = new GameMaster({
@@ -42,6 +49,8 @@ function setup(options: { store?: MatchStore; seed?: string } = {}) {
     newMatchId: () => `m${++ids}`,
     newSeed: () => options.seed ?? SEED,
     rollRetryDelaysMs: [1, 1],
+    rollCooldownMs: options.rollCooldownMs ?? 0,
+    ...options.now && { now: options.now },
   });
   const events: MatchEvent[] = [];
   master.onMatchChanged((e) => {
@@ -466,4 +475,57 @@ Deno.test("a seedless record of a Game with chance is a server fault", async () 
     Error,
     "no seed",
   );
+});
+
+Deno.test("a permanently failing roll is retried once per cooldown, not per request", async () => {
+  let attempts = 0;
+  const inner = new InMemoryMatchStore();
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: (id) => inner.get(id),
+    update: (r) => {
+      if (r.moves.at(-1)?.kind !== "chance") return inner.update(r);
+      attempts++;
+      return Promise.reject(new Error("store down"));
+    },
+  };
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  const { master } = setup({
+    store,
+    now: () => new Date(clock),
+    rollCooldownMs: 1000,
+  });
+  const { result, errors } = await quietly(async () => {
+    const created = await master.createMatch("dice-race", HUMANS);
+    const { match, tokens } = created;
+    const refuse = () =>
+      assertMatchError(
+        () =>
+          master.apply(match.id, GAME_MASTER, {
+            kind: "forfeit",
+            seat: "a",
+            reason: "timeout",
+          }),
+        "chance-pending",
+      );
+    // One cycle for the opening roll (first try + 2 retries), then quiet.
+    for (let i = 0; i < 5; i++) await master.getMatch(match.id);
+    await refuse(); // also a barrier: queued behind any recovery roll
+    await refuse();
+    await assertMatchError(
+      () =>
+        master.apply(match.id, { token: tokens.a! }, {
+          kind: "move",
+          move: "f",
+        }),
+      "chance-pending",
+    );
+    const bounded = attempts;
+    // After the cooldown, one trigger starts one more cycle.
+    clock += 1001;
+    await refuse();
+    return { bounded, after: attempts };
+  });
+  assertEquals(result, { bounded: 3, after: 6 });
+  assertEquals(errors.length, 6);
 });

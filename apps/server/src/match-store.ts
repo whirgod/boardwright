@@ -47,6 +47,15 @@ export interface MatchRecord {
 /**
  * Where Matches live. The in-memory store is the default; a persistent store
  * implements the same interface (#13) and must pass `assertMatchStoreContract`.
+ *
+ * Liveness: every call must settle (resolve or reject) in bounded time, so
+ * an adapter sets its own timeouts on the database or file it talks to. The
+ * Game master applies the changes of one Match one at a time, so a call that
+ * never settles would block every later change and read of that Match; as a
+ * safety net it gives up on a call after `storeTimeoutMs` (default 10 s) and
+ * treats it as a failure, but cannot cancel it: a timed-out `update` may
+ * still commit later, which the next change sees as a newer version.
+ * Calls must not call back into the Game master.
  */
 export interface MatchStore {
   /** Store a new Match. Throws if a Match with the same id exists. */
