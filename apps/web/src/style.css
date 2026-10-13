@@ -170,6 +170,31 @@ svg.board .king-mark {
   stroke-width: 6;
 }
 
+svg.board .glyph {
+  font-size: 82px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  stroke-width: 3;
+  paint-order: stroke;
+  pointer-events: none;
+}
+
+svg.board .glyph-white {
+  fill: var(--disc-white);
+  stroke: var(--disc-black);
+}
+
+svg.board .glyph-black {
+  fill: var(--disc-black);
+  stroke: var(--disc-white);
+}
+
+svg.board .coord {
+  fill: var(--fg);
+  font-size: 14px;
+  opacity: 0.7;
+}
+
 svg.board .caption {
   fill: var(--fg);
   font-size: 24px;

@@ -45,3 +45,7 @@ Each composes `engines/minimax` with a heuristic evaluation (from the Seat to mo
   opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked".
 - `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
   guards and central squares.
+- `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
+  Michniewski's Simplified Evaluation Function (cited in the source), with the king table
+  switching to an endgame table. The library has no move-ordering hook yet, so search is plain
+  alpha-beta; use `maxDepth` (3-4) or `maxTimeMs`.

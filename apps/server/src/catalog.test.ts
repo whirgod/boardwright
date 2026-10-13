@@ -104,8 +104,7 @@ Deno.test("the hosted catalog is valid and hosts the four Games", async () => {
     "checkers",
     "chess",
   ]);
-  assertEquals(engines.list("chess"), []);
-  for (const id of ["tic-tac-toe", "nine-mens-morris", "checkers"]) {
+  for (const id of ["tic-tac-toe", "nine-mens-morris", "checkers", "chess"]) {
     assertEquals(engines.list(id).map((e) => e.id), ["minimax"]);
   }
 });
