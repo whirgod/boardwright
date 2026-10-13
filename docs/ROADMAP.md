@@ -13,6 +13,7 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Server Match lifecycle for humans: create, play by seat token, referee (#6)
 - [x] Game nine men's morris (`games/nine-mens-morris`) (#3)
 - [x] Generic alpha-beta Engine library `@boardwright/engine-minimax` (#5)
+- [x] Game checkers (English draughts), `@boardwright/game-checkers` (#4)
 
 ## Next
 
