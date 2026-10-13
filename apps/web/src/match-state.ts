@@ -1,5 +1,6 @@
 // DOM-free view logic of the Match page.
 import type { Seat } from "@boardwright/core";
+import type { Overlay } from "./analysis-view.ts";
 import type { MatchView, MoveListEntry, PlayerSpec } from "./api.ts";
 import { describeOutcome, type OutcomeText } from "./outcome.ts";
 import type { BoardRequest, Selection } from "./renderers/mod.ts";
@@ -35,18 +36,39 @@ export function matchStatus(
   return { kind: "waiting", seat, player: match.seats[seat] };
 }
 
-/** What the board shows; legal Moves only when this browser may play. */
+/** A Position reviewed instead of the current one. */
+export interface ShownPosition {
+  /** Move list entries played to reach it. */
+  readonly ply: number;
+  /** It in Notation (rebuilt by replaying the Move list). */
+  readonly position: string;
+}
+
+/**
+ * What the board shows: the current Position, or `shown` (an earlier one,
+ * read-only); legal Moves only at the current Position when this browser may
+ * play. `overlay` adds Analysis arrows.
+ */
 export function boardRequest(
   match: MatchView,
   status: MatchStatus,
   selection: Selection,
+  shown?: ShownPosition,
+  overlay?: Overlay,
 ): BoardRequest {
+  const current = shown === undefined || shown.ply >= match.moves.length;
   return {
-    position: match.position,
+    position: current ? match.position : shown.position,
     // Renderers replay Moves only; Games with chance need their own handling.
-    moves: movesOnly(match.moves),
-    legalMoves: status.kind === "your-move" ? match.legalMoves : [],
-    selection,
+    moves: movesOnly(current ? match.moves : match.moves.slice(0, shown.ply)),
+    legalMoves: current && status.kind === "your-move" ? match.legalMoves : [],
+    selection: current ? selection : [],
+    ...(overlay
+      ? {
+        arrows: overlay.arrows,
+        ...(overlay.preview ? { preview: overlay.preview } : {}),
+      }
+      : {}),
   };
 }
 
@@ -60,6 +82,8 @@ export interface MoveListRow {
   readonly number: number;
   /** Up to two Moves, each with the Chance events right before it. */
   readonly entries: readonly MoveListEntry[];
+  /** Index of the row's first entry in the Move list (reviewing entry `i` shows ply `i + 1`). */
+  readonly first: number;
 }
 
 /**
@@ -69,17 +93,21 @@ export interface MoveListRow {
 export function moveListRows(entries: readonly MoveListEntry[]): MoveListRow[] {
   const rows: MoveListRow[] = [];
   let row: MoveListEntry[] = [];
+  let first = 0;
   let moves = 0;
-  for (const entry of entries) {
+  for (const [i, entry] of entries.entries()) {
     if (moves === 2) {
-      rows.push({ number: rows.length + 1, entries: row });
+      rows.push({ number: rows.length + 1, entries: row, first });
       row = [];
+      first = i;
       moves = 0;
     }
     row.push(entry);
     if (entry.kind === "move") moves++;
   }
-  if (row.length > 0) rows.push({ number: rows.length + 1, entries: row });
+  if (row.length > 0) {
+    rows.push({ number: rows.length + 1, entries: row, first });
+  }
   return rows;
 }
 
@@ -125,6 +153,21 @@ export function playerLabel(
   if (!player) return "Unknown";
   if (player.kind === "human") return "Human";
   return `Engine: ${engineNames.get(player.engineId) ?? player.engineId}`;
+}
+
+/**
+ * Whether Engine analysis runs: the viewer's choice (`override`) if made;
+ * otherwise off while this browser plays a Seat of a running Match (no help
+ * during play), on for Spectators and finished Matches.
+ */
+export function analysisWanted(
+  match: MatchView | null,
+  playing: Readonly<Record<Seat, string>>,
+  override: boolean | undefined,
+): boolean {
+  if (override !== undefined) return override;
+  return (match !== null && match.outcome !== null) ||
+    Object.keys(playing).length === 0;
 }
 
 /** A Seat assignment from the new Match form: `"human"` or an Engine id. */

@@ -27,8 +27,14 @@ export interface BoardRequest {
   /** Moves the Seat to move may play; empty when this client may not move. */
   readonly legalMoves: readonly string[];
   readonly selection: Selection;
-  /** Moves from `position` to draw as arrows, e.g. the first Moves of Analysis Lines. */
-  readonly arrows?: readonly string[];
+  /** Moves from `position` to draw as arrows, e.g. the first Moves of Analysis Lines, best first; `null` keeps a rank without an arrow. */
+  readonly arrows?: readonly (string | null)[];
+  /**
+   * A Line from `position` to draw Move by Move (numbered arrows), e.g. a
+   * previewed Analysis Line. Drawing stops at a Move that does not decode or
+   * apply.
+   */
+  readonly preview?: readonly string[];
 }
 
 export interface BoardModel {
@@ -80,6 +86,40 @@ export function bindRenderer<Position, Move>(
     return clickOrder(renderer.moveTargets(move, position));
   };
 
+  const arrowOf = (
+    move: Move,
+    position: Position,
+    kind: Arrow["kind"],
+    index: number,
+  ): Arrow | undefined => {
+    const { path } = renderer.moveTargets(move, position);
+    const from = path[0];
+    const to = path[path.length - 1];
+    return from === undefined || to === undefined
+      ? undefined
+      : { from, to, kind, index };
+  };
+
+  /** A Line's Moves as numbered arrows, each from the Position the Moves before it lead to. */
+  const previewArrows = (
+    texts: readonly string[],
+    start: Position,
+  ): Arrow[] => {
+    const arrows: Arrow[] = [];
+    let position = start;
+    try {
+      for (const [index, text] of texts.entries()) {
+        const move = notation.decodeMove(text, position);
+        const arrow = arrowOf(move, position, "preview", index);
+        if (arrow) arrows.push(arrow);
+        position = rules.play(position, move);
+      }
+    } catch {
+      // A stale or out-of-sync Line: draw the Moves that applied.
+    }
+    return arrows;
+  };
+
   /** The last Move's highlights, found by replaying the Move list; none if it does not replay. */
   const lastMove = (moves: readonly string[]): Highlight[] => {
     if (moves.length === 0) return [];
@@ -126,14 +166,12 @@ export function bindRenderer<Position, Move>(
         }
       }
       const arrows: Arrow[] = [];
-      for (const move of decodeMoves(request.arrows ?? [], position)) {
-        const { path } = renderer.moveTargets(move, position);
-        const from = path[0];
-        const to = path[path.length - 1];
-        if (from !== undefined && to !== undefined) {
-          arrows.push({ from, to, kind: "line" });
-        }
+      for (const [index, text] of (request.arrows ?? []).entries()) {
+        const [move] = text === null ? [] : decodeMoves([text], position);
+        const arrow = move && arrowOf(move, position, "line", index);
+        if (arrow) arrows.push(arrow);
       }
+      arrows.push(...previewArrows(request.preview ?? [], position));
       return { scene: renderer.scene(position), highlights, arrows };
     },
     click(request, target) {

@@ -98,27 +98,37 @@ export function Board(
         const to = targets.get(a.to);
         if (!from || !to) return null;
         const [p, q] = [center(from), center(to)];
-        return a.from === a.to
-          ? (
-            <circle
-              key={`a${i}`}
-              class="arrow"
-              cx={p.x}
-              cy={p.y}
-              r={from.width / 3}
-            />
-          )
-          : (
-            <line
-              key={`a${i}`}
-              class="arrow"
-              x1={p.x}
-              y1={p.y}
-              x2={q.x}
-              y2={q.y}
-              marker-end="url(#arrow-head)"
-            />
-          );
+        // Line arrows: the best Line strongest. Preview arrows: numbered
+        // steps, alternating between the two Seats.
+        const className = a.kind === "line"
+          ? `arrow ${a.index === 0 ? "arrow-best" : "arrow-alt"}`
+          : `arrow arrow-preview arrow-step-${a.index % 2 === 0 ? "a" : "b"}`;
+        return (
+          <g key={`a${i}`}>
+            {a.from === a.to
+              ? (
+                <circle
+                  class={className}
+                  cx={p.x}
+                  cy={p.y}
+                  r={from.width / 3}
+                />
+              )
+              : (
+                <line
+                  class={className}
+                  x1={p.x}
+                  y1={p.y}
+                  x2={q.x}
+                  y2={q.y}
+                  marker-end="url(#arrow-head)"
+                />
+              )}
+            {a.kind === "preview" && (
+              <text class="arrow-label" x={q.x} y={q.y}>{a.index + 1}</text>
+            )}
+          </g>
+        );
       })}
       {scene.targets.map((t) => (
         <rect

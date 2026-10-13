@@ -4,6 +4,7 @@ import { render } from "preact";
 import { ApiClient } from "./api.ts";
 import { App } from "./app.tsx";
 import { SeatTokens } from "./seat-tokens.ts";
+import { webSocketConnect } from "./socket.ts";
 
 function localStorageOrUndefined(): Storage | undefined {
   try {
@@ -16,6 +17,7 @@ function localStorageOrUndefined(): Storage | undefined {
 render(
   <App
     api={new ApiClient()}
+    connect={webSocketConnect(location)}
     tokens={new SeatTokens(localStorageOrUndefined())}
   />,
   document.getElementById("app")!,

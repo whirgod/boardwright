@@ -6,6 +6,7 @@ import { MatchPage } from "./pages/match.tsx";
 import { NewMatchPage } from "./pages/new-match.tsx";
 import { parseRoute, type Route, routeHash } from "./route.ts";
 import type { SeatTokens } from "./seat-tokens.ts";
+import type { Connect } from "./socket.ts";
 
 function useRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
@@ -29,7 +30,13 @@ function PageGuard({ children }: { children: ComponentChildren }) {
   );
 }
 
-export function App({ api, tokens }: { api: ApiClient; tokens: SeatTokens }) {
+export function App(
+  { api, connect, tokens }: {
+    api: ApiClient;
+    connect: Connect;
+    tokens: SeatTokens;
+  },
+) {
   const route = useRoute();
   return (
     <>
@@ -46,6 +53,7 @@ export function App({ api, tokens }: { api: ApiClient; tokens: SeatTokens }) {
             <MatchPage
               key={route.matchId}
               api={api}
+              connect={connect}
               tokens={tokens}
               matchId={route.matchId}
               invite={route.invite}

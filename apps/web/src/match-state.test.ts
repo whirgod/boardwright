@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import type { MatchView, MoveListEntry } from "./api.ts";
 import {
+  analysisWanted,
   boardRequest,
   invites,
   matchStatus,
@@ -78,6 +79,54 @@ Deno.test("boardRequest: legal Moves only on your Move", () => {
   );
 });
 
+Deno.test("boardRequest: an earlier Position is read-only and highlights its own last Move", () => {
+  const mine = { ...MATCH, moves: [mv("a1"), mv("b2")], toMove: "x" };
+  const status = matchStatus(mine, { x: "t" });
+  assertEquals(
+    boardRequest(mine, status, ["a"], { ply: 1, position: "x........:o" }),
+    {
+      position: "x........:o",
+      moves: ["a1"],
+      legalMoves: [],
+      selection: [],
+    },
+  );
+  // The last ply is the current Position again, playable.
+  const current = boardRequest(mine, status, ["a"], { ply: 2, position: "?" });
+  assertEquals(current.position, mine.position);
+  assertEquals(current.legalMoves, mine.legalMoves);
+  assertEquals(current.selection, ["a"]);
+});
+
+Deno.test("boardRequest: Analysis arrows and a previewed Line pass through", () => {
+  const status = matchStatus(MATCH, {});
+  assertEquals(
+    boardRequest(MATCH, status, [], undefined, { arrows: ["b2", "c3"] })
+      .arrows,
+    ["b2", "c3"],
+  );
+  const previewed = boardRequest(MATCH, status, [], undefined, {
+    arrows: [],
+    preview: ["b2", "c3"],
+  });
+  assertEquals(previewed.arrows, []);
+  assertEquals(previewed.preview, ["b2", "c3"]);
+  assertEquals("arrows" in boardRequest(MATCH, status, []), false);
+});
+
+Deno.test("analysisWanted: off while playing a running Match, on otherwise, unless overridden", () => {
+  const finished = {
+    ...MATCH,
+    outcome: { kind: "rules", winner: "x", reason: "three-in-a-row" } as const,
+  };
+  assertEquals(analysisWanted(MATCH, { x: "t" }, undefined), false);
+  assertEquals(analysisWanted(MATCH, {}, undefined), true); // Spectator
+  assertEquals(analysisWanted(finished, { x: "t" }, undefined), true);
+  assertEquals(analysisWanted(null, { x: "t" }, undefined), false);
+  assertEquals(analysisWanted(MATCH, { x: "t" }, true), true);
+  assertEquals(analysisWanted(finished, {}, false), false);
+});
+
 Deno.test("invites: hand over one of several human Seats before the first Move", () => {
   const fresh: MatchView = {
     ...MATCH,
@@ -135,8 +184,8 @@ Deno.test("matchStatus: a handed-over Seat is not played here", () => {
 Deno.test("moveListRows: pairs Moves under 1-based Move numbers", () => {
   assertEquals(moveListRows([]), []);
   assertEquals(moveListRows([mv("a1"), mv("b2"), mv("c3")]), [
-    { number: 1, entries: [mv("a1"), mv("b2")] },
-    { number: 2, entries: [mv("c3")] },
+    { number: 1, entries: [mv("a1"), mv("b2")], first: 0 },
+    { number: 2, entries: [mv("c3")], first: 2 },
   ]);
 });
 
@@ -144,8 +193,12 @@ Deno.test("moveListRows: a Chance event goes with the Move after it", () => {
   assertEquals(
     moveListRows([roll("3"), mv("f"), roll("1"), mv("1"), roll("2")]),
     [
-      { number: 1, entries: [roll("3"), mv("f"), roll("1"), mv("1")] },
-      { number: 2, entries: [roll("2")] },
+      {
+        number: 1,
+        entries: [roll("3"), mv("f"), roll("1"), mv("1")],
+        first: 0,
+      },
+      { number: 2, entries: [roll("2")], first: 4 },
     ],
   );
 });

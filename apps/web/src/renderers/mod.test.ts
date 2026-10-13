@@ -142,8 +142,54 @@ Deno.test("board: a selection highlights itself and the legal destinations", () 
 Deno.test("board: arrows run from a Move's first to its last target", () => {
   const model = view.board(request({ arrows: ["a-c", "b-c"] }));
   assertEquals(model.arrows, [
-    { from: "a", to: "c", kind: "line" },
-    { from: "b", to: "c", kind: "line" },
+    { from: "a", to: "c", kind: "line", index: 0 },
+    { from: "b", to: "c", kind: "line", index: 1 },
+  ]);
+});
+
+Deno.test("board: a previewed Line is drawn Move by Move from the Positions it reaches", () => {
+  seen.length = 0;
+  const model = view.board(request({ preview: ["b-c", "b-a+c"] }));
+  // Each Move decodes in the Position the earlier ones lead to.
+  assertEquals(model.arrows, [
+    { from: "b", to: "c", kind: "preview", index: 0 },
+    { from: "b", to: "a", kind: "preview", index: 1 },
+  ]);
+  // Line arrows and the preview can be drawn together.
+  assertEquals(
+    view.board(request({ arrows: ["a-c"], preview: ["b-c"] })).arrows,
+    [
+      { from: "a", to: "c", kind: "line", index: 0 },
+      { from: "b", to: "c", kind: "preview", index: 0 },
+    ],
+  );
+});
+
+Deno.test("board: a null arrow keeps the ranks of the later ones", () => {
+  assertEquals(view.board(request({ arrows: [null, "a-c"] })).arrows, [
+    { from: "a", to: "c", kind: "line", index: 1 },
+  ]);
+});
+
+Deno.test("board: a preview stops at the first Move that does not decode", () => {
+  const model = view.board(request({ preview: ["a-b", "zz", "b-c"] }));
+  assertEquals(model.arrows, [
+    { from: "a", to: "b", kind: "preview", index: 0 },
+  ]);
+});
+
+Deno.test("board: chess previews decode each Move in its own Position", () => {
+  const board = gameView("chess")!.board({
+    position: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    moves: [],
+    legalMoves: [],
+    selection: [],
+    preview: ["e2e4", "e7e5", "g1f3"],
+  });
+  assertEquals(board.arrows.map((a) => [a.from, a.to, a.index]), [
+    ["e2", "e4", 0],
+    ["e7", "e5", 1],
+    ["g1", "f3", 2],
   ]);
 });
 
@@ -156,7 +202,12 @@ Deno.test("board: tic-tac-toe placements become single-target arrows", () => {
     selection: [],
     arrows: ["b2"],
   });
-  assertEquals(model.arrows, [{ from: "b2", to: "b2", kind: "line" }]);
+  assertEquals(model.arrows, [{
+    from: "b2",
+    to: "b2",
+    kind: "line",
+    index: 0,
+  }]);
   assertEquals(model.highlights, [{ target: "a1", kind: "last-move" }]);
 });
 
@@ -196,7 +247,7 @@ Deno.test("compound Move: path drives arrows and highlights, effects are clicked
   });
   // The arrow runs along the path only, not to the removed piece.
   assertEquals(view.board(request({ arrows: ["b-a+c"] })).arrows, [
-    { from: "b", to: "a", kind: "line" },
+    { from: "b", to: "a", kind: "line", index: 0 },
   ]);
   // As the last Move, the removed point is marked as an effect.
   assertEquals(view.board(request({ moves: ["a-b", "b-a+c"] })).highlights, [
@@ -209,7 +260,7 @@ Deno.test("compound Move: path drives arrows and highlights, effects are clicked
 Deno.test("board and click skip Moves that do not decode instead of throwing", () => {
   const stale = request({ legalMoves: ["zz", "a-b"], arrows: ["zz", "a-c"] });
   const model = view.board(stale);
-  assertEquals(model.arrows, [{ from: "a", to: "c", kind: "line" }]);
+  assertEquals(model.arrows, [{ from: "a", to: "c", kind: "line", index: 1 }]);
   assertEquals(view.click(stale, "a"), { kind: "select", selection: ["a"] });
   assertEquals(view.click({ ...stale, selection: ["a"] }, "c"), {
     kind: "select",
