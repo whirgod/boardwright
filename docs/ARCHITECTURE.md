@@ -10,7 +10,9 @@ apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the we
 apps/web          (planned) Browser UI: board rendering, play, review, analysis overlay
 packages/testing  Contract test kit every Game runs (assertGameRulesContract)
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
-engines/<name>    (planned) One package per Engine implementing Engine, e.g. engines/chess-minimax
+engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
+engines/<game>-<name>  (planned) One package per Engine implementing Engine for one Game, e.g.
+                  engines/chess-minimax = engines/minimax + a chess evaluation
 ```
 
 Each member has a `deno.json` with `name`/`version`/`exports`. Package names: `@boardwright/<dir>` (e.g. `@boardwright/core`, `@boardwright/game-chess`,
@@ -27,7 +29,10 @@ core  <-  games/*  <-  engines/*
 - `core` depends on nothing.
 - `testing` depends only on `core` (+ `@std/assert`); only Games' tests import it.
 - A Game depends only on `core`. It is pure: no I/O, no randomness except via inputs.
-- An Engine depends on `core` and on the Game it plays (to generate moves while searching).
+- An Engine library (`engines/<algorithm>`) depends only on `core`; it searches any Game
+  through the `GameRules` it is given.
+- An Engine (`engines/<game>-<name>`) depends on `core`, on the Game it plays (to generate
+  moves while searching) and usually on an Engine library it composes with an evaluation.
 - The server composes Games and Engines; Games and Engines never import the server.
 
 ## Key ideas

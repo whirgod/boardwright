@@ -44,6 +44,10 @@ _Avoid_: Format, serialization
 An AI that can choose Moves and analyze Positions for one Game.
 _Avoid_: Bot, AI, solver
 
+**Engine library**:
+A Game-agnostic search algorithm (e.g. minimax) that becomes an Engine once given a Game's rules and an evaluation.
+_Avoid_: Engine (for the library itself), framework
+
 **Analysis**:
 An Engine's assessment of a Position: one or more Lines, best first.
 _Avoid_: Evaluation (that is the Score)

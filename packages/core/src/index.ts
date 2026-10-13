@@ -61,9 +61,11 @@ export interface Analysis<Move> {
 }
 
 export interface SearchLimits {
+  /** Integer >= 1. */
   readonly maxDepth?: number;
+  /** Milliseconds, >= 0. */
   readonly maxTimeMs?: number;
-  /** Number of Lines to report (multi-PV). Defaults to 1. */
+  /** Number of Lines to report (multi-PV), integer >= 1. Defaults to 1. */
   readonly lines?: number;
 }
 
@@ -71,7 +73,16 @@ export interface SearchLimits {
 export interface Engine<Position, Move> {
   readonly name: string;
   readonly gameId: GameId;
-  /** Streams progressively deeper Analysis until limits are hit or `signal` aborts. */
+  /**
+   * Streams progressively deeper Analysis until limits are hit or `signal`
+   * aborts. Every Engine guarantees:
+   * - At least one Analysis is yielded unless `signal` aborts before the
+   *   first one completes (`maxTimeMs` alone never yields nothing).
+   * - Only completed depths are yielded; an interrupted one is discarded.
+   * - A terminal `position` yields exactly one `{ depth: 0, lines: [] }`.
+   * - Invalid `limits` throw a `RangeError` synchronously from `analyze`.
+   * - `maxTimeMs` counts from the start of iteration (first `next()`).
+   */
   analyze(
     position: Position,
     limits: SearchLimits,
