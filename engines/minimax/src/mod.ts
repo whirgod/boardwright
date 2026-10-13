@@ -49,6 +49,8 @@ interface Result<Move> {
   readonly pv: readonly Move[];
 }
 
+const NO_MOVES: readonly never[] = Object.freeze([]);
+
 /** Yields `undefined` every few nodes so the driver can pause or stop. */
 type Search<T> = Generator<undefined, T, undefined>;
 
@@ -61,8 +63,10 @@ class Stopped extends Error {}
  * `analyze` yields one Analysis per completed depth, starting at 1:
  * - `maxDepth` caps the depth; without it the search deepens until the tree
  *   is solved (no horizon was hit), `maxTimeMs` elapses or `signal` aborts.
- * - `maxTimeMs` never interrupts depth 1, so a time-limited search always
- *   yields at least one Analysis. Aborting `signal` stops immediately.
+ * - `maxTimeMs` counts from the start of iteration (the first `next()`, as
+ *   async generators are lazy), not from the `analyze` call. It never
+ *   interrupts depth 1, so a time-limited search always yields at least one
+ *   Analysis. Aborting `signal` stops immediately.
  * - A depth interrupted by time or abort is discarded, never yielded.
  * - `lines` (multi-PV) reports the best n root Moves, best first, each with
  *   its own principal variation.
@@ -154,7 +158,9 @@ async function* analyze<Position, Move>(
 
   /**
    * Scores Move `move` in `position` (where `seat` is to move) from `seat`'s
-   * perspective, searching `depthLeft` more plies below the child.
+   * perspective, searching `depthLeft` more plies below the child. The PV is
+   * the child's continuation, without `move`; callers prepend `move` only to
+   * results they keep, so discarded nodes allocate nothing.
    */
   function* child(
     position: Position,
@@ -168,14 +174,13 @@ async function* analyze<Position, Move>(
     if (++nodes % NODES_PER_TICK === 0) yield;
     const next = rules.play(position, move);
     const leaf = leafScore(next, seat, depthLeft, ply + 1);
-    if (leaf !== undefined) return { score: leaf, pv: [move] };
+    if (leaf !== undefined) return { score: leaf, pv: NO_MOVES };
     const nextSeat = rules.toMove(next)!;
     if (nextSeat === seat) {
-      const r = yield* negamax(next, nextSeat, depthLeft, ply + 1, alpha, beta);
-      return { score: r.score, pv: [move, ...r.pv] };
+      return yield* negamax(next, nextSeat, depthLeft, ply + 1, alpha, beta);
     }
     const r = yield* negamax(next, nextSeat, depthLeft, ply + 1, -beta, -alpha);
-    return { score: -r.score, pv: [move, ...r.pv] };
+    return { score: -r.score, pv: r.pv };
   }
 
   /** Fail-soft negamax over a non-terminal `position`; `depth` >= 1. */
@@ -187,11 +192,11 @@ async function* analyze<Position, Move>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
-    let best: Result<Move> = { score: -Infinity, pv: [] };
+    let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
     for (const move of rules.legalMoves(position)) {
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {
-        best = r;
+        best = { score: r.score, pv: [move, ...r.pv] };
         if (r.score > alpha) {
           alpha = r.score;
           if (alpha >= beta) break;
@@ -224,10 +229,11 @@ async function* analyze<Position, Move>(
         // Insert after equal scores so earlier (better-ordered) Moves win ties.
         let i = top.length;
         while (i > 0 && top[i - 1]!.score < r.score) i--;
-        top.splice(i, 0, r);
+        top.splice(i, 0, { score: r.score, pv: [move, ...r.pv] });
         if (top.length > wanted) rest.push(top.pop()!);
       } else {
-        rest.push(r);
+        // An upper bound; only kept to order the next depth.
+        rest.push({ score: r.score, pv: [move] });
       }
     }
     rest.sort((a, b) => b.score - a.score);
@@ -284,5 +290,5 @@ function terminalScore(outcome: Outcome, seat: Seat, ply: number): number {
 function toScore(score: number): Score {
   if (score > MATE_BOUND) return { kind: "win-in", plies: MATE - score };
   if (score < -MATE_BOUND) return { kind: "loss-in", plies: MATE + score };
-  return { kind: "value", value: score };
+  return { kind: "value", value: score || 0 }; // normalise -0
 }

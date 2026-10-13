@@ -85,6 +85,12 @@ function referenceMove(p: TicTacToePosition, m: TicTacToeMove): number {
   return r === 0 ? 0 : r > 0 ? -r + 1 : -r - 1;
 }
 
+Deno.test("neutral Scores are +0, never -0", async () => {
+  const a = await final(engine, ttt.initialPosition(), { maxDepth: 1 });
+  const score = a.lines[0]!.score;
+  assert(score.kind === "value" && Object.is(score.value, 0));
+});
+
 Deno.test("engine identity", () => {
   assertEquals(engine.name, "minimax");
   assertEquals(engine.gameId, "tic-tac-toe");
@@ -144,8 +150,8 @@ Deno.test("Score kinds and ply counts in won and lost positions", async () => {
   assertEquals(w.lines[0]!.moves.length, 3);
 });
 
-Deno.test("matches an exhaustive reference on sampled positions", async () => {
-  // Collect all reachable non-terminal Positions, deterministically sampled.
+/** All reachable non-terminal Positions, deterministically sampled. */
+function samplePositions(): TicTacToePosition[] {
   const seen = new Map<string, TicTacToePosition>();
   const stack = [ttt.initialPosition()];
   while (stack.length) {
@@ -157,6 +163,102 @@ Deno.test("matches an exhaustive reference on sampled positions", async () => {
   }
   const sample = [...seen.values()].filter((_, i) => i % 97 === 0);
   assert(sample.length > 30);
+  return sample;
+}
+
+/**
+ * Multi-PV with fewer Lines than legal Moves: every reported Line must carry
+ * the exact Score of its root Move, and the Lines must be the best ones.
+ */
+async function assertExactMultiPv<P, M>(
+  e: Engine<P, M>,
+  position: P,
+  limits: SearchLimits,
+  moves: readonly M[],
+  exact: (move: M) => number,
+  label: string,
+) {
+  const best = moves.map(exact).sort((a, b) => b - a);
+  for (let k = 1; k < moves.length; k++) {
+    const a = await final(e, position, { ...limits, lines: k });
+    assertEquals(a.lines.length, k, label);
+    a.lines.forEach((line, i) => {
+      const value = rank(line.score);
+      assertEquals(value, exact(line.moves[0]!), `${label} lines=${k} #${i}`);
+      assertEquals(value, best[i], `${label} lines=${k} #${i} not i-th best`);
+    });
+  }
+}
+
+Deno.test("multi-PV Lines below the first are exact (solved)", async () => {
+  for (const p of samplePositions()) {
+    const moves = ttt.legalMoves(p);
+    await assertExactMultiPv(
+      engine,
+      p,
+      {},
+      moves,
+      (m) => referenceMove(p, m),
+      ttt.notation.encodePosition(p),
+    );
+  }
+});
+
+/** Endless Game with 5 Moves per Position, for depth-limited searches. */
+const wide: GameRules<readonly number[], number> = {
+  id: "wide",
+  name: "Wide",
+  seats: ["a", "b"],
+  initialPosition: () => [],
+  toMove: (p) => (p.length % 2 === 0 ? "a" : "b"),
+  legalMoves: () => [0, 1, 2, 3, 4],
+  play: (p, m) => [...p, m],
+  outcome: () => undefined,
+  notation: {
+    encodePosition: (p) => p.join(""),
+    decodePosition: (t) => [...t].map(Number),
+    encodeMove: String,
+    decodeMove: Number,
+  },
+};
+
+/** Pseudo-random value of a Position for its Seat to move (FNV-1a hash). */
+function hashValue(p: readonly number[]): number {
+  let h = 2166136261;
+  for (const m of p) h = Math.imul(h ^ (m + 1), 16777619);
+  return ((h >>> 0) % 2001) - 1000;
+}
+
+/** Depth-limited negamax without pruning: value of `p` for its Seat to move. */
+function wideReference(p: readonly number[], depth: number): number {
+  if (depth === 0) return hashValue(p);
+  return Math.max(
+    ...wide.legalMoves(p).map((m) => -wideReference([...p, m], depth - 1)),
+  );
+}
+
+Deno.test("multi-PV Lines below the first are exact (depth-limited)", async () => {
+  const e = createMinimaxEngine({
+    rules: wide,
+    name: "w",
+    evaluate: hashValue,
+  });
+  for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
+    for (const maxDepth of [1, 2, 3, 4]) {
+      await assertExactMultiPv(
+        e,
+        root,
+        { maxDepth },
+        wide.legalMoves(root),
+        (m) => -wideReference([...root, m], maxDepth - 1),
+        `${root.join("")} depth=${maxDepth}`,
+      );
+    }
+  }
+});
+
+Deno.test("matches an exhaustive reference on sampled positions", async () => {
+  const sample = samplePositions();
   for (const p of sample) {
     const key = ttt.notation.encodePosition(p);
     const moves = ttt.legalMoves(p);
@@ -322,7 +424,9 @@ const endless: GameRules<readonly number[], number> = {
 const endlessEngine = createMinimaxEngine({
   rules: endless,
   name: "endless",
-  evaluate: (p) => p.reduce((s, m, i) => s + (i % 2 ? -m : m), 0),
+  // From the perspective of the Seat to move, as `evaluate` requires.
+  evaluate: (p) =>
+    p.reduce((s, m, i) => s + (i % 2 ? -m : m), 0) * (p.length % 2 ? -1 : 1),
 });
 
 function assertComplete(all: Analysis<number>[]) {
