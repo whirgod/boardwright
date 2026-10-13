@@ -58,6 +58,10 @@ _Avoid_: Eval, rating
 
 ### Hosting
 
+**Seat token**:
+A secret handed out when a Match is created that lets its holder play the Moves of one Seat.
+_Avoid_: Password, session, API key
+
 **Game master**:
 The server's role as referee: it owns every Match's Position and accepts only legal Moves.
 _Avoid_: Arbiter, controller

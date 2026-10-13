@@ -1,8 +1,9 @@
+import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { buildApp } from "./app.ts";
 
 const port = Number(Deno.env.get("PORT") ?? 3000);
 const hostname = Deno.env.get("HOST") ?? "127.0.0.1";
 
-const app = buildApp({ games: [] });
+const app = buildApp({ games: [ticTacToe] });
 
 Deno.serve({ port, hostname }, app.fetch);
