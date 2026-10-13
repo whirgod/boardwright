@@ -178,6 +178,9 @@ Implemented (JSON; Positions and Moves are Notation strings):
   are `null` when absent; `outcome` is an `Outcome` with a `kind`: `rules`, `resignation` or
   `forfeit`; `version` counts changes, matching Match events). Never contains tokens.
 - `POST /api/matches/:id/moves` `{ move, token }` → updated `MatchView`.
+- `POST /api/matches/:id/resign` `{ token }` → updated `MatchView` with a Resignation Outcome
+  (the Opponent wins). Allowed at any time, not only on the Seat's turn; Engine Seats have no
+  token, so they cannot be resigned over HTTP.
 
 Errors always have the body `{ "error": { "code", "message" } }`:
 
