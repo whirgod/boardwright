@@ -12,15 +12,16 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 
 ## Next
 
-1. **First Game end-to-end** — nine men's morris (small, no chance, non-trivial phases) in
-   `games/nine-mens-morris`. Validates the `GameRules` contract; adjust `core` as needed.
-2. **First Engine** — generic minimax/alpha-beta over `GameRules` (with a per-Game
-   evaluation function), streaming `Analysis` with multi-PV.
-3. **Match lifecycle in the server** — create Match, seat humans/Engines, submit Moves,
-   referee, Outcome; in-memory store.
-4. **Live updates** — WebSocket stream for Moves and Analysis.
-5. **Web UI (`apps/web`)** — board rendering, play vs human/Engine, review with move list,
-   analysis overlay (evaluation + best Lines as arrows/highlights). Served by the server.
-6. **More Games** — checkers, chess, backgammon (resolve the chance question first).
-7. **Persistence** — store Matches for later review.
-8. **External Engine protocol** — let Engines run out-of-process / in other languages.
+Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
+
+0. **Foundation** — reference Game tic-tac-toe + `GameRules` contract test kit (#2).
+1. **First Games, Engine library, Match lifecycle** — nine men's morris (#3), checkers (#4),
+   generic alpha-beta Engine library (#5), server Match lifecycle for humans (#6).
+2. **Engines in play** — Engine Players in Matches, run in Web Workers (#7); morris and checkers
+   Engines (#8).
+3. **Live + UI** — WebSocket Match/Analysis streams (#9); web UI foundation served by the
+   server (#10).
+4. **Full experience + more Games** — morris/checkers renderers (#11), review mode and analysis
+   overlay (#12), persistence (#13), chess rules (#14), backgammon rules + chance model (#15).
+5. **Later** — chess Engine + renderer (#16), backgammon Engine + renderer (#17), external
+   Engine protocol (#18).
