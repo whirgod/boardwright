@@ -10,6 +10,8 @@ export interface ContractOptions {
   readonly maxPlies?: number;
   /** Extra strings that `decodePosition` / `decodeMove` must reject. */
   readonly garbage?: readonly string[];
+  /** Check that `play` throws on Moves that are not legal. Default true. */
+  readonly checkIllegalMoves?: boolean;
 }
 
 const DEFAULT_GARBAGE = [
@@ -49,7 +51,10 @@ export function assertGameRulesContract<Position, Move>(
   const playouts = options.playouts ?? 200;
   const maxPlies = options.maxPlies ?? 1000;
   const garbage = [...DEFAULT_GARBAGE, ...(options.garbage ?? [])];
+  const checkIllegal = options.checkIllegalMoves ?? true;
   const rand = seededRandom(seed);
+  // Encoded Moves seen anywhere; used as candidates for illegal-Move checks.
+  const movePool = new Set<string>();
   const n = rules.notation;
   const label = `[contract ${rules.id} seed=${seed}]`;
   const fail = (msg: string): never => {
@@ -91,6 +96,42 @@ export function assertGameRulesContract<Position, Move>(
         const seat = rules.toMove(position);
         const outcome = rules.outcome(position);
         const legal = rules.legalMoves(position);
+        // Pure queries: repeated calls agree.
+        assertEquals(rules.toMove(position), seat, "toMove is not stable");
+        assertEquals(
+          JSON.stringify(rules.outcome(position)),
+          JSON.stringify(outcome),
+          "outcome is not stable",
+        );
+        assertEquals(
+          rules.legalMoves(position).map((m) => n.encodeMove(m)),
+          legal.map((m) => n.encodeMove(m)),
+          "legalMoves is not stable",
+        );
+        if (checkIllegal) {
+          const legalSet = new Set(legal.map((m) => n.encodeMove(m)));
+          for (const text of movePool) {
+            if (legalSet.has(text)) continue;
+            let candidate: Move;
+            try {
+              candidate = n.decodeMove(text, position);
+            } catch {
+              continue; // not even decodable in this Position
+            }
+            if (legalSet.has(n.encodeMove(candidate))) continue;
+            assertThrows(
+              () => rules.play(position, candidate),
+              Error,
+              undefined,
+              `play accepted illegal move ${text} in ${encoded}`,
+            );
+            assertEquals(
+              n.encodePosition(position),
+              encoded,
+              "failed play mutated its input position",
+            );
+          }
+        }
         assert(
           (seat === undefined) === (outcome !== undefined),
           "toMove is undefined iff outcome is defined",
@@ -116,6 +157,7 @@ export function assertGameRulesContract<Position, Move>(
           "legal moves encode uniquely",
         );
         for (const text of encodedMoves) {
+          movePool.add(text);
           assertEquals(
             n.encodeMove(n.decodeMove(text, position)),
             text,

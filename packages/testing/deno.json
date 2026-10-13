@@ -1,8 +1,5 @@
 {
   "name": "@boardwright/testing",
   "version": "0.0.0",
-  "exports": "./src/mod.ts",
-  "imports": {
-    "@boardwright/core": "../core/src/index.ts"
-  }
+  "exports": "./src/mod.ts"
 }

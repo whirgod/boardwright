@@ -104,6 +104,9 @@ Deno.test("decodePosition rejects invalid positions", () => {
       "xx.......:o", // piece counts
       "x........:x", // wrong side to move
       ".........:o", // wrong side to move
+      "xxxooo...:x", // both Seats have a line
+      "xxx.oo.o.:x", // winner x did not move last
+      "oooxxxx..:o", // o line but x moved last
     ]
   ) {
     assertThrows(() => n.decodePosition(bad), Error, "Invalid", bad);

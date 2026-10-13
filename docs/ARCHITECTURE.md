@@ -25,6 +25,7 @@ core  <-  games/*  <-  engines/*
 ```
 
 - `core` depends on nothing.
+- `testing` depends only on `core` (+ `@std/assert`); only Games' tests import it.
 - A Game depends only on `core`. It is pure: no I/O, no randomness except via inputs.
 - An Engine depends on `core` and on the Game it plays (to generate moves while searching).
 - The server composes Games and Engines; Games and Engines never import the server.

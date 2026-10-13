@@ -26,6 +26,7 @@ export interface GameRules<Position, Move> {
   /** Seat to move, or `undefined` when the position is terminal. */
   toMove(position: Position): Seat | undefined;
   legalMoves(position: Position): readonly Move[];
+  /** Throws if `move` is not legal in `position`; never mutates `position`. */
   play(position: Position, move: Move): Position;
   outcome(position: Position): Outcome | undefined;
   readonly notation: Notation<Position, Move>;
@@ -34,8 +35,10 @@ export interface GameRules<Position, Move> {
 /** Text encoding used on the wire and in stored Match records. */
 export interface Notation<Position, Move> {
   encodePosition(position: Position): string;
+  /** Throws on invalid text. */
   decodePosition(text: string): Position;
   encodeMove(move: Move): string;
+  /** Throws on invalid text. */
   decodeMove(text: string, position: Position): Move;
 }
 

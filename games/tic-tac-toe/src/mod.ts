@@ -57,6 +57,19 @@ const notation: Notation<TicTacToePosition, TicTacToeMove> = {
     if (turn !== (xs === os ? "x" : "o")) {
       throw new Error(`Invalid tic-tac-toe position (side to move): ${text}`);
     }
+    const wins = new Set(
+      LINES.filter(([a, b, c]) =>
+        cells[a] !== "." && cells[a] === cells[b] && cells[a] === cells[c]
+      ).map(([a]) => cells[a]),
+    );
+    // Unreachable: both Seats have a line, or the winner did not move last.
+    if (
+      wins.size > 1 || (wins.size === 1 && !wins.has(turn === "x" ? "o" : "x"))
+    ) {
+      throw new Error(
+        `Invalid tic-tac-toe position (unreachable win): ${text}`,
+      );
+    }
     return { cells, turn };
   },
   encodeMove: (move) => move,

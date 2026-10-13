@@ -28,4 +28,3 @@ It plays seeded random Matches and checks: `toMove`/`outcome` consistency, legal
 non-terminal and none in terminal Positions, `play` not mutating its input, Position and Move
 Notation round-trips, `decode*` throwing on garbage (extend with `garbage: [...]`), and replay
 determinism. Failures print the seed and the Move list. Add game-specific rule tests next to it.
-Add `"@boardwright/testing": "../../packages/testing/src/mod.ts"` to the Game's `deno.json` imports.
