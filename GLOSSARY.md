@@ -34,6 +34,10 @@ _Avoid_: User, participant
 How a Match ended: the winning Seat or a draw, plus the reason.
 _Avoid_: Result, score
 
+**Forfeit**:
+An Outcome the server imposes when a server-driven Player (an Engine) fails to produce a legal Move; the other Seat wins and the reason starts with `engine-failure`.
+_Avoid_: Abort, disqualification
+
 **Notation**:
 The text encoding of Positions and Moves for one Game.
 _Avoid_: Format, serialization

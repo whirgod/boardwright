@@ -31,6 +31,6 @@
     "check": "deno fmt --check && deno lint && deno check && deno task test",
     "dev:server": "deno task --cwd apps/server dev",
     "start:server": "deno task --cwd apps/server start",
-    "test": "deno test --coverage --clean && deno coverage --exclude='/main\\.ts$'"
+    "test": "deno test --allow-read=apps,engines,games,packages --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
 }

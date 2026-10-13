@@ -7,6 +7,7 @@ import {
   GameMaster,
   type MatchView,
 } from "./game-master.ts";
+import { EngineRegistry } from "./engines.ts";
 import { GameRegistry } from "./games.ts";
 import { InMemoryMatchStore, type MatchStore } from "./match-store.ts";
 
@@ -462,4 +463,68 @@ Deno.test("error ordering on POST /api/matches/:id/moves", async (t) => {
       "match-finished",
     );
   });
+});
+
+const MINIMAX = {
+  id: "m",
+  name: "Minimax",
+  gameId: "tic-tac-toe",
+  module: "file:///x.ts",
+};
+
+Deno.test("GET /api/games/:gameId/engines lists the Game's Engines", async () => {
+  const a = buildApp({
+    games: [ticTacToe],
+    engines: new EngineRegistry([
+      MINIMAX,
+      { ...MINIMAX, id: "o", name: "Other", gameId: "other" },
+    ]),
+  });
+  const res = await a.request("/api/games/tic-tac-toe/engines");
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), [{ id: "m", name: "Minimax" }]);
+  await assertError(a.request("/api/games/nope/engines"), 404, "unknown-game");
+  // No Engines registered: an empty list.
+  const none = await app().request("/api/games/tic-tac-toe/engines");
+  assertEquals(await none.json(), []);
+});
+
+Deno.test("POST /api/matches seats Engines; bad Engine seats are 400", async () => {
+  const a = buildApp({
+    games: [ticTacToe],
+    engines: new EngineRegistry([MINIMAX]),
+  });
+  const engine = {
+    kind: "engine",
+    engineId: "m",
+    limits: { maxDepth: 2 },
+  } as const;
+  const ok = await post(a, "/api/matches", {
+    gameId: "tic-tac-toe",
+    seats: { x: { kind: "human" }, o: engine },
+  });
+  assertEquals(ok.status, 201);
+  const created: CreatedMatch = await ok.json();
+  assertEquals(Object.keys(created.tokens), ["x"]);
+  assertEquals(created.match.seats.o, engine);
+
+  await assertError(
+    post(a, "/api/matches", {
+      gameId: "tic-tac-toe",
+      seats: { x: { kind: "human" }, o: { kind: "engine", engineId: "zz" } },
+    }),
+    400,
+    "invalid-seats",
+  );
+  await assertError(
+    post(a, "/api/matches", {
+      gameId: "tic-tac-toe",
+      seats: {
+        x: { kind: "human" },
+        o: { kind: "engine", engineId: "m", limits: { maxDepth: 0 } },
+      },
+    }),
+    400,
+    "invalid-request",
+  );
 });

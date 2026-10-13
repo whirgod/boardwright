@@ -11,8 +11,9 @@ apps/web          (planned) Browser UI: board rendering, play, review, analysis 
 packages/testing  Contract test kit every Game runs (assertGameRulesContract)
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
 engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
-engines/<game>-<name>  (planned) One package per Engine implementing Engine for one Game, e.g.
-                  engines/chess-minimax = engines/minimax + a chess evaluation
+engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
+                  engines/tic-tac-toe-minimax (planned: engines/chess-minimax). It exports
+                  `rules` and `engine`, so the server can load it by URL inside a Worker.
 ```
 
 Each member has a `deno.json` with `name`/`version`/`exports`. Package names: `@boardwright/<dir>` (e.g. `@boardwright/core`, `@boardwright/game-chess`,
@@ -61,10 +62,30 @@ core  <-  games/*  <-  engines/*
   the Match regardless of the Position. Seams for #7/#9:
   - `playAs(id, seat, move)` plays for Seats the server drives itself (Engines); token-holding
     Seats are refused (`not-server-driven`).
-  - `onMatchChanged(listener)` starts (sync or async) listeners with a frozen copy of the Match after every create and accepted Move
-    (e.g. to schedule an Engine's Move or push to WebSocket clients); errors and rejections are logged; returns an unsubscribe.
-- `players.ts` — `PlayerSpec`, a union discriminated by `kind` (today only `human`); new kinds
-  such as `engine` extend it without reshaping requests, records or responses.
+  - `forfeit(id, seat, reason)` ends the Match for a server-driven Seat that is to move and failed: the other
+    Seat wins (two-Seat Games), `reason` is the Outcome's reason.
+  - `onMatchChanged(listener)` starts (sync or async) listeners with a frozen copy of the Match after every create, accepted Move
+    and forfeit (e.g. to schedule an Engine's Move or push to WebSocket clients); errors and rejections are logged; returns an unsubscribe.
+  - `createMatch` refuses Engine Seats whose Engine the Game does not have (`invalid-seats`).
+- `players.ts` — `PlayerSpec`, a union discriminated by `kind`: `human` and
+  `{ kind: "engine", engineId, limits }` (limits: `maxDepth`, `maxTimeMs` <= 60 s, `lines`;
+  optional, default none). Engine Seats have no seat token.
+- `engines.ts` — `EngineRegistry`: Engines per Game (`id`, `name`, `module` URL).
+- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`; when an Engine Seat is to
+  move it searches and plays the result with `playAs`, i.e. through the referee. A search that
+  throws, exceeds `limits.maxTimeMs` + a grace period (default 5 s), returns no Move or a Move the
+  referee refuses is retried once with a fresh Worker; then the Seat forfeits with reason
+  `engine-failure: <engineId> for <seat>: <code>` (code: `engine-error`, `worker-error`, `timeout`, `illegal-move`, ...; raw error text is only logged), so a Match never hangs. An unset `limits.maxTimeMs` becomes `DEFAULT_SEARCH_TIME_MS` (5 s) when searching, so no search is unbounded. At most `maxConcurrent` (default 4) searches run at once; the rest queue. `close()` aborts
+  searches in flight (no forfeit); `idle()` awaits them (tests).
+- `engine-search.ts` / `engine-worker.ts` — one Web Worker per search, always terminated
+  afterwards (timeout, error, abort or reply). Messages carry only Notation strings and limits:
+  `{ module, position, limits }` -> `{ ok: true, move } | { ok: false, message }`. The worker loads
+  the Engine module by URL (`rules` + `engine` exports) and plays the first Move of the best Line
+  of the deepest completed Analysis. Workers inherit the server's permissions (Deno's per-worker
+  `deno.permissions` is still unstable; sandboxing is tracked in #29), so Engine code is trusted
+  with the server's net/env/read access and the tasks grant `--allow-read` of the workspace
+  source dirs, which loading the worker needs; Engines are first-party code.
+- `main.ts` wires it: `GameMaster` with the `minimax` tic-tac-toe Engine, an `EngineDriver`, `buildApp({ master })`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
   strings only (Move list, Outcome, Seats with token hashes, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
@@ -72,8 +93,8 @@ core  <-  games/*  <-  engines/*
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
   tiny and errors stay in our shape).
 - `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses. `buildApp` builds its own
-  `GameMaster` from `games`/`store`/`now`, or serves one passed as `master` (so #7 can attach
-  Engine drivers to it first). Request bodies on `/api/*`
+  `GameMaster` from `games`/`store`/`now`, or serves one passed as `master` (so an `EngineDriver` can attach
+  to it first); `engines` is passed through to the built one. Request bodies on `/api/*`
   are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
   client text echoed in error messages is truncated.
 
@@ -82,9 +103,11 @@ core  <-  games/*  <-  engines/*
 Implemented (JSON; Positions and Moves are Notation strings):
 
 - `GET  /api/health`, `GET /api/games`
-- `POST /api/matches` `{ gameId, seats: { <seat>: { kind: "human" } } }` → `201`
-  `{ match, tokens: { <seat>: <seat token> } }`. Seats must be exactly the Game's Seats.
-  Tokens are returned only here.
+- `GET  /api/games/:gameId/engines` → `[{ id, name }]` (404 `unknown-game`)
+- `POST /api/matches` `{ gameId, seats: { <seat>: { kind: "human" } | { kind: "engine", engineId,
+  limits? } } }` → `201` `{ match, tokens: { <seat>: <seat token> } }` (tokens for human Seats
+  only). Seats must be exactly the Game's Seats. Tokens are returned only here. After a Move,
+  Engine Seats move on their own: poll `GET /api/matches/:id` (live push comes with the WebSocket).
 - `GET  /api/matches/:id` → `MatchView`: `{ id, gameId, seats: { <seat>: { kind } }, moves,
   position, toMove, legalMoves, outcome, createdAt, updatedAt }` (`toMove`/`outcome` are
   `null` when absent). Never contains tokens.
@@ -104,7 +127,6 @@ Errors always have the body `{ "error": { "code", "message" } }`:
 
 Planned (sketch, not final):
 
-- `GET  /api/games/:gameId/engines`; Seat kind `{ kind: "engine", engineId, limits }` (#7)
 - `GET  /api/matches` listing (#13)
 - `WS   /api/matches/:id/stream` — Moves, Outcome, live Analysis
 - `POST /api/analysis` (game, Position, engine, limits) → stream of Analysis
