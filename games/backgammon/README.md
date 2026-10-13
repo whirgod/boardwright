@@ -36,8 +36,12 @@ rolled by the Game master, a Move is the full play of one roll.
   `bar/22 6/off`; `pass` for no play. Each Step uses one die. Decoding also accepts chains
   (`24/18/13`), hit marks (`13/8*`, ignored: hits follow from the Position) and repeats
   (`13/10(2)`). Different Steps that lead to the same Position are the same Move: in a
-  Position with a Seat to move, decoding returns the canonical Move as listed by `legalMoves`
-  (higher die first where both orders work), e.g. `13/8 8/2` decodes to `13/7 7/2`.
+  Position with a Seat to move, decoding matches by resulting Position and returns the canonical
+  Move as listed by `legalMoves` (Steps from higher points first, the higher die first where both
+  work), e.g. `13/8 8/2` decodes to `13/7 7/2` and `24/23 13/7` is listed rather than
+  `13/7 24/23`. Steps must be in a playable order (`3/off 7/4` is refused when the 7 is not yet
+  home), and one Step may stand for a chain ending in the same Position: with 65 and checkers
+  on the 6- and 1-points, `6/off` decodes to `6/1 1/off`.
 - Position: `<points> <bar> <turn> <dice>`:
   - `<points>`: 24 comma-separated entries for white's points 1 to 24 (black's 24 to 1): `0`,
     `w<n>` or `b<n>` for n checkers of a Seat.

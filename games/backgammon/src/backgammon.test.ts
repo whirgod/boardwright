@@ -163,6 +163,45 @@ Deno.test("if only one die can be used, the larger one must be", () => {
   assertEquals(moves(smaller), ["13/8"]);
 });
 
+Deno.test("both dice must be used even if only the lower die first allows it", () => {
+  // White's 4-point is blocked: 10/4 is impossible, 10/9 9/3 is not.
+  const p = setup({
+    white: { 10: 1, 1: 14 },
+    black: { 21: 2, 1: 13 }, // black's 21-point is white's 4-point
+    dice: [6, 1],
+  });
+  assertEquals(moves(p), ["10/9 9/3"]);
+  assertThrows(() => play(p, "10/4"), Error, "illegal");
+  assertThrows(() => play(p, "10/9"), Error, "illegal");
+});
+
+Deno.test("each die usable by a different checker only: both must be played", () => {
+  // The 6 only moves 14/8 (8/3 and 11/5 blocked), the 5 only 11/6 (14/9 blocked).
+  // Own checkers never block each other, so the two plays combine.
+  const p = setup({
+    white: { 14: 1, 11: 1, 1: 13 },
+    black: { 16: 2, 20: 2, 22: 2, 1: 9 }, // white's 9-, 5- and 3-points
+    dice: [6, 5],
+  });
+  assertEquals(moves(p), ["14/8 11/6"]);
+  assertEquals(n.encodeMove(n.decodeMove("11/6 14/8", p)), "14/8 11/6");
+  assertThrows(() => play(p, "14/8"), Error, "illegal");
+  assertThrows(() => play(p, "11/6"), Error, "illegal");
+});
+
+Deno.test("canonical Moves list higher points first", () => {
+  const p = setup({
+    white: { 24: 1, 13: 1, 1: 13 },
+    black: { 3: 15 },
+    dice: [6, 1],
+  });
+  assert(moves(p).includes("24/23 13/7"));
+  assert(!moves(p).includes("13/7 24/23"));
+  // One Step may stand for a chain that ends in the same Position.
+  const off = setup({ white: { 6: 1, 1: 1 }, black: { 1: 15 }, dice: [6, 5] });
+  assertEquals(n.encodeMove(n.decodeMove("6/off", off)), "6/1 1/off");
+});
+
 Deno.test("checkers on the bar enter first, onto open points only", () => {
   // Entry points for 6 and 5 are white's 19 and 20; 19 is blocked.
   const p = setup({
@@ -410,6 +449,7 @@ function referencePlays(p: BackgammonPosition): Set<string> {
 Deno.test("legal plays match a brute-force reference in random Matches", () => {
   const rand = seededRandom(11);
   let checked = 0;
+  const kinds = { pass: 0, singleDie: 0, partialDouble: 0 };
   for (let match = 0; match < 10; match++) {
     let p = g.initialPosition();
     while (g.outcome(p) === undefined) {
@@ -423,8 +463,15 @@ Deno.test("legal plays match a brute-force reference in random Matches", () => {
       assertEquals(new Set(after).size, after.length, n.encodePosition(p));
       assertEquals(new Set(after), referencePlays(p), n.encodePosition(p));
       checked++;
+      const steps = legal[0]!.steps.length;
+      const double = p.dice![0] === p.dice![1];
+      if (steps === 0) kinds.pass++;
+      else if (steps === 1 && !double) kinds.singleDie++;
+      else if (steps < 4 && double) kinds.partialDouble++;
       p = g.play(p, legal[Math.floor(rand() * legal.length)]!);
     }
   }
   assert(checked > 300);
+  // The rare cases are actually exercised.
+  assert(kinds.pass >= 5 && kinds.singleDie >= 5 && kinds.partialDouble >= 2);
 });

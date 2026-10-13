@@ -208,9 +208,14 @@ function generatePlays(
   const plays = new Map<string, Play>();
   for (const n of best) {
     const key = boardKey(n.board);
-    if (!plays.has(key)) {
-      plays.set(key, { move: { steps: n.steps }, board: n.board, key });
-    }
+    if (plays.has(key)) continue;
+    // Conventional order: higher points first (stable), when that order
+    // plays to the same Position (moving higher checkers first only relaxes
+    // the bar and bearing-off conditions, so it always does).
+    const sorted = [...n.steps].sort((a, b) => b.from - a.from);
+    const same = playSteps(start, dice, sorted);
+    const steps = same && boardKey(same) === key ? sorted : n.steps;
+    plays.set(key, { move: { steps }, board: n.board, key });
   }
   return [...plays.values()];
 }
@@ -564,10 +569,12 @@ export const backgammon: ChanceGameRules<
     decodePosition,
     encodeMove,
     /**
-     * Accepts any order and grouping of the Steps of a legal play and returns
-     * that play's canonical Move (as `legalMoves` lists it), so it encodes
-     * the same way; other syntactically valid Moves decode as written (and
-     * `play` rejects them).
+     * Matches by resulting Position: Steps in any playable order (and
+     * grouping) that lead to the same Position as a legal play decode to
+     * that play's canonical Move (as `legalMoves` lists it), so they encode
+     * the same way. E.g. with 65 and checkers on the 6- and 1-points,
+     * `6/off` stands for `6/1 1/off`. Other syntactically valid Moves decode
+     * as written (and `play` rejects them).
      */
     decodeMove(text, position) {
       const move = parseMove(text);
