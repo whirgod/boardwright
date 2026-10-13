@@ -1,4 +1,6 @@
 import type { GameId, GameRules } from "@boardwright/core";
+import { checkers } from "@boardwright/game-checkers";
+import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import type {
   Arrow,
@@ -8,6 +10,8 @@ import type {
   Selection,
   TargetId,
 } from "./board.ts";
+import { checkersRenderer } from "./checkers.ts";
+import { nineMensMorrisRenderer } from "./nine-mens-morris.ts";
 import { ticTacToeRenderer } from "./tic-tac-toe.ts";
 
 export type * from "./board.ts";
@@ -151,7 +155,11 @@ export function bindRenderer<Position, Move>(
 }
 
 const views: ReadonlyMap<GameId, GameView> = new Map(
-  [bindRenderer(ticTacToe, ticTacToeRenderer)].map((v) => [v.gameId, v]),
+  [
+    bindRenderer(ticTacToe, ticTacToeRenderer),
+    bindRenderer(nineMensMorris, nineMensMorrisRenderer),
+    bindRenderer(checkers, checkersRenderer),
+  ].map((v) => [v.gameId, v]),
 );
 
 /** The board for a Game, or `undefined` if no renderer exists for it yet. */
