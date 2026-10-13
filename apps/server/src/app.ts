@@ -15,14 +15,26 @@ import {
   parsePlayMoveBody,
 } from "./requests.ts";
 
-export interface AppOptions {
+/** Either the parts to build a GameMaster from, or a ready one. */
+export type AppOptions = (BuildMasterOptions | ExistingMasterOptions) & {
+  /** Maximum request body size in bytes; default 16 KiB. */
+  readonly maxBodyBytes?: number;
+};
+
+export interface BuildMasterOptions {
   readonly games: readonly AnyGameRules[];
   /** Defaults to a fresh in-memory store. */
   readonly store?: MatchStore;
   /** Clock for Match timestamps; defaults to the system clock. */
   readonly now?: () => Date;
-  /** Maximum request body size in bytes; default 16 KiB. */
-  readonly maxBodyBytes?: number;
+}
+
+export interface ExistingMasterOptions {
+  /**
+   * The referee to serve. Build it yourself to wire other parts to it first,
+   * e.g. Engine drivers via `onMatchChanged` (#7).
+   */
+  readonly master: GameMaster;
 }
 
 /** Every error response has this body. */
@@ -96,12 +108,12 @@ async function readBody<T>(
 }
 
 export function buildApp(options: AppOptions): Hono {
-  const games = new GameRegistry(options.games);
-  const master = new GameMaster({
-    games,
+  const master = "master" in options ? options.master : new GameMaster({
+    games: new GameRegistry(options.games),
     store: options.store ?? new InMemoryMatchStore(),
     ...(options.now ? { now: options.now } : {}),
   });
+  const { games } = master;
   const app = new Hono();
   const maxSize = options.maxBodyBytes ?? 16 * 1024;
 

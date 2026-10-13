@@ -54,8 +54,11 @@ export interface CreatedMatch {
   readonly tokens: Readonly<Record<Seat, string>>;
 }
 
-/** Called after a Match is created and after each accepted Move. */
-export type MatchListener = (match: MatchView) => void;
+/**
+ * Called after a Match is created and after each accepted Move, with a frozen
+ * copy of the Match. May be async; a rejection is logged, never propagated.
+ */
+export type MatchListener = (match: MatchView) => void | Promise<void>;
 
 export interface GameMasterOptions {
   readonly games: GameRegistry;
@@ -146,20 +149,30 @@ export class GameMaster {
   /**
    * Observe Match changes: `listener` runs after every create and accepted
    * Move (e.g. to let an Engine Seat move, #7, or push updates to clients,
-   * #9). Listeners run synchronously; errors they throw are logged, not
-   * propagated. Returns a function that unsubscribes.
+   * #9). Listeners are started synchronously and not awaited; errors they
+   * throw or reject with are logged, not propagated. Returns a function that
+   * unsubscribes.
    */
+  /** The Games this referee hosts. */
+  get games(): GameRegistry {
+    return this.#games;
+  }
+
   onMatchChanged(listener: MatchListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
   #notify(match: MatchView): void {
+    if (this.#listeners.size === 0) return;
+    const frozen = deepFreeze(structuredClone(match));
+    const report = (error: unknown) =>
+      console.error("Match listener failed:", error);
     for (const listener of this.#listeners) {
       try {
-        listener(match);
+        Promise.resolve(listener(frozen)).catch(report);
       } catch (error) {
-        console.error("Match listener failed:", error);
+        report(error);
       }
     }
   }
@@ -329,6 +342,14 @@ export class GameMaster {
       updatedAt: record.updatedAt,
     };
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function message(error: unknown): string {

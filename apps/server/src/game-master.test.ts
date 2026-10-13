@@ -7,7 +7,12 @@ import {
 } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
-import { GameMaster, MatchError, type MatchErrorCode } from "./game-master.ts";
+import {
+  GameMaster,
+  MatchError,
+  type MatchErrorCode,
+  type MatchView,
+} from "./game-master.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import {
   InMemoryMatchStore,
@@ -319,9 +324,9 @@ Deno.test("a stored Outcome ends the Match even if the Position does not", async
 Deno.test("onMatchChanged fires after create and each accepted Move", async () => {
   const { master } = setup();
   const seen: string[] = [];
-  const stop = master.onMatchChanged((m) =>
-    seen.push(`${m.id}:${m.moves.join(",")}`)
-  );
+  const stop = master.onMatchChanged((m) => {
+    seen.push(`${m.id}:${m.moves.join(",")}`);
+  });
   master.onMatchChanged(() => {
     throw new Error("listener bug");
   });
@@ -343,6 +348,54 @@ Deno.test("onMatchChanged fires after create and each accepted Move", async () =
   } finally {
     console.error = originalError;
   }
+});
+
+Deno.test("async listener rejections are logged, not unhandled", async () => {
+  const { master } = setup();
+  let calls = 0;
+  master.onMatchChanged(async () => {
+    calls++;
+    await Promise.resolve();
+    throw new Error("async listener bug");
+  });
+  const originalError = console.error;
+  const logged: unknown[][] = [];
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    const m = await newMatch(master);
+    await master.playMove(m.id, "a1", m.x);
+    // Let the rejected listener promises settle.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assertEquals(calls, 2);
+    assertEquals(logged.length, 2);
+    assert(String(logged[0]![1]).includes("async listener bug"));
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("listeners get a frozen copy, not the returned Match", async () => {
+  const { master } = setup();
+  const received: MatchView[] = [];
+  master.onMatchChanged((m) => {
+    received.push(m);
+  });
+  const m = await newMatch(master);
+  const view = await master.playMove(m.id, "a1", m.x);
+  const copy = received[1]!;
+  assertEquals(copy, view);
+  assert(copy !== view && copy.moves !== view.moves);
+  assert(Object.isFrozen(copy) && Object.isFrozen(copy.moves));
+  assert(Object.isFrozen(copy.seats.x));
+  // The returned Match and the stored one are unaffected by listeners.
+  (view.moves as string[]).push("tampered");
+  assertEquals(copy.moves, ["a1"]);
+  assertEquals((await master.getMatch(m.id)).moves, ["a1"]);
+});
+
+Deno.test("games exposes the registry", () => {
+  const { master } = setup();
+  assertEquals(master.games.get("tic-tac-toe"), ticTacToe);
 });
 
 Deno.test("concurrent Moves for the same turn: exactly one wins", async () => {

@@ -2,7 +2,12 @@ import { assert, assertEquals, assertMatch } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { buildApp, type ErrorBody, type ErrorCode } from "./app.ts";
-import type { CreatedMatch, MatchView } from "./game-master.ts";
+import {
+  type CreatedMatch,
+  GameMaster,
+  type MatchView,
+} from "./game-master.ts";
+import { GameRegistry } from "./games.ts";
 import { InMemoryMatchStore, type MatchStore } from "./match-store.ts";
 
 const fakeGame = {
@@ -54,6 +59,27 @@ async function assertError(
   assert(body.error.message.length > 0);
   return body;
 }
+
+Deno.test("buildApp serves an injected GameMaster", async () => {
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store: new InMemoryMatchStore(),
+  });
+  const changed: string[] = [];
+  master.onMatchChanged((m) => {
+    changed.push(m.id);
+  });
+  const a = buildApp({ master });
+  const games = await (await a.request("/api/games")).json();
+  assertEquals(games, [{
+    id: "tic-tac-toe",
+    name: "Tic-tac-toe",
+    seats: ["x", "o"],
+  }]);
+  const { match } = await create(a);
+  assertEquals(changed, [match.id]);
+  assertEquals((await master.getMatch(match.id)).id, match.id);
+});
 
 Deno.test("server reports health", async () => {
   const res = await buildApp({ games: [] }).request("/api/health");

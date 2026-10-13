@@ -56,8 +56,8 @@ core  <-  games/*  <-  engines/*
   the Match regardless of the Position. Seams for #7/#9:
   - `playAs(id, seat, move)` plays for Seats the server drives itself (Engines); token-holding
     Seats are refused (`not-server-driven`).
-  - `onMatchChanged(listener)` runs listeners synchronously after every create and accepted Move
-    (e.g. to schedule an Engine's Move or push to WebSocket clients); returns an unsubscribe.
+  - `onMatchChanged(listener)` starts (sync or async) listeners with a frozen copy of the Match after every create and accepted Move
+    (e.g. to schedule an Engine's Move or push to WebSocket clients); errors and rejections are logged; returns an unsubscribe.
 - `players.ts` — `PlayerSpec`, a union discriminated by `kind` (today only `human`); new kinds
   such as `engine` extend it without reshaping requests, records or responses.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
@@ -66,7 +66,9 @@ core  <-  games/*  <-  engines/*
 - `tokens.ts` — seat tokens: 256-bit random hex; only their SHA-256 is stored.
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
   tiny and errors stay in our shape).
-- `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses. Request bodies on `/api/*`
+- `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses. `buildApp` builds its own
+  `GameMaster` from `games`/`store`/`now`, or serves one passed as `master` (so #7 can attach
+  Engine drivers to it first). Request bodies on `/api/*`
   are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
   client text echoed in error messages is truncated.
 
