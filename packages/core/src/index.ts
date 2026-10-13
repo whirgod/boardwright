@@ -61,9 +61,11 @@ export interface Analysis<Move> {
 }
 
 export interface SearchLimits {
+  /** Integer >= 1. */
   readonly maxDepth?: number;
+  /** Milliseconds, >= 0. */
   readonly maxTimeMs?: number;
-  /** Number of Lines to report (multi-PV). Defaults to 1. */
+  /** Number of Lines to report (multi-PV), integer >= 1. Defaults to 1. */
   readonly lines?: number;
 }
 
