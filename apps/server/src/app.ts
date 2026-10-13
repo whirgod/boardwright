@@ -1,4 +1,4 @@
-import { type Context, Hono } from "hono";
+import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { upgradeWebSocket } from "hono/deno";
 import { serveDir } from "@std/http/file-server";
@@ -67,6 +67,7 @@ export type ErrorCode =
   | "not-found"
   | "payload-too-large"
   | "unsupported-media-type"
+  | "forbidden-origin"
   | "internal";
 
 const STATUS: Record<ErrorCode, ContentfulStatusCode> = {
@@ -85,6 +86,7 @@ const STATUS: Record<ErrorCode, ContentfulStatusCode> = {
   "conflict": 409,
   "payload-too-large": 413,
   "unsupported-media-type": 415,
+  "forbidden-origin": 403,
   "internal": 500,
 };
 
@@ -145,6 +147,28 @@ function withUiHeaders(response: Response, path: string): Response {
     headers,
   });
 }
+
+/**
+ * Browsers apply no same-origin rule to WebSockets, so any page could open
+ * the streams of a local server. Allow requests without an `Origin` header
+ * (non-browser clients) or whose Origin host is the one asked for.
+ */
+function sameOrigin(c: Context): boolean {
+  const origin = c.req.header("origin");
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host === c.req.header("host");
+  } catch {
+    return false;
+  }
+}
+
+const originGuard: MiddlewareHandler = async (c, next) =>
+  sameOrigin(c) ? await next() : fail(
+    c,
+    "forbidden-origin",
+    "Cross-origin WebSocket requests are refused",
+  );
 
 export function buildApp(options: AppOptions): Hono {
   const master = "master" in options ? options.master : new GameMaster({
@@ -233,6 +257,7 @@ export function buildApp(options: AppOptions): Hono {
   // Match stream (server to client only): snapshot, then every event.
   app.get(
     "/api/matches/:id/stream",
+    originGuard,
     async (c, next) => {
       await master.getMatch(c.req.param("id")); // unknown Match: 404 before upgrading
       return next();
@@ -270,6 +295,7 @@ export function buildApp(options: AppOptions): Hono {
   if (runner) {
     app.get(
       "/api/analysis/stream",
+      originGuard,
       upgradeWebSocket(() => {
         let session: AnalysisSession | undefined;
         return {

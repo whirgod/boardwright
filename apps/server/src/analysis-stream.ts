@@ -119,6 +119,8 @@ export class AnalysisSession {
   }
 
   #start(body: Record<string, unknown>): void {
+    // Any `start` replaces the running search, even one that is rejected.
+    this.#cancel();
     const parsed = parseAnalysisStartBody(body);
     const id = typeof body.id === "string" ? body.id : undefined;
     if (!parsed.ok) return this.#error(id, "invalid-request", parsed.problem);
@@ -150,7 +152,6 @@ export class AnalysisSession {
         "`position` is not valid Notation for this Game",
       );
     }
-    this.#cancel();
     const search: Search = { id, abort: new AbortController() };
     this.#current = search;
     void this.#run(search, {

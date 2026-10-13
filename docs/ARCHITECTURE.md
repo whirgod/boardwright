@@ -280,19 +280,21 @@ Implemented (JSON; Positions and Moves are Notation strings):
 
 Errors always have the body `{ "error": { "code", "message" } }`:
 
-| Status | Codes                                                                                                                        |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move`                             |
-| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only)                                   |
-| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                                                 |
-| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry), `chance-pending` (dice being rolled; refetch and retry) |
-| 413    | `payload-too-large`                                                                                                          |
-| 415    | `unsupported-media-type`                                                                                                     |
-| 500    | `internal`                                                                                                                   |
+| Status | Codes                                                                                                                                               |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move`                                                    |
+| 403    | `invalid-token`, `not-your-turn`, `not-engine-seat` (internal `{ engineSeat }` Actor only), `forbidden-origin` (stream upgrade from another origin) |
+| 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                                                                        |
+| 409    | `match-finished`, `conflict` (concurrent update; refetch and retry), `chance-pending` (dice being rolled; refetch and retry)                        |
+| 413    | `payload-too-large`                                                                                                                                 |
+| 415    | `unsupported-media-type`                                                                                                                            |
+| 500    | `internal`                                                                                                                                          |
 
 ### Streams (WebSocket)
 
-Both streams are WebSockets carrying one JSON object per text message; the `type` field names the
+Browsers apply no same-origin rule to WebSockets, so both upgrades check `Origin`: no `Origin`
+header (non-browser clients) or one whose host equals the request's `Host` passes, anything else
+is answered `403 forbidden-origin` before upgrading. Both streams are WebSockets carrying one JSON object per text message; the `type` field names the
 message. Errors have `{ "type": "error", "error": { "code", "message" } }` like REST errors, and
 never close the socket (a protocol-level problem the server cannot recover from closes it with
 1011). Browsers cannot set headers on a WebSocket, so nothing secret goes in the URL: **seat
@@ -330,14 +332,15 @@ while the connection stays open (stepping through a Match's Positions), which SS
 request fixed in the URL, cancel only by dropping the connection) cannot do without a second
 HTTP call; a WebSocket is also the transport the Match stream already needs.
 
-Client to server (messages over 16 KiB are refused):
+Client to server (a message over 16 KiB is answered with `invalid-request`):
 
 - `{ "type": "start", "id"?, "gameId", "engineId", "position", "limits"? }` — analyse `position`
   (the Game's Notation) with that Game's Engine; `limits` is `{ maxDepth?, maxTimeMs?, lines? }`
   as for an Engine Seat (`lines` = how many best Lines; unset `maxTimeMs` is the server default,
   capped at 60 s). `id` is an optional client string (<= 100 chars) echoed in every reply about
-  this search. One search per connection: a `start` while one runs **replaces** it (the old one
-  is cancelled and sends nothing more, not even `stopped`).
+  this search. One search per connection: any `start` while one runs **replaces** it, even one
+  that is then rejected with an `error` (the old search is cancelled and sends nothing more, not
+  even `stopped`).
 - `{ "type": "stop" }` — cancel the running search, if any.
 
 Server to client:
@@ -347,7 +350,7 @@ Server to client:
 | `analysis` | `id?`, `analysis`                 | One `Analysis<string>` (`depth`, `lines` with `moves` in Notation and a `Score`), in the Engine's order, depth strictly increasing. A Position with a pending Chance event has no Lines but `score` and `seat` (ADR 0005). |
 | `done`     | `id?`                             | The Engine finished (its limits were reached); nothing more for this search.                                                                                                                                               |
 | `stopped`  | `id?`                             | Answer to `stop` (always sent, even with nothing running; `id` of the cancelled search if any).                                                                                                                            |
-| `error`    | `id?`, `error: { code, message }` | The request or search failed; the search is over, the socket stays open.                                                                                                                                                   |
+| `error`    | `id?`, `error: { code, message }` | The `start` was rejected or the search failed; no search runs afterwards (a rejected `start` also cancelled the previous one), the socket stays open.                                                                      |
 
 Error codes: `invalid-request` (not JSON, not an object, unknown `type`, bad or extra fields,
 bad `limits`, binary or oversized message), `unknown-game`, `unknown-engine`, `invalid-position`

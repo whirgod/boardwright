@@ -130,6 +130,20 @@ Deno.test("stop cancels the search, tells the Engine to stop and frees the slot"
   await until(() => state.aborted === 2);
 });
 
+Deno.test("a rejected start still cancels the running search", async () => {
+  const { state, adapter } = endless();
+  const { s, sent } = session({ adapter });
+  s.handle(JSON.stringify({ ...START_MSG, id: "old" }));
+  await until(() => sent.length === 1);
+  s.handle(JSON.stringify({ ...START_MSG, id: "bad", engineId: "nope" }));
+  await until(() => state.aborted === 1);
+  assertEquals(sent.at(-1)?.type, "error");
+  assertEquals(sent.length, 2);
+  // Nothing runs any more: stop reports no search.
+  s.handle(JSON.stringify({ type: "stop" }));
+  assertEquals(sent.at(-1), { type: "stopped" });
+});
+
 Deno.test("stop with nothing running is harmless", () => {
   const { s, sent } = session();
   s.handle(JSON.stringify({ type: "stop" }));
@@ -333,6 +347,29 @@ Deno.test("over a WebSocket: stream, stop and a disconnect that cancels the sear
   } finally {
     await real.shutdown();
     await hanging.shutdown();
+  }
+});
+
+Deno.test("a cross-origin Analysis upgrade is refused", async () => {
+  const master = new GameMaster({
+    games: GAMES,
+    store: new InMemoryMatchStore(),
+    engines: ENGINES,
+  });
+  const server = serve(
+    buildApp({
+      master,
+      runner: new EngineRunner({ adapter: inProcessAdapter() }),
+    }).fetch,
+  );
+  try {
+    const res = await fetch(`${server.httpUrl}/api/analysis/stream`, {
+      headers: { origin: "http://evil.example" },
+    });
+    assertEquals(res.status, 403);
+    assertEquals((await res.json()).error.code, "forbidden-origin");
+  } finally {
+    await server.shutdown();
   }
 });
 

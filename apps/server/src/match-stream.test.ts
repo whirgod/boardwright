@@ -11,7 +11,7 @@ import {
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
 import { MatchFollower, type MatchStreamMessage } from "./match-stream.ts";
-import { serve, TestClient, type TestServer } from "./stream.testing.ts";
+import { serve, TestClient, type TestServer, until } from "./stream.testing.ts";
 
 const HUMANS = { x: { kind: "human" }, o: { kind: "human" } } as const;
 
@@ -217,8 +217,24 @@ Deno.test("the Match stream takes no messages and says where Moves go", async ()
   });
 });
 
+/** A referee whose `getMatch` waits on a gate and can answer with a stale view. */
+class GatedMaster extends GameMaster {
+  readonly gate = Promise.withResolvers<void>();
+  snapshot: MatchView | undefined;
+  current(id: string): Promise<MatchView> {
+    return super.getMatch(id);
+  }
+  override async getMatch(id: string): Promise<MatchView> {
+    await this.gate.promise;
+    return this.snapshot ?? await super.getMatch(id);
+  }
+}
+
 Deno.test("MatchFollower: events racing the snapshot are neither lost nor repeated", async () => {
-  const { master } = setup();
+  const master = new GatedMaster({
+    games: new GameRegistry([ticTacToe]),
+    store: new InMemoryMatchStore(),
+  });
   const created = await master.createMatch("tic-tac-toe", HUMANS);
   const sent: MatchStreamMessage[] = [];
   const follower = new MatchFollower(
@@ -226,23 +242,74 @@ Deno.test("MatchFollower: events racing the snapshot are neither lost nor repeat
     created.match.id,
     (m) => sent.push(m),
   );
-  const starting = follower.start();
-  await playMove(master, created, "x", "a1"); // concurrent with the snapshot
+  const starting = follower.start(); // subscribed, snapshot gated
+  await playMove(master, created, "x", "a1"); // v2: ends up inside the snapshot
+  master.snapshot = await master.current(created.match.id);
+  assertEquals(master.snapshot.version, 2);
+  await playMove(master, created, "o", "a2"); // v3: newer than the snapshot
+  master.gate.resolve();
   await starting;
-  await playMove(master, created, "o", "a2");
+  await playMove(master, created, "x", "b1"); // v4: live
   follower.close();
-  const versions = sent.map((m) =>
-    m.type === "snapshot"
-      ? m.match.version
-      : m.type === "event"
-      ? m.event.version
-      : -1
+  assertEquals(
+    sent.map((m) =>
+      m.type === "snapshot"
+        ? ["snapshot", m.match.version]
+        : m.type === "event"
+        ? [m.event.kind, m.event.version]
+        : [m.type]
+    ),
+    [["snapshot", 2], ["move", 3], ["move", 4]],
   );
-  assertEquals(sent[0]?.type, "snapshot");
-  assertEquals(versions[versions.length - 1], 3);
-  assertEquals(versions, [...versions].sort((a, b) => a - b));
-  assertEquals(new Set(versions).size, versions.length);
-  assertEquals(versions.length, 3 - versions[0]! + 1);
+});
+
+Deno.test("closing the socket unsubscribes from the referee", async () => {
+  const { master, server } = setup();
+  let subscribed = 0;
+  let unsubscribed = 0;
+  const subscribe = master.onMatchChanged.bind(master);
+  master.onMatchChanged = (listener) => {
+    subscribed++;
+    const off = subscribe(listener);
+    return () => {
+      unsubscribed++;
+      off();
+    };
+  };
+  try {
+    const created = await master.createMatch("tic-tac-toe", HUMANS);
+    const client = await TestClient.connect(
+      streamUrl(server, created.match.id),
+    );
+    await client.next();
+    assertEquals([subscribed, unsubscribed], [1, 0]);
+    await client.close();
+    await until(() => unsubscribed === 1);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("a cross-origin upgrade is refused, same-origin and no Origin pass", async () => {
+  await withStreams(async ({ master, server }) => {
+    const created = await master.createMatch("tic-tac-toe", HUMANS);
+    const host = new URL(server.httpUrl).host;
+    for (const path of [`/api/matches/${created.match.id}/stream`]) {
+      for (const origin of ["http://evil.example", "not a url"]) {
+        const res = await fetch(server.httpUrl + path, {
+          headers: { origin, upgrade: "websocket", connection: "Upgrade" },
+        });
+        assertEquals(res.status, 403);
+        assertEquals((await res.json()).error.code, "forbidden-origin");
+      }
+      // Same host passes the guard (this plain request then fails the upgrade itself).
+      const res = await fetch(server.httpUrl + path, {
+        headers: { origin: `http://${host}` },
+      });
+      assert(res.status !== 403);
+      await res.body?.cancel();
+    }
+  });
 });
 
 Deno.test("MatchFollower: nothing is sent after close, and a missing Match rejects", async () => {
