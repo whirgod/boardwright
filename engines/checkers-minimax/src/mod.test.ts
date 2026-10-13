@@ -5,6 +5,7 @@ import type {
   CheckersMove,
   CheckersPosition,
 } from "@boardwright/game-checkers";
+import { seededRandom } from "@boardwright/testing";
 import { engine, evaluate, rules } from "./mod.ts";
 
 const decode = (t: string) => rules.notation.decodePosition(t);
@@ -59,15 +60,32 @@ Deno.test("advanced men are worth more", () => {
   assert(evaluate(decode("B:W29:B21")) > evaluate(decode("B:W29:B5")));
 });
 
-Deno.test("finds a winning capture", async () => {
-  const a = await search("B:W18:B14", { maxDepth: 2 });
-  assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 1 });
-  assertEquals(rules.notation.encodeMove(a.lines[0]!.moves[0]!), "14x23");
+const encode = rules.notation.encodeMove;
+
+Deno.test("chooses the double jump over a single jump", async () => {
+  // Captures are mandatory, but black picks between 4x11 and 1x10x17.
+  const position = decode("B:W6,8,14:B1,4");
+  assertEquals(
+    rules.legalMoves(position).map(encode).sort(),
+    ["1x10x17", "4x11"],
+  );
+  const a = await search("B:W6,8,14:B1,4", { maxDepth: 1 });
+  assertEquals(encode(a.lines[0]!.moves[0]!), "1x10x17");
 });
 
-Deno.test("takes the double jump", async () => {
-  const a = await search("B:W6,15:B1", { maxDepth: 3 });
-  assertEquals(rules.notation.encodeMove(a.lines[0]!.moves[0]!), "1x10x19");
+Deno.test("avoids a step that hangs a man", async () => {
+  const text = "B:W18:B9,10";
+  const p = decode(text);
+  const moves = rules.legalMoves(p);
+  // A Move is unsafe when the reply can capture.
+  const unsafe = moves.filter((m) => {
+    const next = rules.play(p, m);
+    return rules.legalMoves(next).some((r) => Math.abs(r[0]! - r[1]!) > 5);
+  });
+  assert(unsafe.length > 0 && unsafe.length < moves.length, "no real choice");
+  const a = await search(text, { maxDepth: 2 });
+  const picked = encode(a.lines[0]!.moves[0]!);
+  assert(!unsafe.map(encode).includes(picked), picked);
 });
 
 Deno.test("crowns a man when it can", async () => {
@@ -100,4 +118,31 @@ Deno.test("terminal Position yields no Lines", async () => {
   const a = await search("W:W:B14", { maxDepth: 2 });
   assertEquals(a.depth, 0);
   assertEquals(a.lines, []);
+});
+
+const MATCHES = 6;
+const MAX_PLIES = 120;
+
+Deno.test("beats a seeded random mover", async () => {
+  const rand = seededRandom(11);
+  let wins = 0;
+  let losses = 0;
+  for (let i = 0; i < MATCHES; i++) {
+    const seat = i % 2 === 0 ? "black" : "white";
+    let p = rules.initialPosition();
+    for (let ply = 0; ply < MAX_PLIES && !rules.outcome(p); ply++) {
+      if (p.turn === seat) {
+        let last: Analysis<CheckersMove> | undefined;
+        for await (const a of engine.analyze(p, { maxDepth: 3 })) last = a;
+        p = rules.play(p, last!.lines[0]!.moves[0]!);
+      } else {
+        const moves = rules.legalMoves(p);
+        p = rules.play(p, moves[Math.floor(rand() * moves.length)]!);
+      }
+    }
+    const winner = rules.outcome(p)?.winner;
+    if (winner === seat) wins++;
+    else if (winner !== undefined) losses++;
+  }
+  assert(wins >= MATCHES - 1 && losses === 0, `wins ${wins} losses ${losses}`);
 });

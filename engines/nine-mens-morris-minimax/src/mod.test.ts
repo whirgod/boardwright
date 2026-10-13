@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import { type MorrisMove, POINTS } from "@boardwright/game-nine-mens-morris";
+import { seededRandom } from "@boardwright/testing";
 import { engine, evaluate, rules, WEIGHTS } from "./mod.ts";
 
 /** Position text for the given pieces; `hands` are `white:black` in hand. */
@@ -81,8 +82,90 @@ Deno.test("completes a mill and removes a piece", async () => {
   assert(move.startsWith("g1x"), move);
 });
 
-Deno.test("blocks an immediate mill", async () => {
-  assertEquals(await best(placing(["a7", "c3"], ["a1", "d1"], "w"), 2), "g1");
+/** Final Analysis with every legal root Move reported, best first. */
+async function allLines(position: string, maxDepth: number) {
+  const n = rules.legalMoves(decode(position)).length;
+  const a = await search(position, { maxDepth, lines: n });
+  return a.lines.map((l) => ({
+    move: rules.notation.encodeMove(l.moves[0]!),
+    value: l.score.kind === "value"
+      ? l.score.value
+      : l.score.kind === "win-in"
+      ? 1e6
+      : -1e6,
+  }));
+}
+
+/** Asserts `expected` is best and every other Move is clearly worse. */
+function assertOnlyMove(
+  lines: { move: string; value: number }[],
+  expected: string,
+) {
+  assertEquals(lines[0]!.move, expected);
+  for (const l of lines.slice(1)) {
+    assert(l.value <= lines[0]!.value - WEIGHTS.piece / 2, `${l.move} ties`);
+  }
+}
+
+Deno.test("blocks an immediate mill; every other Move loses a piece", async () => {
+  const lines = await allLines(placing(["a7", "c3"], ["a1", "d1"], "w"), 2);
+  assertOnlyMove(lines, "g1");
+});
+
+Deno.test("moving phase: blocks the opponent's mill", async () => {
+  // Black threatens d3-d2 closing b2-d2-f2; only white's d1 can block it.
+  const position = text(
+    ["d1", "a7", "g7", "e5"],
+    ["b2", "f2", "d3", "a1"],
+    "w",
+    "0:0",
+  );
+  assertOnlyMove(await allLines(position, 2), "d1-d2");
+});
+
+Deno.test("flies to close a mill", async () => {
+  // White has three pieces; g7 is not adjacent to g1 but may fly there.
+  const position = text(
+    ["a1", "d1", "g7"],
+    ["b2", "b4", "f4", "e5"],
+    "w",
+    "0:0",
+  );
+  assert((await best(position, 1)).startsWith("g7-g1x"));
+});
+
+Deno.test("flying Seats are never counted as blocked", () => {
+  const three = ["a1", "c5", "e5"];
+  const walled = moving(["d1", "a4", "g7"], three, "w");
+  const free = moving(["d2", "a7", "e4"], three, "w");
+  assertEquals(evaluate(walled), evaluate(free));
+});
+
+const MATCHES = 6;
+const MAX_PLIES = 120;
+
+Deno.test("beats a seeded random mover", async () => {
+  const rand = seededRandom(7);
+  let wins = 0;
+  let losses = 0;
+  for (let i = 0; i < MATCHES; i++) {
+    const seat = i % 2 === 0 ? "white" : "black";
+    let p = rules.initialPosition();
+    for (let ply = 0; ply < MAX_PLIES && !rules.outcome(p); ply++) {
+      if (p.turn === seat) {
+        let last: Analysis<MorrisMove> | undefined;
+        for await (const a of engine.analyze(p, { maxDepth: 2 })) last = a;
+        p = rules.play(p, last!.lines[0]!.moves[0]!);
+      } else {
+        const moves = rules.legalMoves(p);
+        p = rules.play(p, moves[Math.floor(rand() * moves.length)]!);
+      }
+    }
+    const winner = rules.outcome(p)?.winner;
+    if (winner === seat) wins++;
+    else if (winner !== undefined) losses++;
+  }
+  assert(wins >= MATCHES - 1 && losses === 0, `wins ${wins} losses ${losses}`);
 });
 
 Deno.test("moving phase: closes a mill by stepping", async () => {
