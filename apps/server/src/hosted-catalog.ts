@@ -44,6 +44,12 @@ export const hostedCatalog: readonly CatalogGame[] = [
       module: import.meta.resolve("@boardwright/engine-chess-minimax"),
     }],
   },
-  // No Engine yet (an expectiminimax Engine follows, #17): human Players only.
-  { game: erase(backgammon), engines: [] },
+  {
+    game: erase(backgammon),
+    engines: [{
+      id: "expectiminimax",
+      name: "Expectiminimax",
+      module: import.meta.resolve("@boardwright/engine-backgammon-expecti"),
+    }],
+  },
 ];

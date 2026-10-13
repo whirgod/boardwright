@@ -2,6 +2,9 @@ import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { checkers } from "@boardwright/game-checkers";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { verifyCatalog } from "./catalog.ts";
+import { EngineDriver } from "./engine-driver.ts";
+import { EngineRunner } from "./engine-runner.ts";
+import { testWorkerAdapter } from "./engine-runner.testing.ts";
 import { GameMaster } from "./game-master.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
@@ -110,7 +113,9 @@ Deno.test("the hosted catalog is valid and hosts the five Games", async () => {
   for (const id of ["tic-tac-toe", "nine-mens-morris", "checkers", "chess"]) {
     assertEquals(engines.list(id).map((e) => e.id), ["minimax"]);
   }
-  assertEquals(engines.list("backgammon"), []);
+  assertEquals(engines.list("backgammon").map((e) => e.id), [
+    "expectiminimax",
+  ]);
 });
 
 Deno.test("hosted backgammon: the Game master rolls, humans play", async () => {
@@ -136,4 +141,43 @@ Deno.test("hosted backgammon: the Game master rolls, humans play", async () => {
   // The Move, then the Opponent's roll.
   assertEquals(next.moves.map((e) => e.kind), ["chance", "move", "chance"]);
   assertNotEquals(next.toMove, seat);
+});
+
+Deno.test("hosted backgammon: the Engine plays in its sandboxed worker", async () => {
+  const { games, engines } = await verifyCatalog(hostedCatalog);
+  const master = new GameMaster({
+    games: new GameRegistry(games),
+    store: new InMemoryMatchStore(),
+    engines,
+  });
+  const driver = new EngineDriver(master, {
+    runner: new EngineRunner({ adapter: testWorkerAdapter() }),
+  });
+  try {
+    const { match, tokens } = await master.createMatch("backgammon", {
+      white: { kind: "human" },
+      black: {
+        kind: "engine",
+        engineId: "expectiminimax",
+        limits: { maxDepth: 1 },
+      },
+    });
+    await driver.idle();
+    let view = await master.getMatch(match.id);
+    const moves = () => view.moves.filter((e) => e.kind === "move").length;
+    // Seats alternate, so after four Moves the Engine has played two.
+    while (moves() < 4) {
+      // The Engine has replied (or white won the opening roll).
+      assertEquals(view.toMove, "white");
+      await master.apply(view.id, { token: tokens.white! }, {
+        kind: "move",
+        move: view.legalMoves[0]!,
+      });
+      await driver.idle();
+      view = await master.getMatch(view.id);
+    }
+    assertEquals(view.outcome, null);
+  } finally {
+    await driver.close();
+  }
 });

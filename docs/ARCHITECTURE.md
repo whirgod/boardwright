@@ -187,8 +187,8 @@ core  <-  games/*  <-  engines/*
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
-  checkers and chess (minimax Engines), and backgammon (a Game with chance; no Engine yet, so
-  human Players only).
+  checkers and chess (minimax Engines), and backgammon (a Game with chance; expectiminimax
+  Engine `engines/backgammon-expecti`).
 - `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.

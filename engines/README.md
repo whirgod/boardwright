@@ -83,8 +83,10 @@ export const engine = createExpectiminimaxEngine({
 
 ## Game Engines
 
-Each composes `engines/minimax` with a heuristic evaluation (from the Seat to move) and exports
-`rules` and `engine`. The trees are too large to solve: pass `maxDepth` and/or `maxTimeMs`.
+Each composes an Engine library with a heuristic evaluation and exports `rules` and `engine`:
+`engines/minimax` (evaluation from the Seat to move) for Games without chance,
+`engines/expectiminimax` for Games with chance. The trees are too large to solve: pass
+`maxDepth` and/or `maxTimeMs`.
 
 - `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
 - `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
@@ -95,3 +97,7 @@ Each composes `engines/minimax` with a heuristic evaluation (from the Seat to mo
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
   switching to an endgame table. The library has no move-ordering hook yet, so search is plain
   alpha-beta; use `maxDepth` (3-4) or `maxTimeMs`.
+- `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
+  borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
+  squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without
+  `maxDepth` stop at depth 2 (a few hundred ms; depth 3 takes about half a minute).
