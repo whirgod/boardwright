@@ -1,3 +1,4 @@
+import { backgammon } from "@boardwright/game-backgammon";
 import { checkers } from "@boardwright/game-checkers";
 import { chess } from "@boardwright/game-chess";
 import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
@@ -43,4 +44,6 @@ export const hostedCatalog: readonly CatalogGame[] = [
       module: import.meta.resolve("@boardwright/engine-chess-minimax"),
     }],
   },
+  // No Engine yet (an expectiminimax Engine follows, #17): human Players only.
+  { game: erase(backgammon), engines: [] },
 ];

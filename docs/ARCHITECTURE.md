@@ -10,7 +10,8 @@ apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the we
 apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play; planned: Review, analysis overlay
 packages/testing  Contract test kits every Game / Engine runs (assertGameRulesContract,
                   assertChanceGameRulesContract, assertEngineContract) + diceRace, a tiny Game with chance
-games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
+games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference;
+                  games/backgammon implements ChanceGameRules)
 engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
                   engines/tic-tac-toe-minimax (also engines/chess-minimax). It exports
@@ -179,7 +180,8 @@ core  <-  games/*  <-  engines/*
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
-  checkers and chess (minimax Engines).
+  checkers and chess (minimax Engines), and backgammon (a Game with chance; no Engine yet, so
+  human Players only).
 - `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
