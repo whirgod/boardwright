@@ -32,6 +32,8 @@ export interface MatchView {
   readonly outcome: Outcome | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** 1 when created, +1 per change. */
+  readonly version: number;
 }
 
 export interface CreatedMatch {

@@ -1,7 +1,6 @@
-// How the UI words an Outcome. The only place that reads Outcome fields, so a
-// structured Outcome kind (#33: by the rules / Resignation / Forfeit) changes
-// this module only. Reasons are never parsed; known codes get a label and
-// anything else is shown as sent.
+// How the UI words an Outcome, from its structured kind (rules /
+// Resignation / Forfeit). The only place that reads Outcome fields. Reason
+// codes are never parsed: known ones get a label, others are shown as sent.
 import type { Outcome, Seat } from "@boardwright/core";
 
 export interface OutcomeText {
@@ -10,9 +9,20 @@ export interface OutcomeText {
   readonly detail: string;
 }
 
-const REASONS: Readonly<Record<string, string>> = {
+/** Reasons a Game's rules end a Match. */
+const RULE_REASONS: Readonly<Record<string, string>> = {
   "three-in-a-row": "three in a row",
   "board-full": "the board is full",
+};
+
+/** Why the Game master imposed a Forfeit. */
+const FORFEIT_REASONS: Readonly<Record<string, string>> = {
+  "timeout": "ran out of time",
+  "illegal-move": "played an illegal Move",
+  "engine-error": "the Engine failed",
+  "worker-error": "the Engine crashed",
+  "unreadable-reply": "the Engine sent an unreadable reply",
+  "not-registered": "the Engine is not available",
 };
 
 /** A Seat for display: "x" -> "X", "white" -> "White". */
@@ -21,10 +31,23 @@ export function seatLabel(seat: Seat): string {
 }
 
 export function describeOutcome(outcome: Outcome): OutcomeText {
-  return {
-    headline: outcome.winner === undefined
-      ? "Draw"
-      : `${seatLabel(outcome.winner)} wins`,
-    detail: REASONS[outcome.reason] ?? outcome.reason,
-  };
+  const headline = outcome.winner === undefined
+    ? "Draw"
+    : `${seatLabel(outcome.winner)} wins`;
+  switch (outcome.kind) {
+    case "rules":
+      return {
+        headline,
+        detail: RULE_REASONS[outcome.reason] ?? outcome.reason,
+      };
+    case "resignation":
+      return { headline, detail: `${seatLabel(outcome.seat)} resigned` };
+    case "forfeit":
+      return {
+        headline,
+        detail: `${seatLabel(outcome.seat)} forfeited: ${
+          FORFEIT_REASONS[outcome.reason] ?? outcome.reason
+        }`,
+      };
+  }
 }

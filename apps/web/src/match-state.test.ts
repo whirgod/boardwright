@@ -21,6 +21,7 @@ const MATCH: MatchView = {
   outcome: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
+  version: 1,
 };
 
 Deno.test("matchStatus: your Move when this browser holds the token of the human Seat to move", () => {
@@ -52,7 +53,7 @@ Deno.test("matchStatus: finished once the Match has an Outcome", () => {
   const match = {
     ...MATCH,
     toMove: null,
-    outcome: { winner: "x", reason: "three-in-a-row" },
+    outcome: { kind: "rules", winner: "x", reason: "three-in-a-row" } as const,
   };
   assertEquals(matchStatus(match, { x: "tx" }), {
     kind: "finished",
@@ -107,7 +108,7 @@ Deno.test("invites: hand over one of several human Seats before the first Move",
   const finished = {
     ...fresh,
     toMove: null,
-    outcome: { reason: "board-full" },
+    outcome: { kind: "rules", reason: "board-full" } as const,
   };
   assertEquals(invites(finished, both), []);
 });

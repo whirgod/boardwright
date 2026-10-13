@@ -140,7 +140,7 @@ Match has an Outcome (switch to the stream once #9 lands).
 - DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`),
   `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
   `match-state.ts` (Match status, Move list rows, Seat assignment), `outcome.ts` (the only place
-  that words an Outcome), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
+  that words an Outcome, by its kind; reason codes are labelled, never parsed), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
 - Seat tokens never leave the browser except in Move requests and share links, and a held token
   is never overwritten or deleted (the server shows it only once). The creator of a human vs
   human Match holds both Seats; before the first Move it can give one away, which keeps the token
