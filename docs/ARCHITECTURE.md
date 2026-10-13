@@ -62,7 +62,7 @@ core  <-  games/*  <-  engines/*
   the Match regardless of the Position. Seams for #7/#9:
   - `playAs(id, seat, move)` plays for Seats the server drives itself (Engines); token-holding
     Seats are refused (`not-server-driven`).
-  - `forfeit(id, seat, reason)` ends the Match for a server-driven Seat that failed: the other
+  - `forfeit(id, seat, reason)` ends the Match for a server-driven Seat that is to move and failed: the other
     Seat wins (two-Seat Games), `reason` is the Outcome's reason.
   - `onMatchChanged(listener)` starts (sync or async) listeners with a frozen copy of the Match after every create, accepted Move
     and forfeit (e.g. to schedule an Engine's Move or push to WebSocket clients); errors and rejections are logged; returns an unsubscribe.
@@ -75,14 +75,15 @@ core  <-  games/*  <-  engines/*
   move it searches and plays the result with `playAs`, i.e. through the referee. A search that
   throws, exceeds `limits.maxTimeMs` + a grace period (default 5 s), returns no Move or a Move the
   referee refuses is retried once with a fresh Worker; then the Seat forfeits with reason
-  `engine-failure: <engineId> for <seat>: <detail>`, so a Match never hangs. `close()` aborts
+  `engine-failure: <engineId> for <seat>: <code>` (code: `engine-error`, `worker-error`, `timeout`, `illegal-move`, ...; raw error text is only logged), so a Match never hangs. An unset `limits.maxTimeMs` becomes `DEFAULT_SEARCH_TIME_MS` (5 s) when searching, so no search is unbounded. At most `maxConcurrent` (default 4) searches run at once; the rest queue. `close()` aborts
   searches in flight (no forfeit); `idle()` awaits them (tests).
 - `engine-search.ts` / `engine-worker.ts` — one Web Worker per search, always terminated
   afterwards (timeout, error, abort or reply). Messages carry only Notation strings and limits:
   `{ module, position, limits }` -> `{ ok: true, move } | { ok: false, message }`. The worker loads
   the Engine module by URL (`rules` + `engine` exports) and plays the first Move of the best Line
   of the deepest completed Analysis. Workers inherit the server's permissions (Deno's per-worker
-  `deno.permissions` is still unstable), so the tasks grant `--allow-read` of the workspace
+  `deno.permissions` is still unstable; sandboxing is tracked in #29), so Engine code is trusted
+  with the server's net/env/read access and the tasks grant `--allow-read` of the workspace
   source dirs, which loading the worker needs; Engines are first-party code.
 - `main.ts` wires it: `GameMaster` with the `minimax` tic-tac-toe Engine, an `EngineDriver`, `buildApp({ master })`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation

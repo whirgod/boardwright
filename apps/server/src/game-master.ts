@@ -251,8 +251,15 @@ export class GameMaster {
       );
     }
     const { game, position } = this.#restore(record);
-    if (record.outcome || game.toMove(position) === undefined) {
+    const toMove = game.toMove(position);
+    if (record.outcome || toMove === undefined) {
       throw new MatchError("match-finished", "The Match is finished");
+    }
+    if (toMove !== seat) {
+      throw new MatchError(
+        "not-your-turn",
+        `It is ${toMove}'s turn, not ${seat}'s`,
+      );
     }
     const others = game.seats.filter((s) => s !== seat);
     const outcome: Outcome = {

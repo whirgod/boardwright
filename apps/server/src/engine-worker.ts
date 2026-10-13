@@ -3,7 +3,9 @@
 /**
  * Worker entry: runs one Engine search per message. Only Notation strings and
  * plain limits cross the boundary (see `engine-search.ts` for the protocol).
- * Runs with no permissions; the Engine module is loaded by URL.
+ * The worker inherits the server's permissions (net, env, scoped read): Engine
+ * code is trusted, sandboxing is a known gap (see #29). The Engine module is
+ * loaded by URL.
  */
 import type { Engine, GameRules, SearchLimits } from "@boardwright/core";
 import type { SearchReply, SearchRequest } from "./engine-search.ts";

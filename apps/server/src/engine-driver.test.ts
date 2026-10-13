@@ -1,7 +1,11 @@
 import { assert, assertEquals, assertMatch, assertRejects } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { buildApp } from "./app.ts";
-import { EngineDriver, type EngineDriverOptions } from "./engine-driver.ts";
+import {
+  DEFAULT_SEARCH_TIME_MS,
+  EngineDriver,
+  type EngineDriverOptions,
+} from "./engine-driver.ts";
 import { SearchError, searchInWorker } from "./engine-search.ts";
 import { type EngineEntry, EngineRegistry } from "./engines.ts";
 import { GameMaster, type MatchView } from "./game-master.ts";
@@ -102,12 +106,13 @@ Deno.test("Engine vs Engine reaches an Outcome (a draw)", async () => {
 async function failedMatch(
   entry: string,
   options: EngineDriverOptions,
+  limits = {},
 ): Promise<MatchView> {
   const { master, driver } = setup(options);
   try {
     const { match, tokens } = await master.createMatch("tic-tac-toe", {
       x: human,
-      o: engine(entry),
+      o: engine(entry, limits),
     });
     await master.playMove(match.id, "a1", tokens.x!);
     await driver.idle();
@@ -120,27 +125,36 @@ async function failedMatch(
 Deno.test("an Engine that throws forfeits after a retry", async () => {
   const view = await failedMatch("crash", {});
   assertEquals(view.outcome?.winner, "x");
-  assertMatch(view.outcome!.reason, /^engine-failure: crash for o: .*boom/);
+  assertMatch(
+    view.outcome!.reason,
+    /^engine-failure: crash for o: engine-error$/,
+  );
   assertEquals(view.toMove, null);
   assertEquals(view.legalMoves, []);
 });
 
 Deno.test("an Engine that hangs is cut off at the deadline and forfeits", async () => {
-  const view = await failedMatch("hang", { graceMs: 150 });
+  const view = await failedMatch("hang", { graceMs: 150 }, { maxTimeMs: 0 });
   assertEquals(view.outcome?.winner, "x");
-  assertMatch(view.outcome!.reason, /engine-failure: hang.*no reply within/);
+  assertMatch(view.outcome!.reason, /^engine-failure: hang for o: timeout$/);
 });
 
 Deno.test("an Engine proposing an illegal Move forfeits", async () => {
   const view = await failedMatch("illegal", {});
   assertEquals(view.outcome?.winner, "x");
-  assertMatch(view.outcome!.reason, /engine-failure: illegal/);
+  assertMatch(
+    view.outcome!.reason,
+    /^engine-failure: illegal for o: illegal-move$/,
+  );
   assertEquals(view.moves, ["a1"]);
 });
 
 Deno.test("an Engine proposing no Move forfeits", async () => {
   const view = await failedMatch("empty", { attempts: 1 });
-  assertMatch(view.outcome!.reason, /returned no Move/);
+  assertMatch(
+    view.outcome!.reason,
+    /^engine-failure: empty for o: engine-error$/,
+  );
 });
 
 Deno.test("an unregistered Engine forfeits (registry changed under a stored Match)", async () => {
@@ -159,7 +173,10 @@ Deno.test("an unregistered Engine forfeits (registry changed under a stored Matc
     await driver.idle();
     const view = await after.getMatch(match.id);
     assertEquals(view.outcome?.winner, "x");
-    assertMatch(view.outcome!.reason, /Engine is not registered/);
+    assertMatch(
+      view.outcome!.reason,
+      /^engine-failure: minimax for o: not-registered$/,
+    );
   } finally {
     await driver.close();
   }
@@ -171,7 +188,7 @@ Deno.test("a failed search is retried with a fresh attempt", async () => {
     search: (request) => {
       calls++;
       return calls === 1
-        ? Promise.reject(new SearchError("flaky"))
+        ? Promise.reject(new SearchError("worker-error", "flaky"))
         : Promise.resolve(
           ticTacToe.legalMoves(
             ticTacToe.notation.decodePosition(request.position),
@@ -190,6 +207,111 @@ Deno.test("a failed search is retried with a fresh attempt", async () => {
     assertEquals(calls, 2);
     assertEquals(view.outcome, null);
     assertEquals(view.moves.length, 2);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("retries are exhausted by an always failing search, then the Seat forfeits", async () => {
+  let calls = 0;
+  const { master, driver } = setup({
+    search: () => {
+      calls++;
+      return Promise.reject(new Error("/secret/path/boom"));
+    },
+  });
+  try {
+    const { match, tokens } = await master.createMatch("tic-tac-toe", {
+      x: human,
+      o: engine("minimax"),
+    });
+    await master.playMove(match.id, "a1", tokens.x!);
+    await driver.idle();
+    const view = await master.getMatch(match.id);
+    assertEquals(calls, 2);
+    assertEquals(view.outcome, {
+      winner: "x",
+      reason: "engine-failure: minimax for o: engine-error",
+    });
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("an unset maxTimeMs gets the default time limit, not none", async () => {
+  const seen: { limits: unknown; timeoutMs: number }[] = [];
+  const { master, driver } = setup({
+    graceMs: 100,
+    search: (request, options) => {
+      seen.push({ limits: request.limits, timeoutMs: options.timeoutMs });
+      return Promise.resolve("a1");
+    },
+  });
+  try {
+    await master.createMatch("tic-tac-toe", {
+      x: engine("minimax", { maxDepth: 3 }),
+      o: human,
+    });
+    await driver.idle();
+    assertEquals(seen, [{
+      limits: { maxDepth: 3, maxTimeMs: DEFAULT_SEARCH_TIME_MS },
+      timeoutMs: DEFAULT_SEARCH_TIME_MS + 100,
+    }]);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("closing while the referee judges a Move does not forfeit", async () => {
+  const ref: { driver?: EngineDriver } = {};
+  const { master, driver } = setup({
+    search: () => {
+      void ref.driver!.close();
+      return Promise.resolve("z9"); // refused by playAs
+    },
+  });
+  ref.driver = driver;
+  const { match } = await master.createMatch("tic-tac-toe", {
+    x: engine("minimax"),
+    o: human,
+  });
+  await driver.idle();
+  const view = await master.getMatch(match.id);
+  assertEquals(view.outcome, null);
+  assertEquals(view.moves, []);
+});
+
+Deno.test("searches beyond maxConcurrent queue instead of running", async () => {
+  let running = 0;
+  let peak = 0;
+  const { master, driver } = setup({
+    maxConcurrent: 2,
+    search: async (request) => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      running--;
+      return ticTacToe.notation.encodeMove(
+        ticTacToe.legalMoves(
+          ticTacToe.notation.decodePosition(request.position),
+        )[0]!,
+      );
+    },
+  });
+  try {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const { match } = await master.createMatch("tic-tac-toe", {
+        x: engine("minimax"),
+        o: engine("minimax"),
+      });
+      ids.push(match.id);
+    }
+    await driver.idle();
+    assertEquals(peak, 2);
+    for (const id of ids) {
+      assert((await master.getMatch(id)).outcome !== null);
+    }
   } finally {
     await driver.close();
   }

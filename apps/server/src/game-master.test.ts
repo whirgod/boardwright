@@ -538,6 +538,13 @@ Deno.test("an Engine Seat gets no token and forfeit ends the Match", async () =>
   assertEquals(Object.keys(tokens), ["x"]);
   assertEquals(match.seats.o, engineSeat);
 
+  // Not o's turn yet: a stale forfeit is refused.
+  const early = await assertRejects(
+    () => master.forfeit(match.id, "o", "too early"),
+    MatchError,
+  );
+  assertEquals(early.code, "not-your-turn");
+  await master.playMove(match.id, "a1", tokens.x!);
   const forfeited = await master.forfeit(match.id, "o", "engine-failure: test");
   assertEquals(forfeited.outcome, {
     winner: "x",

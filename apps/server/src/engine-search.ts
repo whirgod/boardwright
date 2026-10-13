@@ -14,9 +14,21 @@ export type SearchReply =
   | { readonly ok: true; readonly move: string }
   | { readonly ok: false; readonly message: string };
 
+/** Why a search failed, in words safe to show publicly (details are logged). */
+export type SearchFailure =
+  | "engine-error"
+  | "worker-error"
+  | "unreadable-reply"
+  | "timeout"
+  | "aborted";
+
 export class SearchError extends Error {
   override readonly name = "SearchError";
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(
+    readonly code: SearchFailure,
+    message: string,
+    options?: ErrorOptions,
+  ) {
     super(message, options);
   }
 }
@@ -43,7 +55,7 @@ export function searchInWorker(
   const { signal } = options;
   return new Promise<string>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new SearchError("search aborted"));
+      reject(new SearchError("aborted", "search aborted"));
       return;
     }
     const worker = new Worker(WORKER_URL, { type: "module" });
@@ -53,11 +65,11 @@ export function searchInWorker(
       worker.terminate();
       settle();
     };
-    const fail = (message: string, cause?: unknown) =>
-      finish(() => reject(new SearchError(message, { cause })));
-    const onAbort = () => fail("search aborted");
+    const fail = (code: SearchFailure, message: string) =>
+      finish(() => reject(new SearchError(code, message)));
+    const onAbort = () => fail("aborted", "search aborted");
     const timer = setTimeout(
-      () => fail(`no reply within ${options.timeoutMs} ms`),
+      () => fail("timeout", `no reply within ${options.timeoutMs} ms`),
       options.timeoutMs,
     );
     signal?.addEventListener("abort", onAbort);
@@ -65,13 +77,14 @@ export function searchInWorker(
     worker.onmessage = (event: MessageEvent<SearchReply>) => {
       const reply = event.data;
       if (reply.ok) finish(() => resolve(reply.move));
-      else fail(`Engine failed: ${reply.message}`);
+      else fail("engine-error", `Engine failed: ${reply.message}`);
     };
     worker.onerror = (event) => {
       event.preventDefault();
-      fail(`worker error: ${event.message}`);
+      fail("worker-error", `worker error: ${event.message}`);
     };
-    worker.onmessageerror = () => fail("unreadable worker reply");
+    worker.onmessageerror = () =>
+      fail("unreadable-reply", "unreadable worker reply");
     worker.postMessage(request);
   });
 }

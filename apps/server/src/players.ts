@@ -16,7 +16,7 @@ export interface HumanPlayerSpec {
 export interface EnginePlayerSpec {
   readonly kind: "engine";
   readonly engineId: string;
-  /** Applied to every search of this Seat; `{}` searches until the tree is solved. */
+  /** Applied to every search of this Seat; Unset `maxTimeMs` becomes the server default (`DEFAULT_SEARCH_TIME_MS`). */
   readonly limits: SearchLimits;
 }
 
