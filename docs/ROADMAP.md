@@ -16,13 +16,12 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Game checkers (English draughts), `@boardwright/game-checkers` (#4)
 - [x] Contract kit: bounded illegal-Move probing (#24)
 - [x] Engine Players in Matches, run in Web Workers; tic-tac-toe Engine (#7)
+- [x] Engines for nine men's morris and checkers (#8); Engine contract kit (#35); glossary drift (#37)
 
 ## Next
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-2. **Engines in play** — morris and checkers Engines (#8); Engine contract kit (#35); glossary
-   drift cleanup (#37).
 3. **Deepen before building on it** (architecture review 2026-10-13) — referee applies every Match
    change with structured Outcomes and versioned events (#33); Engine runner streaming Analysis
    (#34); hosted catalog of Games and Engines (#36); web UI foundation (#10).
