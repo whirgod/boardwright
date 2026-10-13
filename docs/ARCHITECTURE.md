@@ -127,7 +127,8 @@ core  <-  games/*  <-  engines/*
   to it first); `engines` is passed through to the built one. Request bodies on `/api/*`
   are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
   client text echoed in error messages is truncated. With `webRoot`, every non-`/api/` GET is
-  served from that directory (`@std/http` `serveDir`; missing files 404).
+  served from that directory (`@std/http` `serveDir`; missing files 404; `index.html` with
+  `Cache-Control: no-cache`, all with `Referrer-Policy: no-referrer` and `nosniff`).
 
 ## Web UI (`apps/web`)
 
@@ -140,19 +141,27 @@ Match has an Outcome (switch to the stream once #9 lands).
   `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
   `match-state.ts` (Match status, Move list rows, Seat assignment), `outcome.ts` (the only place
   that words an Outcome), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
-- Seat tokens never leave the browser except in Move requests and share links. A share link
-  `#/matches/:id?seat=<seat>&token=<token>` hands a Seat to the Opponent (the fragment is not sent
-  to the server); opening it stores the token and drops it from the URL.
+- Seat tokens never leave the browser except in Move requests and share links, and a held token
+  is never overwritten or deleted (the server shows it only once). The creator of a human vs
+  human Match holds both Seats; before the first Move it can give one away, which keeps the token
+  but stops playing that Seat here and shows its share link
+  `#/matches/:id?seat=<seat>&token=<token>` until each Seat has moved (the fragment is not sent to
+  the server; UI responses carry `Referrer-Policy: no-referrer`). Opening a link stores the token,
+  unless a different one is already held for that Seat, and drops it from the URL.
 - **Board-renderer seam** (`renderers/`): a Game's `BoardRenderer<Position, Move>` receives the
   Game's typed Position (decoded with its own Notation, never re-parsed) and returns a DOM-free
-  `BoardScene` (board and piece shapes, clickable targets such as squares or points, in board
-  coordinates); `moveTargets(move)` names the targets a Move touches (`[cell]`, `[from, to]`), and
-  `input(position, legalMoves, selection, target)` turns clicks into a Move intent (`move`,
-  `select` for multi-click Moves, `ignore`). `bindRenderer(rules, renderer)` wraps it behind
-  Notation strings as a `GameView`, which adds highlights (last Move by replaying the Move list,
-  selection, destinations) and arrows (for Analysis Lines later). One generic `board.tsx` draws any
-  scene as SVG. Implemented for tic-tac-toe; Games without one fall back to Notation text and
-  legal-Move buttons.
+  `BoardScene` (board shapes, piece shapes, clickable targets such as squares or points, in board
+  coordinates). `moveTargets(move)` returns `{ path, effects? }`: `path` is where the piece goes
+  (`[cell]`, `[from, to]`, `[from, land1, land2]`) and drives arrows and the last-Move highlight;
+  `effects` are further targets the Move picks, such as a piece removed after a mill; clicking
+  `[...path, ...effects]` composes the Move. `input(position, legalMoves, selection, target)`
+  turns clicks into a Move intent (`move`, `select` for multi-click Moves, `ignore`).
+  `bindRenderer(rules, renderer)` wraps it behind Notation strings as a `GameView`, which adds
+  highlights (last Move by replaying the Move list, selection, destinations) and arrows (for
+  Analysis Lines later); Moves that do not decode are skipped, and a Position that does not decode
+  makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
+  `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe; Games without one fall back to
+  Notation text and legal-Move buttons.
 
 ## API
 

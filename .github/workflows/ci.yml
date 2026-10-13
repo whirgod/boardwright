@@ -15,3 +15,5 @@ jobs:
           deno-version: v2.x
           cache: true
       - run: deno task check
+      - name: Bundle the web UI
+        run: deno task build:web && test -f apps/web/dist/index.html

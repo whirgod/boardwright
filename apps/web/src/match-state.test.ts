@@ -2,12 +2,13 @@ import { assertEquals } from "@std/assert";
 import type { MatchView } from "./api.ts";
 import {
   boardRequest,
+  invites,
   matchStatus,
   moveListRows,
   playerLabel,
   seatPlayers,
-  shareableSeats,
 } from "./match-state.ts";
+import { playingTokens } from "./seat-tokens.ts";
 
 const MATCH: MatchView = {
   id: "m1",
@@ -73,22 +74,55 @@ Deno.test("boardRequest: legal Moves only on your Move", () => {
   );
 });
 
-Deno.test("shareableSeats: human Seats while this browser holds more than one", () => {
-  const humans = {
+Deno.test("invites: hand over one of several human Seats before the first Move", () => {
+  const fresh: MatchView = {
     ...MATCH,
     seats: { x: { kind: "human" }, o: { kind: "human" } },
-  } as const;
-  assertEquals(shareableSeats(humans, { x: "tx", o: "to" }), ["x", "o"]);
-  // Holding one Seat: nothing to hand over.
-  assertEquals(shareableSeats(humans, { x: "tx" }), []);
-  // Engine Seats are never shared.
-  assertEquals(shareableSeats(MATCH, { x: "tx", o: "to" }), []);
+    moves: [],
+    toMove: "x",
+  };
+  const both = { tokens: { x: "tx", o: "to" }, handedOver: [] };
+  assertEquals(invites(fresh, both), [
+    { seat: "x", token: "tx", handedOver: false, canHandOver: true },
+    { seat: "o", token: "to", handedOver: false, canHandOver: true },
+  ]);
+  // After handing O over, X cannot be given away too (one Seat stays here).
+  const shared = { ...both, handedOver: ["o"] };
+  assertEquals(invites(fresh, shared), [
+    { seat: "x", token: "tx", handedOver: false, canHandOver: false },
+    { seat: "o", token: "to", handedOver: true, canHandOver: false },
+  ]);
+  // The link stays visible after the first Move, until each Seat has moved.
+  const afterOne = { ...fresh, moves: ["a1"], toMove: "o" };
+  assertEquals(invites(afterOne, shared).map((i) => i.handedOver), [
+    false,
+    true,
+  ]);
+  assertEquals(invites({ ...afterOne, moves: ["a1", "b2"] }, shared), []);
+  // Playing both Seats here (hot seat): nothing to offer once play started.
+  assertEquals(invites(afterOne, both), []);
+  // Holding one Seat, Engine Seats, finished Matches: nothing to offer.
+  assertEquals(invites(fresh, { tokens: { x: "tx" }, handedOver: [] }), []);
+  assertEquals(invites({ ...MATCH, moves: [] }, both), []);
   const finished = {
-    ...humans,
+    ...fresh,
     toMove: null,
     outcome: { reason: "board-full" },
   };
-  assertEquals(shareableSeats(finished, { x: "tx", o: "to" }), []);
+  assertEquals(invites(finished, both), []);
+});
+
+Deno.test("matchStatus: a handed-over Seat is not played here", () => {
+  const humans: MatchView = {
+    ...MATCH,
+    seats: { x: { kind: "human" }, o: { kind: "human" } },
+  };
+  const holding = { tokens: { x: "tx", o: "to" }, handedOver: ["o"] };
+  assertEquals(matchStatus(humans, playingTokens(holding)), {
+    kind: "waiting",
+    seat: "o",
+    player: { kind: "human" },
+  });
 });
 
 Deno.test("moveListRows: pairs Moves under 1-based Move numbers", () => {

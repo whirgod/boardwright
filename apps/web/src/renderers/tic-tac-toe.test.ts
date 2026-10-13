@@ -70,6 +70,6 @@ Deno.test("input: a click on a legal cell is that Move; others are ignored", () 
 Deno.test("moveTargets: a placement touches its cell", () => {
   assertEquals(
     ticTacToeRenderer.moveTargets("c3", ticTacToe.initialPosition()),
-    ["c3"],
+    { path: ["c3"] },
   );
 });

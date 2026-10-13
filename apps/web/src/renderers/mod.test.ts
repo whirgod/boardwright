@@ -1,19 +1,26 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
-import type { BoardRenderer } from "./board.ts";
+import type { BoardRenderer, MoveTargets } from "./board.ts";
 import { bindRenderer, type BoardRequest, gameView } from "./mod.ts";
 
-// A tiny two-step Game: Moves "from-to" between points a, b, c. Positions are
-// the Move list joined with "|", so tests can see what the renderer received.
-const MOVES = ["a-b", "a-c", "b-c"];
-const slide: GameRules<string[], { from: string; to: string }> = {
+// A tiny Game with multi-click Moves: "from-to" between points a, b, c, and a
+// compound Move "b-a+c" that also removes the piece on c (like a mill in nine
+// men's morris). Positions are the Move list joined with "|", so tests can see
+// what the renderer received.
+const MOVES = ["a-b", "a-c", "b-c", "b-a+c"];
+interface SlideMove {
+  from: string;
+  to: string;
+  take?: string;
+}
+const slide: GameRules<string[], SlideMove> = {
   id: "slide",
   name: "Slide",
   seats: ["first", "second"],
   initialPosition: () => [],
   toMove: (p) => (p.length % 2 === 0 ? "first" : "second"),
-  legalMoves: () => MOVES.map((m) => ({ from: m[0]!, to: m[2]! })),
-  play: (p, m) => [...p, `${m.from}-${m.to}`],
+  legalMoves: () => MOVES.map((m) => slide.notation.decodeMove(m, [])),
+  play: (p, m) => [...p, slide.notation.encodeMove(m)],
   outcome: () => undefined,
   notation: {
     encodePosition: (p) => p.join("|"),
@@ -21,16 +28,27 @@ const slide: GameRules<string[], { from: string; to: string }> = {
       if (text === "bad") throw new Error("bad position");
       return text === "" ? [] : text.split("|");
     },
-    encodeMove: (m) => `${m.from}-${m.to}`,
+    encodeMove: (m) => `${m.from}-${m.to}${m.take ? `+${m.take}` : ""}`,
     decodeMove: (text) => {
       if (!MOVES.includes(text)) throw new Error(`bad move ${text}`);
-      return { from: text[0]!, to: text[2]! };
+      return text[4]
+        ? { from: text[0]!, to: text[2]!, take: text[4] }
+        : { from: text[0]!, to: text[2]! };
     },
   },
 };
 
+const targetsOf = (m: SlideMove): MoveTargets =>
+  m.take
+    ? { path: [m.from, m.to], effects: [m.take] }
+    : { path: [m.from, m.to] };
+const clicksOf = (m: SlideMove) => {
+  const { path, effects = [] } = targetsOf(m);
+  return [...path, ...effects];
+};
+
 const seen: string[][] = [];
-const slideRenderer: BoardRenderer<string[], { from: string; to: string }> = {
+const slideRenderer: BoardRenderer<string[], SlideMove> = {
   scene(position) {
     seen.push(position);
     return {
@@ -48,15 +66,19 @@ const slideRenderer: BoardRenderer<string[], { from: string; to: string }> = {
       })),
     };
   },
-  moveTargets: (m) => [m.from, m.to],
+  moveTargets: targetsOf,
   input(_position, legal, selection, target) {
-    if (selection.length === 0) {
-      return legal.some((m) => m.from === target)
-        ? { kind: "select", selection: [target] }
-        : { kind: "ignore" };
-    }
-    const move = legal.find((m) => m.from === selection[0] && m.to === target);
-    return move ? { kind: "move", move } : { kind: "select", selection: [] };
+    const picked = [...selection, target];
+    const starts = (m: SlideMove) =>
+      picked.every((t, i) => clicksOf(m)[i] === t);
+    const move = legal.find((m) =>
+      starts(m) && clicksOf(m).length === picked.length
+    );
+    if (move) return { kind: "move", move };
+    if (legal.some(starts)) return { kind: "select", selection: picked };
+    return selection.length > 0
+      ? { kind: "select", selection: [] }
+      : { kind: "ignore" };
   },
 };
 
@@ -147,9 +169,54 @@ Deno.test("click: selections pass through, Moves come back in Notation", () => {
     kind: "move",
     move: "a-c",
   });
-  assertEquals(view.click(request({ selection: ["b"] }), "a"), {
+  assertEquals(view.click(request({ selection: ["a"] }), "a"), {
     kind: "select",
     selection: [],
+  });
+});
+
+Deno.test("compound Move: path drives arrows and highlights, effects are clicked last", () => {
+  // Composing b-a+c: b, a, then the piece to remove.
+  assertEquals(view.click(request({ selection: ["b"] }), "a"), {
+    kind: "select",
+    selection: ["b", "a"],
+  });
+  assertEquals(
+    view.board(request({ selection: ["b", "a"] })).highlights,
+    [
+      { target: "b", kind: "selected" },
+      { target: "a", kind: "selected" },
+      { target: "c", kind: "destination" },
+    ],
+  );
+  assertEquals(view.click(request({ selection: ["b", "a"] }), "c"), {
+    kind: "move",
+    move: "b-a+c",
+  });
+  // The arrow runs along the path only, not to the removed piece.
+  assertEquals(view.board(request({ arrows: ["b-a+c"] })).arrows, [
+    { from: "b", to: "a", kind: "line" },
+  ]);
+  // As the last Move, the removed point is marked as an effect.
+  assertEquals(view.board(request({ moves: ["a-b", "b-a+c"] })).highlights, [
+    { target: "b", kind: "last-move" },
+    { target: "a", kind: "last-move" },
+    { target: "c", kind: "last-move-effect" },
+  ]);
+});
+
+Deno.test("board and click skip Moves that do not decode instead of throwing", () => {
+  const stale = request({ legalMoves: ["zz", "a-b"], arrows: ["zz", "a-c"] });
+  const model = view.board(stale);
+  assertEquals(model.arrows, [{ from: "a", to: "c", kind: "line" }]);
+  assertEquals(view.click(stale, "a"), { kind: "select", selection: ["a"] });
+  assertEquals(view.click({ ...stale, selection: ["a"] }, "c"), {
+    kind: "select",
+    selection: [],
+  });
+  // An undecodable Position ignores clicks (board() throws; the page falls back).
+  assertEquals(view.click(request({ position: "bad" }), "a"), {
+    kind: "ignore",
   });
 });
 

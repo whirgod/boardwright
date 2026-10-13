@@ -116,6 +116,25 @@ async function readBody<T>(
     : { ok: false, code: "invalid-request", problem: parsed.problem };
 }
 
+/**
+ * Headers for web UI files. Pages may carry seat tokens in the URL fragment,
+ * so never send a Referer; `index.html` names hashed bundles that change on
+ * every build, so it is revalidated each time.
+ */
+function withUiHeaders(response: Response, path: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Referrer-Policy", "no-referrer");
+  headers.set("X-Content-Type-Options", "nosniff");
+  if (path === "/" || path.endsWith(".html")) {
+    headers.set("Cache-Control", "no-cache");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export function buildApp(options: AppOptions): Hono {
   const master = "master" in options ? options.master : new GameMaster({
     games: new GameRegistry(options.games),
@@ -191,13 +210,14 @@ export function buildApp(options: AppOptions): Hono {
   const fsRoot = options.webRoot;
   if (fsRoot !== undefined) {
     // The UI routes with the URL hash, so only real files exist here.
-    app.get(
-      "*",
-      (c) =>
-        c.req.path.startsWith("/api/")
-          ? c.notFound()
-          : serveDir(c.req.raw, { fsRoot, quiet: true }),
-    );
+    app.get("*", async (c) => {
+      const { path } = c.req;
+      if (path === "/api" || path.startsWith("/api/")) return c.notFound();
+      return withUiHeaders(
+        await serveDir(c.req.raw, { fsRoot, quiet: true }),
+        path,
+      );
+    });
   }
 
   app.notFound((c) =>

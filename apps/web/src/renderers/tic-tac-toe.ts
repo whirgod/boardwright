@@ -95,7 +95,7 @@ export const ticTacToeRenderer: BoardRenderer<
     });
     return { width: SIZE, height: SIZE, board, pieces, targets };
   },
-  moveTargets: (move) => [move],
+  moveTargets: (move) => ({ path: [move] }),
   input(_position, legalMoves, _selection, target) {
     const move = legalMoves.find((m) => m === target);
     return move === undefined ? { kind: "ignore" } : { kind: "move", move };

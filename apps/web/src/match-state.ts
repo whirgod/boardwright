@@ -3,6 +3,7 @@ import type { Seat } from "@boardwright/core";
 import type { MatchView, PlayerSpec } from "./api.ts";
 import { describeOutcome, type OutcomeText } from "./outcome.ts";
 import type { BoardRequest, Selection } from "./renderers/mod.ts";
+import type { SeatHolding } from "./seat-tokens.ts";
 
 export type MatchStatus =
   | { readonly kind: "finished"; readonly outcome: OutcomeText }
@@ -60,20 +61,37 @@ export function moveListRows(moves: readonly string[]): MoveListRow[] {
   return rows;
 }
 
+/** A human Seat this browser holds, as offered in the "Invite an Opponent" box. */
+export interface Invite {
+  readonly seat: Seat;
+  readonly token: string;
+  /** Already given away: show its share link and offer to take it back. */
+  readonly handedOver: boolean;
+  /** May be given away now: before the first Move, and never the last Seat played here. */
+  readonly canHandOver: boolean;
+}
+
 /**
- * Seats this browser may hand to an Opponent with a share link: its human
- * Seats while it holds more than one (e.g. right after creating a human vs
- * human Match) and the Match is not finished.
+ * Seats this browser can hand to an Opponent, when it holds more than one
+ * human Seat (e.g. it created a human vs human Match). Handing over is
+ * possible before the first Move; a handed-over Seat's link stays visible
+ * until each Seat has moved (the Opponent has used it).
  */
-export function shareableSeats(
-  match: MatchView,
-  tokens: Readonly<Record<Seat, string>>,
-): Seat[] {
-  if (match.outcome) return [];
+export function invites(match: MatchView, holding: SeatHolding): Invite[] {
+  if (match.outcome || match.moves.length >= 2) return [];
   const seats = Object.keys(match.seats).filter((seat) =>
-    tokens[seat] !== undefined && match.seats[seat]?.kind === "human"
+    holding.tokens[seat] !== undefined && match.seats[seat]?.kind === "human"
   );
-  return seats.length > 1 ? seats : [];
+  if (seats.length < 2) return [];
+  const playing = seats.filter((s) => !holding.handedOver.includes(s));
+  const result = seats.map((seat) => ({
+    seat,
+    token: holding.tokens[seat]!,
+    handedOver: holding.handedOver.includes(seat),
+    canHandOver: match.moves.length === 0 && playing.length > 1 &&
+      playing.includes(seat),
+  }));
+  return result.some((i) => i.handedOver || i.canHandOver) ? result : [];
 }
 
 /** "Human", or the Engine's name when known (else its id). */

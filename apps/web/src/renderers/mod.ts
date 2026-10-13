@@ -43,7 +43,12 @@ export type Click =
  */
 export interface GameView {
   readonly gameId: GameId;
+  /**
+   * Throws only if `request.position` does not decode; Moves that do not
+   * decode (e.g. a stale Analysis Line) are skipped.
+   */
   board(request: BoardRequest): BoardModel;
+  /** Never throws; an undecodable Position ignores clicks. */
   click(request: BoardRequest, target: TargetId): Click;
 }
 
@@ -52,16 +57,25 @@ export function bindRenderer<Position, Move>(
   renderer: BoardRenderer<Position, Move>,
 ): GameView {
   const { notation } = rules;
-  const decode = (request: BoardRequest) => {
-    const position = notation.decodePosition(request.position);
-    const legalMoves = request.legalMoves.map((m) =>
-      notation.decodeMove(m, position)
-    );
-    return { position, legalMoves };
+
+  /** Decodes each Move text; ones that do not decode (stale or out of sync) are skipped. */
+  const decodeMoves = (texts: readonly string[], position: Position): Move[] =>
+    texts.flatMap((text) => {
+      try {
+        return [notation.decodeMove(text, position)];
+      } catch {
+        return [];
+      }
+    });
+
+  /** Targets the Move touches, clicked in order to compose it. */
+  const clicks = (move: Move, position: Position): readonly TargetId[] => {
+    const { path, effects = [] } = renderer.moveTargets(move, position);
+    return [...path, ...effects];
   };
 
-  /** Targets of the last Move, found by replaying the Move list; none if it does not replay. */
-  const lastMoveTargets = (moves: readonly string[]): readonly TargetId[] => {
+  /** The last Move's highlights, found by replaying the Move list; none if it does not replay. */
+  const lastMove = (moves: readonly string[]): Highlight[] => {
     if (moves.length === 0) return [];
     try {
       let position = rules.initialPosition();
@@ -69,7 +83,14 @@ export function bindRenderer<Position, Move>(
         position = rules.play(position, notation.decodeMove(text, position));
       }
       const last = notation.decodeMove(moves[moves.length - 1]!, position);
-      return renderer.moveTargets(last, position);
+      const { path, effects = [] } = renderer.moveTargets(last, position);
+      return [
+        ...path.map((target) => ({ target, kind: "last-move" as const })),
+        ...effects.map((target) => ({
+          target,
+          kind: "last-move-effect" as const,
+        })),
+      ];
     } catch {
       return [];
     }
@@ -78,10 +99,9 @@ export function bindRenderer<Position, Move>(
   return {
     gameId: rules.id,
     board(request) {
-      const { position, legalMoves } = decode(request);
-      const highlights: Highlight[] = lastMoveTargets(request.moves).map((
-        target,
-      ) => ({ target, kind: "last-move" }));
+      const position = notation.decodePosition(request.position);
+      const legalMoves = decodeMoves(request.legalMoves, position);
+      const highlights = lastMove(request.moves);
       const { selection } = request;
       for (const target of selection) {
         highlights.push({ target, kind: "selected" });
@@ -89,7 +109,7 @@ export function bindRenderer<Position, Move>(
       if (selection.length > 0) {
         const next = new Set<TargetId>();
         for (const move of legalMoves) {
-          const targets = renderer.moveTargets(move, position);
+          const targets = clicks(move, position);
           if (selection.every((t, i) => targets[i] === t)) {
             const target = targets[selection.length];
             if (target !== undefined) next.add(target);
@@ -100,13 +120,10 @@ export function bindRenderer<Position, Move>(
         }
       }
       const arrows: Arrow[] = [];
-      for (const text of request.arrows ?? []) {
-        const targets = renderer.moveTargets(
-          notation.decodeMove(text, position),
-          position,
-        );
-        const from = targets[0];
-        const to = targets[targets.length - 1];
+      for (const move of decodeMoves(request.arrows ?? [], position)) {
+        const { path } = renderer.moveTargets(move, position);
+        const from = path[0];
+        const to = path[path.length - 1];
         if (from !== undefined && to !== undefined) {
           arrows.push({ from, to, kind: "line" });
         }
@@ -114,10 +131,15 @@ export function bindRenderer<Position, Move>(
       return { scene: renderer.scene(position), highlights, arrows };
     },
     click(request, target) {
-      const { position, legalMoves } = decode(request);
+      let position: Position;
+      try {
+        position = notation.decodePosition(request.position);
+      } catch {
+        return { kind: "ignore" };
+      }
       const intent = renderer.input(
         position,
-        legalMoves,
+        decodeMoves(request.legalMoves, position),
         request.selection,
         target,
       );

@@ -62,7 +62,15 @@ export interface BoardScene {
   readonly targets: readonly Target[];
 }
 
-export type HighlightKind = "selected" | "destination" | "last-move";
+/**
+ * `last-move`: the path of the last Move; `last-move-effect`: what else it
+ * touched (e.g. a removed piece); `selected` / `destination`: composing a Move.
+ */
+export type HighlightKind =
+  | "selected"
+  | "destination"
+  | "last-move"
+  | "last-move-effect";
 
 export interface Highlight {
   readonly target: TargetId;
@@ -82,6 +90,19 @@ export interface Arrow {
 /** Targets picked so far while composing a Move (e.g. a piece before its destination). */
 export type Selection = readonly TargetId[];
 
+/**
+ * The targets a Move touches. `path` is where the moving piece goes, in order:
+ * `[cell]` for a placement, `[from, to]`, or `[from, land1, land2]` for a
+ * multi-jump; it drives arrows and the last-Move highlight. `effects` are
+ * further targets the Move picks without moving there, such as the point of a
+ * piece removed after a mill. Clicking `[...path, ...effects]` in order
+ * composes the Move.
+ */
+export interface MoveTargets {
+  readonly path: readonly TargetId[];
+  readonly effects?: readonly TargetId[];
+}
+
 /** What a click on the board means. */
 export type MoveIntent<Move> =
   | { readonly kind: "move"; readonly move: Move }
@@ -91,11 +112,8 @@ export type MoveIntent<Move> =
 /** Draws one Game. Receives typed Positions and Moves, decoded with the Game's Notation. */
 export interface BoardRenderer<Position, Move> {
   scene(position: Position): BoardScene;
-  /**
-   * Targets a Move involves, in order: `[cell]` for a placement, `[from, to]`
-   * (or more, for multi-step Moves) otherwise. Drives highlights and arrows.
-   */
-  moveTargets(move: Move, position: Position): readonly TargetId[];
+  /** The targets a Move touches (see `MoveTargets`). */
+  moveTargets(move: Move, position: Position): MoveTargets;
   /** Interprets a click on `target`, given the Moves the Seat to move may play. */
   input(
     position: Position,

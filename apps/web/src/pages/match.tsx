@@ -5,17 +5,21 @@ import { Board } from "../board.tsx";
 import { errorMessage } from "../errors.ts";
 import {
   boardRequest,
+  invites,
   type MatchStatus,
   matchStatus,
   moveListRows,
   playerLabel,
-  shareableSeats,
 } from "../match-state.ts";
 import { seatLabel } from "../outcome.ts";
 import { poll } from "../poller.ts";
-import { gameView, type Selection } from "../renderers/mod.ts";
+import { type BoardModel, gameView, type Selection } from "../renderers/mod.ts";
 import { routeHash, shareLink } from "../route.ts";
-import type { SeatTokens } from "../seat-tokens.ts";
+import {
+  playingTokens,
+  type SeatHolding,
+  type SeatTokens,
+} from "../seat-tokens.ts";
 
 const POLL_MS = 1000;
 
@@ -29,19 +33,28 @@ export function MatchPage(
 ) {
   const [match, setMatch] = useState<MatchView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [held, setHeld] = useState(() => tokens.get(matchId));
+  const [holding, setHolding] = useState(() => tokens.get(matchId));
+  const [notice, setNotice] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>([]);
   const [busy, setBusy] = useState(false);
   const [engineNames, setEngineNames] = useState(new Map<string, string>());
   const [reload, setReload] = useState(0);
 
-  // A share link hands this browser a Seat: keep its token, drop it from the URL.
+  // A share link hands this browser a Seat: keep its token (never replacing
+  // one already held), drop it from the URL.
   useEffect(() => {
     if (invite) {
-      tokens.add(matchId, { [invite.seat]: invite.token });
+      const kept = tokens.add(matchId, { [invite.seat]: invite.token });
       history.replaceState(null, "", routeHash({ page: "match", matchId }));
+      if (kept.length > 0) {
+        setNotice(
+          `This browser already holds Seat ${
+            seatLabel(invite.seat)
+          }; the link was not used.`,
+        );
+      }
     }
-    setHeld(tokens.get(matchId));
+    setHolding(tokens.get(matchId));
   }, [tokens, matchId, invite?.seat, invite?.token]);
 
   useEffect(() => {
@@ -72,9 +85,10 @@ export function MatchPage(
     );
   }, [api, gameId]);
 
-  const status = useMemo(() => match && matchStatus(match, held), [
+  const playing = useMemo(() => playingTokens(holding), [holding]);
+  const status = useMemo(() => match && matchStatus(match, playing), [
     match,
-    held,
+    playing,
   ]);
   const view = gameId === undefined ? undefined : gameView(gameId);
 
@@ -102,6 +116,14 @@ export function MatchPage(
 
   const request = boardRequest(match, status, selection);
   const interactive = status.kind === "your-move" && !busy;
+  let board: BoardModel | undefined;
+  let boardError: string | undefined;
+  try {
+    board = view?.board(request);
+  } catch (e) {
+    // E.g. a UI bundle out of sync with the server's Notation: show the text.
+    boardError = errorMessage(e);
+  }
   const onTarget = view && interactive
     ? (target: string) => {
       const click = view.click(request, target);
@@ -118,16 +140,20 @@ export function MatchPage(
         <StatusText status={status} engineNames={engineNames} />
       </p>
       {error && <p class="error" role="alert">{error}</p>}
+      {notice && <p class="notice">{notice}</p>}
       <div class="match-layout">
         <div>
-          {view
-            ? <Board model={view.board(request)} onTarget={onTarget} />
-            : (
-              <FallbackBoard
-                match={match}
-                onMove={interactive ? (move) => play(move, status) : undefined}
-              />
-            )}
+          {boardError && (
+            <p class="error" role="alert">
+              Cannot draw this Position: {boardError}
+            </p>
+          )}
+          {board ? <Board model={board} onTarget={onTarget} /> : (
+            <FallbackBoard
+              match={match}
+              onMove={interactive ? (move) => play(move, status) : undefined}
+            />
+          )}
         </div>
         <aside>
           <h2>Seats</h2>
@@ -136,11 +162,24 @@ export function MatchPage(
               <li key={seat}>
                 <strong>{seatLabel(seat)}</strong>:{" "}
                 {playerLabel(player, engineNames)}
-                {held[seat] !== undefined && " (you)"}
+                {playing[seat] !== undefined && " (you)"}
+                {holding.handedOver.includes(seat) && " (handed over)"}
               </li>
             ))}
           </ul>
-          <ShareLinks match={match} held={held} />
+          <InviteBox
+            match={match}
+            holding={holding}
+            onHandOver={(seat) => {
+              tokens.handOver(matchId, seat);
+              setHolding(tokens.get(matchId));
+              setSelection([]);
+            }}
+            onTakeBack={(seat) => {
+              tokens.takeBack(matchId, seat);
+              setHolding(tokens.get(matchId));
+            }}
+          />
           <h2>Move list</h2>
           {match.moves.length === 0
             ? <p class="muted">No Moves yet.</p>
@@ -186,33 +225,58 @@ function StatusText(
   }
 }
 
-/** Links that hand a human Seat this browser holds to an Opponent. */
-function ShareLinks(
-  { match, held }: {
+/**
+ * Hands a human Seat to an Opponent: this browser stops playing it (the token
+ * is kept, so it can be taken back) and shows its share link.
+ */
+function InviteBox(
+  { match, holding, onHandOver, onTakeBack }: {
     match: MatchView;
-    held: Readonly<Record<Seat, string>>;
+    holding: SeatHolding;
+    onHandOver: (seat: Seat) => void;
+    onTakeBack: (seat: Seat) => void;
   },
 ) {
-  const seats = shareableSeats(match, held);
-  if (seats.length === 0) return null;
+  const list = invites(match, holding);
+  if (list.length === 0) return null;
   const origin = `${location.origin}${location.pathname.replace(/\/$/, "")}`;
   return (
     <>
       <h2>Invite an Opponent</h2>
       <p class="muted">
-        Send the link of the Seat you do not play. Whoever opens it plays that
-        Seat, so share it only with your Opponent.
+        Give away the Seat you do not play, then send its link. Whoever opens it
+        plays that Seat, so share it only with your Opponent.
       </p>
-      {seats.map((seat) => (
-        <label key={seat} class="field">
-          <span>Seat {seatLabel(seat)}</span>
-          <input
-            readOnly
-            value={shareLink(origin, match.id, seat, held[seat]!)}
-            onFocus={(e) => e.currentTarget.select()}
-          />
-        </label>
-      ))}
+      {list.map((invite) =>
+        invite.handedOver
+          ? (
+            <div key={invite.seat} class="field">
+              <label>
+                <span>Link for Seat {seatLabel(invite.seat)}</span>
+                <input
+                  readOnly
+                  value={shareLink(
+                    origin,
+                    match.id,
+                    invite.seat,
+                    invite.token,
+                  )}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+              </label>
+              <button type="button" onClick={() => onTakeBack(invite.seat)}>
+                Play Seat {seatLabel(invite.seat)} here again
+              </button>
+            </div>
+          )
+          : invite.canHandOver && (
+            <div key={invite.seat} class="field">
+              <button type="button" onClick={() => onHandOver(invite.seat)}>
+                Give Seat {seatLabel(invite.seat)} to my Opponent
+              </button>
+            </div>
+          )
+      )}
     </>
   );
 }

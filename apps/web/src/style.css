@@ -202,3 +202,8 @@ svg.board .target:focus-visible {
 .seats-hint {
   margin-left: 0.5rem;
 }
+
+.notice {
+  color: var(--muted);
+  font-style: italic;
+}
