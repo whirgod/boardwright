@@ -34,7 +34,8 @@ packages/testing  contract test kit for Games (assertGameRulesContract)
 apps/server       Hono API + host of the web UI
 apps/web          (planned) browser UI
 games/<id>        one GameRules package per Game     (@boardwright/game-<id>)
-engines/<name>    one Engine package per Engine      (@boardwright/engine-<game>-<name>)
+engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>, e.g. minimax)
+engines/<game>-<name>  one Engine per Game (library + evaluation)  (@boardwright/engine-<game>-<name>)
 ```
 
 Dependencies flow `core <- games <- engines <- server`; never import the server from a Game or Engine.
