@@ -1,23 +1,21 @@
-import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { buildApp } from "./app.ts";
+import { verifyCatalog } from "./catalog.ts";
 import { EngineDriver } from "./engine-driver.ts";
-import { EngineRegistry } from "./engines.ts";
 import { GameMaster } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
+import { hostedCatalog } from "./hosted-catalog.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
 
 const port = Number(Deno.env.get("PORT") ?? 3000);
 const hostname = Deno.env.get("HOST") ?? "127.0.0.1";
 
+// Fails startup if a Game or Engine module of the catalog is unusable.
+const catalog = await verifyCatalog(hostedCatalog);
+
 const master = new GameMaster({
-  games: new GameRegistry([ticTacToe]),
+  games: new GameRegistry(catalog.games),
   store: new InMemoryMatchStore(),
-  engines: new EngineRegistry([{
-    id: "minimax",
-    name: "Minimax",
-    gameId: ticTacToe.id,
-    module: import.meta.resolve("@boardwright/engine-tic-tac-toe-minimax"),
-  }]),
+  engines: catalog.engines,
 });
 new EngineDriver(master);
 

@@ -7,7 +7,6 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 ```
 packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
-                  (hosts only the tic-tac-toe Game and its minimax Engine until the hosted catalog, #36, lands)
 apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play; planned: Review, analysis overlay
 packages/testing  Contract test kit every Game runs (assertGameRulesContract)
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
@@ -114,7 +113,12 @@ core  <-  games/*  <-  engines/*
   `deno.permissions` is still unstable; sandboxing is tracked in #29), so Engine code is trusted
   with the server's net/env/read access and the tasks grant `--allow-read` of the workspace
   source dirs, which loading the worker needs; Engines are first-party code.
-- `main.ts` wires it: `GameMaster` with the `minimax` tic-tac-toe Engine, an `EngineDriver`,
+- `catalog.ts` — `verifyCatalog`: the hosted catalog (`hosted-catalog.ts`: Games with their
+  Engines, registered once) is checked at startup: Engine modules load, export `rules` and
+  `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
+  library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
+  checkers (minimax Engines) and chess (no Engine yet).
+- `main.ts` wires it: `GameMaster` with the verified catalog, an `EngineDriver`,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
   strings only (Move list, Outcome, Seats with token hashes, timestamps) and a `version` for
