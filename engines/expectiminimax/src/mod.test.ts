@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type {
   Analysis,
   ChanceGameRules,
@@ -11,6 +11,7 @@ import {
   DICE_RACE_GOAL,
   diceRace,
   type DiceRacePosition,
+  seededRandom,
 } from "@boardwright/testing";
 import { MATE_BOUND, terminalScore, toScore } from "@boardwright/engine-search";
 import { createExpectiminimaxEngine } from "./mod.ts";
@@ -312,20 +313,27 @@ Deno.test("dice race: Lines never continue past the next roll", async () => {
  * reference for the pruned search: value of `p` for `seat` with `depth` Moves
  * left, `ply` Moves after the root.
  */
-function reference(
-  p: DiceRacePosition,
+function reference<P, M, C>(
+  rules: ChanceGameRules<P, M, C>,
+  evaluate: (p: P, seat: Seat) => number,
+  winValue: number,
+  p: P,
   seat: Seat,
   depth: number,
   ply: number,
 ): number {
-  const outcome = diceRace.outcome(p);
+  const ref = (q: P, s: Seat, d: number, pl: number) =>
+    reference(rules, evaluate, winValue, q, s, d, pl);
+  const outcome = rules.outcome(p);
   if (outcome) return terminalScore(outcome, seat, ply);
-  if (depth === 0) return raceEval(p, seat);
-  const mover = diceRace.toMove(p);
+  if (depth === 0) {
+    return Math.max(-winValue, Math.min(winValue, evaluate(p, seat)));
+  }
+  const mover = rules.toMove(p);
   if (mover === undefined) {
-    const values = diceRace.chanceEvents(p).map(({ chance, probability }) => ({
+    const values = rules.chanceEvents(p).map(({ chance, probability }) => ({
       probability,
-      v: reference(diceRace.resolveChance(p, chance), seat, depth, ply),
+      v: ref(rules.resolveChance(p, chance), seat, depth, ply),
     }));
     if (values.every(({ v }) => v > MATE_BOUND)) {
       return Math.min(...values.map(({ v }) => v));
@@ -335,34 +343,197 @@ function reference(
     }
     return values.reduce(
       (sum, { probability, v }) =>
-        sum + probability * (v > MATE_BOUND ? 100 : v < -MATE_BOUND ? -100 : v),
+        sum +
+        probability *
+          (v > MATE_BOUND ? winValue : v < -MATE_BOUND ? -winValue : v),
       0,
     );
   }
-  const children = diceRace.legalMoves(p).map((m) =>
-    reference(diceRace.play(p, m), mover, depth - 1, ply + 1)
+  const children = rules.legalMoves(p).map((m) =>
+    ref(rules.play(p, m), mover, depth - 1, ply + 1)
   );
   const best = Math.max(...children);
   return mover === seat ? best : -best;
+}
+
+/**
+ * Checks every Analysis of `position` against {@link reference}: each Line's
+ * Score (multi-PV Lines are exact) and that the best Line is a best Move; a
+ * pending Chance event's expected Score.
+ */
+async function assertMatchesReference<P, M, C>(
+  rules: ChanceGameRules<P, M, C>,
+  evaluate: (p: P, seat: Seat) => number,
+  winValue: number,
+  position: P,
+  limits: SearchLimits,
+): Promise<void> {
+  const engine = createExpectiminimaxEngine({
+    rules,
+    evaluate,
+    winValue,
+    name: "pruned",
+  });
+  const where = `${rules.notation.encodePosition(position)} ${
+    JSON.stringify(limits)
+  }`;
+  const ref = (q: P, s: Seat, d: number, pl: number) =>
+    reference(rules, evaluate, winValue, q, s, d, pl);
+  for (const a of await collect(engine.analyze(position, limits))) {
+    const at = `${where} depth ${a.depth}`;
+    const seat = rules.toMove(position);
+    if (seat === undefined) {
+      assertEquals(a.score, toScore(ref(position, a.seat!, a.depth, 0)), at);
+      continue;
+    }
+    const best = Math.max(
+      ...rules.legalMoves(position).map((m) =>
+        ref(rules.play(position, m), seat, a.depth - 1, 1)
+      ),
+    );
+    assertEquals(a.lines[0]!.score, toScore(best), `${at}: best Score`);
+    for (const line of a.lines) {
+      const want = ref(
+        rules.play(position, line.moves[0]!),
+        seat,
+        a.depth - 1,
+        1,
+      );
+      assertEquals(line.score, toScore(want), `${at}: Line ${line.moves[0]}`);
+    }
+  }
 }
 
 Deno.test("matches an unpruned reference on sampled dice races", async () => {
   for (const [a, b] of [[0, 0], [2, 3], [4, 1], [3, 4], [5, 2]] as const) {
     for (const turn of ["a", "b"] as const) {
       for (const roll of [1, 2, 3] as const) {
-        const p = race(a, b, turn, roll);
-        const all = await collect(
-          raceEngine.analyze(p, { maxDepth: 4, lines: 2 }),
-        );
-        const last = all.at(-1)!;
-        for (const line of last.lines) {
-          const next = diceRace.play(p, line.moves[0]!);
-          const want = reference(next, turn, last.depth - 1, 1);
-          assertEquals(line.score, toScore(want), `${a}:${b}:${turn}:${roll}`);
+        for (const lines of [1, 2]) {
+          await assertMatchesReference(
+            diceRace,
+            raceEval,
+            100,
+            race(a, b, turn, roll),
+            { maxDepth: 4, lines },
+          );
         }
       }
     }
   }
+});
+
+/**
+ * A random game tree with chance, `height` levels deep: decision nodes (a
+ * random Seat, so a Seat may move twice in a row or the Opponent reply
+ * without a roll), Chance events with dyadic probabilities (exact sums),
+ * terminal nodes, and small integer evaluations.
+ */
+function randomTree(seed: number, height: number): Record<string, Node> {
+  const rand = seededRandom(seed);
+  const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)]!;
+  const nodes: Record<string, Node> = {};
+  let next = 0;
+  const grow = (level: number, allowChance: boolean): string => {
+    const id = level === 0 ? "root" : `n${next++}`;
+    const r = rand();
+    const evaluation = Math.floor(rand() * 121) - 60;
+    if (level === height || (level > 0 && r < 0.12)) {
+      nodes[id] = { winner: pick(["a", "b", null] as const) };
+    } else if (allowChance && r < 0.4) {
+      const ps = pick([[0.5, 0.5], [0.25, 0.75], [0.25, 0.25, 0.5]]);
+      const chance: Record<string, readonly [number, string]> = {};
+      // Chance events never follow each other directly here.
+      ps.forEach((p, i) => (chance[`r${i}`] = [p, grow(level + 1, false)]));
+      nodes[id] = { chance, eval: evaluation };
+    } else {
+      const moves: Record<string, string> = {};
+      const count = 2 + Math.floor(rand() * 3);
+      for (let i = 0; i < count; i++) moves[`m${i}`] = grow(level + 1, true);
+      nodes[id] = { seat: pick(["a", "b"]), moves, eval: evaluation };
+    }
+    return id;
+  };
+  grow(0, true);
+  return nodes;
+}
+
+Deno.test("matches an unpruned reference on random trees with consecutive Moves", async () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const nodes = randomTree(seed, 6);
+    for (
+      const limits of [{ lines: 1 }, { lines: 1, maxDepth: 3 }, { lines: 2 }]
+    ) {
+      await assertMatchesReference(
+        treeGame(nodes),
+        treeEval(nodes),
+        100,
+        "root",
+        limits,
+      );
+    }
+  }
+});
+
+Deno.test("alpha-beta cuts off a refuted Move above Chance events", async () => {
+  // a's M1 is worth 50. Against M2, b's first reply q1 already gives a only
+  // -50 < 50, so b's second reply q2 (a sure win for a) is never searched.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { M1: "P", M2: "Q" } },
+    P: { seat: "b", moves: { p: "CP" } },
+    CP: { chance: { r1: [0.5, "D"], r2: [0.5, "AW"] } },
+    Q: { seat: "b", moves: { q1: "CQ1", q2: "CQ2" } },
+    CQ1: { chance: { r1: [0.5, "BW"], r2: [0.5, "D"] } },
+    CQ2: { chance: { r1: [1, "AW"] } },
+    AW: A_WINS,
+    BW: B_WINS,
+    D: DRAW,
+  };
+  const rules = treeGame(nodes);
+  const visited = new Set<string>();
+  const spy: ChanceGameRules<string, string, string> = {
+    ...rules,
+    outcome: (p) => {
+      visited.add(p);
+      return rules.outcome(p);
+    },
+  };
+  const engine = createExpectiminimaxEngine({
+    rules: spy,
+    evaluate: treeEval(nodes),
+    name: "spy",
+    winValue: 100,
+  });
+  const all = await collect(engine.analyze("root", { lines: 1 }));
+  assertEquals(all.at(-1)!.lines, [
+    { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
+  ]);
+  assert(visited.has("CQ1"), "q1 was searched");
+  assert(!visited.has("CQ2"), "q2 should have been cut off");
+  // With both Lines wanted, nothing is cut and M2 is exact: b plays q1.
+  const both = await collect(
+    createExpectiminimaxEngine({
+      rules,
+      evaluate: treeEval(nodes),
+      name: "full",
+      winValue: 100,
+    }).analyze("root", { lines: 2 }),
+  );
+  assertEquals(both.at(-1)!.lines, [
+    { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
+    { moves: ["M2", "q1"], score: { kind: "value", value: -50 } },
+  ]);
+});
+
+Deno.test("a pending Position without chanceEvents is reported as a Game bug", async () => {
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { m: "C" } },
+    C: { chance: {} },
+  };
+  await assertRejects(
+    () => collect(treeEngine(nodes).analyze("root", { maxDepth: 2 })),
+    TypeError,
+    "no chanceEvents in C",
+  );
 });
 
 Deno.test("a terminal Position yields one empty Analysis", async () => {
@@ -381,6 +552,7 @@ Deno.test("the horizon may be a pending Chance event, evaluated from the searchi
       return raceEval(p, seat);
     },
     name: "probe",
+    winValue: 100,
   });
   const [analysis] = await collect(
     engine.analyze(race(0, 0, "a", 3), { maxDepth: 1 }),
@@ -397,15 +569,17 @@ Deno.test("clamps evaluations and rejects NaN", async () => {
     rules: diceRace,
     evaluate: () => 1e15,
     name: "huge",
+    winValue: 100,
   });
   const [a] = await collect(huge.analyze(race(0, 0, "a", null), {
     maxDepth: 1,
   }));
-  assertEquals(a!.score, { kind: "value", value: 1e8 });
+  assertEquals(a!.score, { kind: "value", value: 100 });
   const nan = createExpectiminimaxEngine({
     rules: diceRace,
     evaluate: () => NaN,
     name: "nan",
+    winValue: 100,
   });
   let thrown: unknown;
   try {
@@ -447,6 +621,7 @@ Deno.test("refuses Games without chance (ADR 0005)", () => {
         rules: ticTacToe as unknown as ChanceGameRules<unknown, unknown, never>,
         evaluate: () => 0,
         name: "x",
+        winValue: 1,
       }),
     TypeError,
     "tic-tac-toe",

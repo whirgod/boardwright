@@ -35,6 +35,14 @@
  * results are mixed, a forced win counts as `+winValue` (a loss as
  * `-winValue`) in the average, so the result is an ordinary value.
  *
+ * The evaluation's scale matters here, unlike in minimax: minimax only
+ * compares values, so any order-preserving rescaling of the evaluation gives
+ * the same Moves, but an average mixes magnitudes. Evaluations must be
+ * *cardinal* (twice the value means twice as good, e.g. expected points or
+ * win probability), with a certain win worth `winValue`. Horizon evaluations
+ * are clamped to ±`winValue`, so a forced win is always at least as good as
+ * any evaluation.
+ *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness
  * `@boardwright/engine-search`; this module is the algorithm.
@@ -74,18 +82,22 @@ export interface ExpectiminimaxOptions<Position, Move, Chance> {
    * Heuristic value of a non-terminal Position from the perspective of
    * `seat` (higher is better for `seat`). Called only at the depth horizon,
    * which may be a Position with a pending Chance event — that is why the
-   * perspective is explicit (nobody is to move there). Must not return NaN;
-   * magnitudes above {@link MAX_EVALUATION} are clamped.
+   * perspective is explicit (nobody is to move there). A cardinal value on
+   * the scale of `winValue` (see the module doc); must not return NaN, and
+   * magnitudes above `winValue` are clamped.
    */
   readonly evaluate: (position: Position, seat: Seat) => number;
   readonly name: string;
   /**
-   * What a forced win (loss: its negation) counts as when averaged over the
-   * results of a Chance event together with results that are not forced.
-   * Put it on the evaluation's scale, e.g. the value of a certain win.
-   * In (0, {@link MAX_EVALUATION}]; defaults to `MAX_EVALUATION`.
+   * The value of a certain win on the evaluation's scale (a loss is its
+   * negation), e.g. 1 when `evaluate` returns expected points in [-1, 1].
+   * A forced win counts as this much when averaged over a Chance event's
+   * results together with results that are not forced, and evaluations are
+   * clamped to ±`winValue`. Required, because no default can know the
+   * evaluation's scale: too large a value makes the search chase long shots.
+   * In (0, {@link MAX_EVALUATION}].
    */
-  readonly winValue?: number;
+  readonly winValue: number;
 }
 
 /**
@@ -111,7 +123,7 @@ export interface ExpectiminimaxOptions<Position, Move, Chance> {
 export function createExpectiminimaxEngine<Position, Move, Chance>(
   options: ExpectiminimaxOptions<Position, Move, Chance>,
 ): Engine<Position, Move> {
-  const { rules, evaluate, name, winValue = MAX_EVALUATION } = options;
+  const { rules, evaluate, name, winValue } = options;
   // Callers that bypass the type; a plain Game belongs to minimax (ADR 0005).
   if (!hasChance(rules as GameRules<Position, Move>)) {
     throw new TypeError(
@@ -188,7 +200,9 @@ async function* analyze<Position, Move, Chance>(
         evaluate(position, seat),
         () => rules.notation.encodePosition(position),
       );
-      return { score, pv: NO_MOVES };
+      // A forced win (+winValue in an average) must beat every evaluation.
+      const clamped = Math.max(-winValue, Math.min(winValue, score));
+      return { score: clamped, pv: NO_MOVES };
     }
     const mover = rules.toMove(position);
     if (mover === undefined) {
@@ -247,6 +261,14 @@ async function* analyze<Position, Move, Chance>(
     let wins = 0;
     let losses = 0;
     const results = rules.chanceEvents(position);
+    if (results.length === 0) {
+      // No Seat to move and no Outcome, yet nothing to roll: a bug in the Game.
+      throw new TypeError(
+        `${rules.id}: no Seat to move, no Outcome and no chanceEvents in ${
+          rules.notation.encodePosition(position)
+        }`,
+      );
+    }
     for (const { chance, probability } of results) {
       const next = rules.resolveChance(position, chance);
       const { score } = yield* value(
