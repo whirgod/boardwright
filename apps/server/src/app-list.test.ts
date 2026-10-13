@@ -97,6 +97,9 @@ Deno.test("GET /api/matches lists summaries newest first, with paging and filter
   assertEquals(running.matches.length, 2);
 });
 
+const cursor = (parts: string[]) =>
+  btoa(JSON.stringify(parts)).replaceAll("=", "");
+
 Deno.test("GET /api/matches rejects bad query parameters", async () => {
   const a = buildApp({ games: [ticTacToe] });
   for (
@@ -110,6 +113,10 @@ Deno.test("GET /api/matches rejects bad query parameters", async () => {
       "?cursor=%25%25",
       "?cursor=e30",
       "?cursor=WzEsMl0",
+      // decodes to a pair of strings, but not to a timestamp / a Match id
+      `?cursor=${cursor(["zzz", "m1"])}`,
+      `?cursor=${cursor(["2026-01-01", "m1"])}`,
+      `?cursor=${cursor(["2026-01-01T00:00:00.000Z", ""])}`,
       "?color=red",
     ]
   ) {

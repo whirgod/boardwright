@@ -182,6 +182,12 @@ export function encodeCursor(cursor: MatchCursor): string {
     .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
+/** An ISO 8601 timestamp exactly as `Date.toISOString` writes it. */
+function isCanonicalTimestamp(text: string): boolean {
+  const time = Date.parse(text);
+  return !Number.isNaN(time) && new Date(time).toISOString() === text;
+}
+
 function decodeCursor(text: string): MatchCursor | undefined {
   try {
     const base64 = text.replaceAll("-", "+").replaceAll("_", "/");
@@ -189,7 +195,8 @@ function decodeCursor(text: string): MatchCursor | undefined {
     const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
     if (
       Array.isArray(value) && value.length === 2 &&
-      typeof value[0] === "string" && typeof value[1] === "string"
+      typeof value[0] === "string" && typeof value[1] === "string" &&
+      value[1] !== "" && isCanonicalTimestamp(value[0])
     ) {
       return { createdAt: value[0], id: value[1] };
     }

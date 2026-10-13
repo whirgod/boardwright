@@ -1,6 +1,10 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
+import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { diceRace } from "@boardwright/testing";
+import { EngineDriver } from "./engine-driver.ts";
+import { type AnalysisRequest, EngineRunner } from "./engine-runner.ts";
+import { EngineRegistry } from "./engines.ts";
 import { buildApp } from "./app.ts";
 import { GameMaster, type MatchView } from "./game-master.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
@@ -15,7 +19,7 @@ import {
 } from "./sqlite-match-store.ts";
 
 /** Scratch directory inside the repo, so tests need write access to it only. */
-const SCRATCH = new URL("../../../.test-tmp", import.meta.url).pathname;
+const SCRATCH = `${import.meta.dirname}/../../../.test-tmp`;
 
 async function withTempDir(
   work: (dir: string) => Promise<void>,
@@ -42,12 +46,15 @@ Deno.test("SqliteMatchStore (file) satisfies the MatchStore contract", (t) =>
   withTempDir(async (dir) => {
     let n = 0;
     const open: SqliteMatchStore[] = [];
-    await assertMatchStoreContract(t, () => {
-      const store = new SqliteMatchStore(`${dir}/matches-${++n}.db`);
-      open.push(store);
-      return store;
-    });
-    open.forEach((s) => s.close());
+    try {
+      await assertMatchStoreContract(t, () => {
+        const store = new SqliteMatchStore(`${dir}/matches-${++n}.db`);
+        open.push(store);
+        return store;
+      });
+    } finally {
+      open.forEach((s) => s.close());
+    }
   }));
 
 Deno.test("records survive closing and reopening the database", () =>
@@ -59,12 +66,18 @@ Deno.test("records survive closing and reopening the database", () =>
       outcome: { kind: "forfeit", winner: "x", seat: "o", reason: "timeout" },
     });
     const first = new SqliteMatchStore(path);
-    await first.create(record);
-    first.close();
+    try {
+      await first.create(record);
+    } finally {
+      first.close();
+    }
     const second = new SqliteMatchStore(path);
-    assertEquals(await second.get("m1"), record);
-    assertEquals((await second.list({ limit: 5 })).matches, [record]);
-    second.close();
+    try {
+      assertEquals(await second.get("m1"), record);
+      assertEquals((await second.list({ limit: 5 })).matches, [record]);
+    } finally {
+      second.close();
+    }
   }));
 
 Deno.test("a restarted Game master continues a Match: Position, seed, tokens", () =>
@@ -158,13 +171,16 @@ Deno.test("a locked database rejects within the busy timeout", () =>
     const path = `${dir}/matches.db`;
     const store = new SqliteMatchStore(path, { busyTimeoutMs: 50 });
     const other = new DatabaseSync(path);
-    other.exec("BEGIN EXCLUSIVE");
-    const started = performance.now();
-    await assertRejects(() => store.create(sampleRecord()));
-    assert(performance.now() - started < 5000);
-    other.exec("ROLLBACK");
-    other.close();
-    store.close();
+    try {
+      other.exec("BEGIN EXCLUSIVE");
+      const started = performance.now();
+      await assertRejects(() => store.create(sampleRecord()));
+      assert(performance.now() - started < 1000);
+      other.exec("ROLLBACK");
+    } finally {
+      other.close();
+      store.close();
+    }
   }));
 
 Deno.test("openMatchStore creates the data directory and its database", () =>
@@ -176,4 +192,69 @@ Deno.test("openMatchStore creates the data directory and its database", () =>
       (await Deno.stat(`${dir}/nested/data/${DATABASE_FILE}`)).isFile,
       true,
     );
+  }));
+
+Deno.test("after a restart the EngineDriver plays Engine turns no event announces", () =>
+  withTempDir(async (dir) => {
+    const path = `${dir}/matches.db`;
+    const engines = new EngineRegistry([{
+      id: "fixed",
+      name: "Fixed",
+      gameId: "tic-tac-toe",
+      module: "unused:fixed",
+    }]);
+    const boot = () => {
+      const store = new SqliteMatchStore(path);
+      const master = new GameMaster({
+        games: new GameRegistry([ticTacToe]),
+        store,
+        engines,
+      });
+      return { store, master };
+    };
+    const engine = { kind: "engine", engineId: "fixed", limits: {} } as const;
+    const human = { kind: "human" } as const;
+
+    // First run, no driver: x is an Engine and is to move, but nobody plays.
+    const before = boot();
+    let waiting: MatchView;
+    let humanTurn: MatchView;
+    try {
+      waiting = (await before.master.createMatch("tic-tac-toe", {
+        x: engine,
+        o: human,
+      })).match;
+      humanTurn = (await before.master.createMatch("tic-tac-toe", {
+        x: human,
+        o: engine,
+      })).match;
+    } finally {
+      before.store.close();
+    }
+
+    // Restart: only the Match whose Engine Seat is to move gets a Move.
+    const after = boot();
+    const runner = new EngineRunner({
+      adapter: {
+        async *analyze(_request: AnalysisRequest) {
+          await Promise.resolve();
+          yield {
+            depth: 1,
+            lines: [{ moves: ["a1"], score: { kind: "value", value: 0 } }],
+          };
+        },
+      },
+    });
+    const driver = new EngineDriver(after.master, { runner });
+    try {
+      assertEquals(await driver.resumeAll(), 1);
+      await driver.idle();
+      const moved = await after.master.getMatch(waiting.id);
+      assertEquals(moved.moves, [{ kind: "move", move: "a1" }]);
+      assertEquals(moved.toMove, "o");
+      assertEquals((await after.master.getMatch(humanTurn.id)).moves, []);
+    } finally {
+      await driver.close();
+      after.store.close();
+    }
   }));

@@ -8,7 +8,7 @@ Matches survive a server restart: `SqliteMatchStore` implements `MatchStore` ove
 
 Permissions stay minimal: the server tasks grant `--allow-read`/`--allow-write` of the repo's `data/` directory and the scoped `--allow-env=...,BOARDWRIGHT_DATA_DIR`. Another data dir needs a matching grant. `BOARDWRIGHT_DATA_DIR=:memory:` keeps Matches in memory (lost on exit). Tests write only to `.test-tmp/`.
 
-Liveness (the `MatchStore` contract, #46): SQLite calls are synchronous, so a call settles as soon as it holds its lock; `PRAGMA busy_timeout` (5 s default, below the Game master's 10 s `storeTimeoutMs`) bounds the wait for a lock held by another process. The file runs in WAL mode.
+Liveness (the `MatchStore` contract, #46): SQLite calls are synchronous, so a call settles as soon as it holds its lock; `PRAGMA busy_timeout` (2 s default) bounds the wait for a lock held by another process. The file runs in WAL mode. Two consequences of the synchronous driver: a wait for a lock blocks the whole event loop (every request, WebSocket stream and the EngineDriver) for up to the timeout, not just that Match; and the Game master's `storeTimeoutMs` safety net cannot fire for this store (its timer cannot run during a call, and the call has settled when control returns), so the "timed-out `update` may still commit later" caveat does not apply to it. `busy_timeout` does not bound CPU time either: a huge `list` scan is unbounded, which is why pages are capped at 100. After a restart, `EngineDriver.resumeAll()` (called from `main.ts`) plays the Engine turns that no event announces.
 
 ## Considered Options
 
@@ -19,6 +19,6 @@ Liveness (the `MatchStore` contract, #46): SQLite calls are synchronous, so a ca
 ## Consequences
 
 - No new dependency and no unstable flag. `node:sqlite` is Node-compatibility API in Deno; if it changes, the contract tests (run against both the in-memory and the SQLite store) catch it, and the adapter is the only file affected.
-- Calls block the event loop for their duration; fine for single-row reads and writes at this scale, to revisit if listings over very large tables become slow.
+- Calls block the event loop for their duration (up to `busy_timeout` when contended); fine for single-row reads and writes at this scale, to revisit if listings over very large tables become slow.
 - One server process owns the file for writes in practice; a second process is safe (the version check gives `conflict`) but not a supported deployment. A networked database would be another `MatchStore` adapter.
 - Changing the stored record shape needs a migration step keyed on `user_version`.

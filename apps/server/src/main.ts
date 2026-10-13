@@ -31,7 +31,9 @@ const master = new GameMaster({
 // The one runner every search goes through (Matches and the Analysis stream),
 // so its concurrency cap and queueing policy hold server-wide.
 const runner = new EngineRunner();
-new EngineDriver(master, { runner });
+const driver = new EngineDriver(master, { runner });
+// Engine turns left waiting by the last run (no event will announce them).
+await driver.resumeAll();
 
 // Built by `deno task build:web` (ADR 0004); `deno task start` builds it first.
 const webRoot = `${import.meta.dirname}/../../web/dist`;

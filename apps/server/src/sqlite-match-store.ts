@@ -13,9 +13,11 @@ const SCHEMA_VERSION = 1;
 export interface SqliteMatchStoreOptions {
   /**
    * How long (ms) a call waits for a lock held by another connection or
-   * process before it fails; default 5000. With the Game master's
-   * `storeTimeoutMs` (10 s) above it, every call settles in bounded time
-   * (the `MatchStore` liveness contract).
+   * process before it fails; default 2000. Calls are
+   * synchronous, so the wait blocks the whole event loop (every request, the
+   * EngineDriver) for up to this long, and the Game master's `storeTimeoutMs`
+   * cannot fire for this store (its timer cannot run during a call). This
+   * bound is what makes calls settle (the `MatchStore` liveness contract).
    */
   readonly busyTimeoutMs?: number;
 }
@@ -40,12 +42,14 @@ export class SqliteMatchStore implements MatchStore {
   readonly #insert: StatementSync;
   readonly #replace: StatementSync;
   readonly #select: StatementSync;
+  /** Prepared `list` statements by filter shape (at most 8). */
+  readonly #lists = new Map<string, StatementSync>();
 
   constructor(path: string, options: SqliteMatchStoreOptions = {}) {
     this.#db = new DatabaseSync(path);
     try {
       this.#db.exec(
-        `PRAGMA busy_timeout = ${Math.trunc(options.busyTimeoutMs ?? 5000)}`,
+        `PRAGMA busy_timeout = ${Math.trunc(options.busyTimeoutMs ?? 2000)}`,
       );
       if (path !== ":memory:") this.#db.exec("PRAGMA journal_mode = WAL");
       this.#migrate();
@@ -65,6 +69,19 @@ export class SqliteMatchStore implements MatchStore {
   }
 
   #migrate(): void {
+    // IMMEDIATE takes the write lock first, so two processes cannot both
+    // read an old version and both migrate.
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#migrateLocked();
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #migrateLocked(): void {
     const row = this.#db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
@@ -76,7 +93,6 @@ export class SqliteMatchStore implements MatchStore {
     }
     if (row.user_version === SCHEMA_VERSION) return;
     this.#db.exec(`
-      BEGIN;
       CREATE TABLE IF NOT EXISTS matches (
         id TEXT PRIMARY KEY,
         game_id TEXT NOT NULL,
@@ -89,7 +105,6 @@ export class SqliteMatchStore implements MatchStore {
       CREATE INDEX IF NOT EXISTS matches_by_game ON matches (game_id, created_at, id);
       CREATE INDEX IF NOT EXISTS matches_by_finished ON matches (finished, created_at, id);
       PRAGMA user_version = ${SCHEMA_VERSION};
-      COMMIT;
     `);
   }
 
@@ -156,11 +171,17 @@ export class SqliteMatchStore implements MatchStore {
         where.push("(created_at, id) < (?, ?)");
         args.push(query.after.createdAt, query.after.id);
       }
-      const rows = this.#db.prepare(
-        `SELECT data FROM matches ${
-          where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
-        } ORDER BY created_at DESC, id DESC LIMIT ?`,
-      ).all(...args, query.limit + 1) as { data: string }[];
+      const sql = `SELECT data FROM matches ${
+        where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""
+      } ORDER BY created_at DESC, id DESC LIMIT ?`;
+      let statement = this.#lists.get(sql);
+      if (!statement) {
+        statement = this.#db.prepare(sql);
+        this.#lists.set(sql, statement);
+      }
+      const rows = statement.all(...args, query.limit + 1) as {
+        data: string;
+      }[];
       const matches = rows.slice(0, query.limit)
         .map((row) => JSON.parse(row.data) as MatchRecord);
       const last = matches.at(-1);

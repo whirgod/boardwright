@@ -135,7 +135,8 @@ core  <-  games/*  <-  engines/*
   `{ kind: "engine", engineId, limits }` (limits: `maxDepth`, `maxTimeMs` <= 60 s, `lines`;
   optional, default none). Engine Seats have no seat token.
 - `engines.ts` — `EngineRegistry`: Engines per Game (`id`, `name`, `module` URL).
-- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`. It remembers each running
+- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`; `resumeAll()` (called once by
+  `main.ts`) plays the Engine turns left waiting by a restart, which no event announces. It remembers each running
   Match's Engine Seats from its `created` event (loading a Match once if it was created before the
   driver subscribed) and, on an event that leaves an Engine Seat to move, searches from the event's
   Position through the Engine runner, takes the first Move of the best Line of the last Analysis
@@ -198,7 +199,7 @@ core  <-  games/*  <-  engines/*
   Outcome, Seats with token hashes, the secret Chance `seed`, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
   **Liveness contract:** every `MatchStore` call must settle (resolve or reject) in bounded time;
-  persistent adapters set their own timeouts (SQLite: `busy_timeout`). The Game master runs one change per Match at a
+  persistent adapters set their own timeouts (SQLite: `busy_timeout`, 2 s; its calls are synchronous, so `storeTimeoutMs` cannot fire for it and the late-commit caveat below does not apply; see ADR 0007). The Game master runs one change per Match at a
   time, so a hung call would block that Match; as a safety net it fails any call after
   `storeTimeoutMs` (default 10 s). It cannot cancel the call, so a timed-out `update` may still
   commit later: no `MatchEvent` is emitted for it, so listeners (clients, the `EngineDriver`) miss that
