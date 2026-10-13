@@ -13,6 +13,7 @@ import { GameMaster, type MatchView } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
 import { InMemoryMatchStore } from "./match-store.ts";
 import type { Player } from "./players.ts";
+import { testWorkerAdapter } from "./engine-runner.testing.ts";
 
 const minimaxModule = import.meta.resolve(
   "@boardwright/engine-tic-tac-toe-minimax",
@@ -66,6 +67,7 @@ function setup(options: SetupOptions = {}) {
 function newDriver(master: GameMaster, options: SetupOptions): EngineDriver {
   const { search, attempts, ...runnerOptions } = options;
   const runner = new EngineRunner({
+    adapter: testWorkerAdapter(),
     ...runnerOptions,
     ...search && {
       adapter: {
@@ -213,7 +215,9 @@ Deno.test("an unregistered Engine forfeits (registry changed under a stored Matc
   });
   // The same store, served by a master that no longer offers the Engine.
   const after = new GameMaster({ games, store });
-  const driver = new EngineDriver(after, { runner: new EngineRunner() });
+  const driver = new EngineDriver(after, {
+    runner: new EngineRunner({ adapter: testWorkerAdapter() }),
+  });
   try {
     await after.apply(match.id, { token: tokens.x! }, X_A1);
     await driver.idle();

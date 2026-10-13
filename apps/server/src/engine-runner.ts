@@ -8,11 +8,11 @@
  *
  * How an Engine actually runs is an {@link EngineAdapter} behind it: in
  * production a fresh Web Worker per search ({@link workerAdapter}).
- * Sandboxing workers (#29) and out-of-process Engines (#18) change this
- * module, not its callers.
+ * Out-of-process Engines (#18) change this module, not its callers.
  */
 import type { Analysis, Score, SearchLimits } from "@boardwright/core";
 import type { EngineEntry } from "./engines.ts";
+import { fileURLToPath } from "node:url";
 import type { HostRequest, WorkerMessage } from "./engine-host.ts";
 
 /** Search time used when a request's `limits.maxTimeMs` is unset. */
@@ -353,6 +353,20 @@ class Slots {
 
 const WORKER_URL = new URL("./engine-worker.ts", import.meta.url);
 
+/**
+ * The only thing a worker may read: the source of the workspace packages an
+ * Engine module imports (loading `import(module)` at run time needs it).
+ * Everything else (net, env, write, run, ffi, sys, other files) is denied.
+ */
+const ENGINE_SOURCE_ROOTS = ["packages", "games", "engines"].map((dir) =>
+  new URL(`../../../${dir}/`, import.meta.url)
+);
+
+export interface WorkerAdapterOptions {
+  /** Further directories (URLs) whose files Engine modules may import, e.g. test Engines. */
+  readonly readDirs?: readonly URL[];
+}
+
 /** The plain-data request an adapter hands to the Engine's host. */
 export function hostRequest(request: AnalysisRequest): HostRequest {
   return {
@@ -365,14 +379,23 @@ export function hostRequest(request: AnalysisRequest): HostRequest {
 /**
  * Runs each search in a fresh Web Worker, so a busy or hung Engine never
  * blocks the server, and terminates it when the search ends, fails or is
- * stopped. Worker errors are `worker-error`, the Engine's own `engine-error`,
+ * stopped. The worker is sandboxed: read of the Engine
+ * source roots only, nothing else (ADR 0006; needs `unstable:
+ * ["worker-options"]`). Worker errors are `worker-error`, the Engine's own `engine-error`,
  * messages outside the protocol (`WorkerMessage`) `unreadable-reply`.
  */
-export function workerAdapter(): EngineAdapter {
+export function workerAdapter(
+  options: WorkerAdapterOptions = {},
+): EngineAdapter {
+  const readPaths = [...ENGINE_SOURCE_ROOTS, ...(options.readDirs ?? [])]
+    .map((dir) => fileURLToPath(dir));
   return {
     async *analyze(request, signal) {
       if (signal.aborted) return;
-      const worker = new Worker(WORKER_URL, { type: "module" });
+      const worker = new Worker(WORKER_URL, {
+        type: "module",
+        deno: { permissions: { read: readPaths } },
+      });
       const inbox: (WorkerMessage | SearchError)[] = [];
       let wake: (() => void) | undefined;
       const deliver = (item: WorkerMessage | SearchError) => {
