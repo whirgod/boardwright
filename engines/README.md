@@ -4,10 +4,26 @@ Two kinds of workspace members live here. Both may depend on `@boardwright/core`
 server. See `docs/ARCHITECTURE.md`.
 
 - **Engine libraries** — `engines/<algorithm>/`, named `@boardwright/engine-<algorithm>`.
-  Game-agnostic search over any `GameRules`; depend only on `core` (Games only in tests).
+  Game-agnostic search over any `GameRules`; depend only on `core` and the search harness
+  (Games only in tests). Each module is one algorithm, documented for learning.
 - **Engines** — `engines/<game-id>-<engine-name>/`, named
   `@boardwright/engine-<game-id>-<engine-name>`, implementing `Engine` for one Game. Usually
   they compose an Engine library with a Game-specific evaluation.
+
+## `engines/search` (`@boardwright/engine-search`)
+
+The search harness the Engine libraries share (ADR 0005): the plumbing that is not the
+algorithm. Depends only on `core` and knows nothing about chance.
+
+- `validateLimits` — the `SearchLimits` contract (`RangeError`).
+- `iterativeDeepening(limits, signal, searchDepth)` — runs depth 1, 2, ... and yields each
+  completed depth's Analysis; honours `maxDepth`, `maxTimeMs` (depth 1 always completes) and
+  the `AbortSignal`, stops once a depth is `solved`, and pauses for the event loop every few ms.
+  A depth is a synchronous generator (`Search<T>`) that `yield`s every `NODES_PER_TICK` nodes
+  (`createNodeCounter`), so the driver can pause or stop it.
+- `rankRootMoves` / `toLines` — multi-PV bookkeeping at the root.
+- Score scale: `MATE`, `MATE_BOUND`, `MAX_EVALUATION`, `terminalScore`, `horizonScore`
+  (clamp, NaN check), `toScore`.
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -31,9 +47,36 @@ export const engine = createMinimaxEngine({
 - A Seat may move several times in a row; perspective flips only when the Seat to move changes.
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
-  belongs in its own Engine library (planned `engines/expectiminimax`).
+  belongs in `engines/expectiminimax`.
 - No transposition table yet; add one (keyed by `Notation.encodePosition`) when a Game's
   Engine shows it pays off.
+
+## `engines/expectiminimax` (`@boardwright/engine-expectiminimax`)
+
+Expectiminimax for two-Seat, zero-sum Games with chance (`ChanceGameRules`, ADR 0005), e.g.
+backgammon. Same limits and streaming as minimax; the module doc explains the algorithm.
+
+```ts
+import { createExpectiminimaxEngine } from "@boardwright/engine-expectiminimax";
+export const engine = createExpectiminimaxEngine({
+  rules: myChanceRules,
+  name: "expectiminimax",
+  // Heuristic value from `seat`'s perspective; may be a Position with a pending Chance event.
+  evaluate: (position, seat) => pipLead(position, seat),
+  winValue: 1000, // what a forced win counts as in an average over dice (default MAX_EVALUATION)
+});
+```
+
+- Decision nodes: negamax + alpha-beta. Chance nodes: the probability-weighted average over
+  `chanceEvents`, each result searched with a full window (no Star1-style chance pruning).
+- Depth counts Moves; resolving a Chance event is free. At the horizon a pending Chance event
+  is evaluated as is (not rolled).
+- Lines end at the next Chance event. While one is pending at the root, every Analysis is
+  `{ depth, lines: [], score, seat }`; `seat` is the Seat that moves after the roll when all
+  results agree, otherwise the Game's first Seat.
+- `win-in` / `loss-in` only when forced whatever the dice (counting the slowest result); in a
+  mixed average a forced win counts as `+winValue`, a loss as `-winValue`.
+- Games without chance are refused with a `TypeError` (use minimax).
 
 ## Game Engines
 

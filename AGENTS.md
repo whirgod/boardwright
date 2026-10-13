@@ -35,7 +35,9 @@ packages/testing  contract test kits: Games (assertGameRulesContract / assertCha
 apps/server       Hono API (+ WebSocket Match and Analysis streams) + host of the web UI
 apps/web          browser UI: Preact, bundled to apps/web/dist (ADR 0004)
 games/<id>        one GameRules package per Game     (@boardwright/game-<id>)
-engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>, e.g. minimax)
+engines/search    shared search harness (iterative deepening, limits, multi-PV, score scale)
+engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>: minimax,
+                  expectiminimax for Games with chance); algorithm only, plumbing in engines/search
 engines/<game>-<name>  one Engine per Game (library + evaluation)  (@boardwright/engine-<game>-<name>)
 ```
 
