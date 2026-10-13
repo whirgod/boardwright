@@ -15,6 +15,7 @@ import {
   type MatchStore,
 } from "./match-store.ts";
 import { hashToken } from "./tokens.ts";
+import type { PlayerSpec } from "./players.ts";
 
 const HUMANS = { x: { kind: "human" }, o: { kind: "human" } } as const;
 
@@ -223,6 +224,22 @@ Deno.test("a finished Match accepts no more Moves", async () => {
   await assertMatchError(() => master.playMove(id, "c3", o), "match-finished");
 });
 
+Deno.test("client text is quoted and capped in error messages", async () => {
+  const { master } = setup();
+  const m = await newMatch(master);
+  const long = "q".repeat(10_000);
+  for (
+    const fn of [
+      () => master.playMove(m.id, long, m.x),
+      () => master.getMatch(long),
+      () => master.createMatch(long, HUMANS),
+    ]
+  ) {
+    const error = await assertRejects(fn, MatchError);
+    assert(error.message.length < 400, error.message);
+  }
+});
+
 Deno.test("unknown Match ids are reported", async () => {
   const { master } = setup();
   await assertMatchError(() => master.getMatch("nope"), "unknown-match");
@@ -236,13 +253,96 @@ Deno.test("unknown Match ids are reported", async () => {
   );
 });
 
-Deno.test("playAs plays for a Seat without a token, with the same referee checks", async () => {
+// No server-driven Player kind exists yet (Engines come in #7), so these tests
+// store a record whose Seats are a stand-in kind that holds no token.
+const SERVER_DRIVEN = { kind: "engine" } as unknown as PlayerSpec;
+
+async function storeServerDrivenMatch(
+  store: MatchStore,
+  overrides: Partial<MatchRecord> = {},
+): Promise<string> {
+  await store.create({
+    id: "auto",
+    gameId: "tic-tac-toe",
+    seats: { x: { player: SERVER_DRIVEN }, o: { player: SERVER_DRIVEN } },
+    moves: [],
+    version: 1,
+    createdAt: "",
+    updatedAt: "",
+    ...overrides,
+  });
+  return "auto";
+}
+
+Deno.test("playAs plays for a server-driven Seat, with the same referee checks", async () => {
+  const { master, store } = setup();
+  const id = await storeServerDrivenMatch(store);
+  await assertMatchError(() => master.playAs(id, "o", "a1"), "not-your-turn");
+  const view = await master.playAs(id, "x", "a1");
+  assertEquals(view.moves, ["a1"]);
+  await assertMatchError(() => master.playAs(id, "o", "a1"), "illegal-move");
+  await assertMatchError(() => master.playAs(id, "o", "zz"), "invalid-move");
+});
+
+Deno.test("playAs refuses token-holding and unknown Seats", async () => {
   const { master } = setup();
   const m = await newMatch(master);
-  await assertMatchError(() => master.playAs(m.id, "o", "a1"), "not-your-turn");
-  const view = await master.playAs(m.id, "x", "a1");
-  assertEquals(view.moves, ["a1"]);
-  await assertMatchError(() => master.playAs(m.id, "o", "a1"), "illegal-move");
+  await assertMatchError(
+    () => master.playAs(m.id, "x", "a1"),
+    "not-server-driven",
+  );
+  await assertMatchError(
+    () => master.playAs(m.id, "z", "a1"),
+    "not-server-driven",
+  );
+  await assertMatchError(
+    () => master.playAs(m.id, "__proto__", "a1"),
+    "not-server-driven",
+  );
+  assertEquals((await master.getMatch(m.id)).moves, []);
+});
+
+Deno.test("a stored Outcome ends the Match even if the Position does not", async () => {
+  const { master, store } = setup();
+  const id = await storeServerDrivenMatch(store, {
+    moves: ["a1"],
+    outcome: { winner: "x", reason: "forfeit" },
+  });
+  const view = await master.getMatch(id);
+  assertEquals(view.position, "x........:o");
+  assertEquals(view.toMove, null);
+  assertEquals(view.legalMoves, []);
+  assertEquals(view.outcome, { winner: "x", reason: "forfeit" });
+  await assertMatchError(() => master.playAs(id, "o", "b1"), "match-finished");
+});
+
+Deno.test("onMatchChanged fires after create and each accepted Move", async () => {
+  const { master } = setup();
+  const seen: string[] = [];
+  const stop = master.onMatchChanged((m) =>
+    seen.push(`${m.id}:${m.moves.join(",")}`)
+  );
+  master.onMatchChanged(() => {
+    throw new Error("listener bug");
+  });
+  const originalError = console.error;
+  const logged: unknown[] = [];
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    const m = await newMatch(master);
+    await master.playMove(m.id, "a1", m.x);
+    await assertMatchError(
+      () => master.playMove(m.id, "a1", m.o),
+      "illegal-move",
+    );
+    await master.playMove(m.id, "b1", m.o);
+    stop();
+    await master.playMove(m.id, "c1", m.x);
+    assertEquals(seen, ["m1:", "m1:a1", "m1:a1,b1"]);
+    assertEquals(logged.length, 4);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 Deno.test("concurrent Moves for the same turn: exactly one wins", async () => {
@@ -328,10 +428,12 @@ Deno.test("Moves are compared and stored in canonical Notation", async () => {
   const view = await master.playMove(match.id, "1", tokens.a!);
   assertEquals(view.moves, ["+1"]);
   assertEquals(view.legalMoves, ["+1", "+2"]);
-  await assertMatchError(
-    () => master.playMove(match.id, "+2", tokens.b!),
-    "illegal-move",
+  // legalMoves lists +2 but play refuses it: a Game bug, not a client error.
+  const bug = await assertRejects(() =>
+    master.playMove(match.id, "+2", tokens.b!)
   );
+  assert(!(bug instanceof MatchError));
+  assertEquals((await master.getMatch(match.id)).moves, ["+1"]);
   await master.playMove(match.id, "+1", tokens.b!);
   await master.playMove(match.id, "+2", tokens.a!);
   const done = await master.getMatch(match.id);

@@ -10,7 +10,7 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Draft contracts in `packages/core` (`GameRules`, `Notation`, `Engine`, `Analysis`)
 - [x] Server skeleton: `/api/health`, `/api/games`
 - [x] Reference Game tic-tac-toe + `GameRules` contract test kit (`@boardwright/testing`) (#2)
-- [x] Server Match lifecycle for humans: create, join by seat token, play, referee (#6)
+- [x] Server Match lifecycle for humans: create, play by seat token, referee (#6)
 
 ## Next
 

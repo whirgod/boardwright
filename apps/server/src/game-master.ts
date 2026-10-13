@@ -7,7 +7,7 @@ import type {
   SeatRecord,
 } from "./match-store.ts";
 import { isTokenHolder, type PlayerSpec } from "./players.ts";
-import { hashToken, newSeatToken } from "./tokens.ts";
+import { hashToken, newSeatToken, sameHash } from "./tokens.ts";
 
 /** Why a Match operation was refused. The HTTP layer maps each code to a status. */
 export type MatchErrorCode =
@@ -18,6 +18,7 @@ export type MatchErrorCode =
   | "illegal-move"
   | "invalid-token"
   | "not-your-turn"
+  | "not-server-driven"
   | "match-finished"
   | "conflict";
 
@@ -53,6 +54,9 @@ export interface CreatedMatch {
   readonly tokens: Readonly<Record<Seat, string>>;
 }
 
+/** Called after a Match is created and after each accepted Move. */
+export type MatchListener = (match: MatchView) => void;
+
 export interface GameMasterOptions {
   readonly games: GameRegistry;
   readonly store: MatchStore;
@@ -70,6 +74,7 @@ export class GameMaster {
   readonly #store: MatchStore;
   readonly #now: () => Date;
   readonly #newMatchId: () => MatchId;
+  readonly #listeners = new Set<MatchListener>();
 
   constructor(options: GameMasterOptions) {
     this.#games = options.games;
@@ -87,7 +92,7 @@ export class GameMaster {
     if (!game) {
       throw new MatchError(
         "unknown-game",
-        `Unknown Game ${JSON.stringify(gameId)}`,
+        `Unknown Game ${quote(gameId)}`,
       );
     }
     const missing = game.seats.filter((seat) => !Object.hasOwn(players, seat));
@@ -133,7 +138,30 @@ export class GameMaster {
       updatedAt: now,
     };
     await this.#store.create(record);
-    return { match: this.#view(record, game, game.initialPosition()), tokens };
+    const match = this.#view(record, game, game.initialPosition());
+    this.#notify(match);
+    return { match, tokens };
+  }
+
+  /**
+   * Observe Match changes: `listener` runs after every create and accepted
+   * Move (e.g. to let an Engine Seat move, #7, or push updates to clients,
+   * #9). Listeners run synchronously; errors they throw are logged, not
+   * propagated. Returns a function that unsubscribes.
+   */
+  onMatchChanged(listener: MatchListener): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #notify(match: MatchView): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(match);
+      } catch (error) {
+        console.error("Match listener failed:", error);
+      }
+    }
   }
 
   async getMatch(id: MatchId): Promise<MatchView> {
@@ -150,11 +178,22 @@ export class GameMaster {
   }
 
   /**
-   * Play `move` (Notation) for `seat` without a token. For Players the server
-   * itself drives (Engines, #7); the same referee checks apply.
+   * Play `move` (Notation) for `seat` without a token. Only for Seats whose
+   * Player the server drives itself (Engines, #7); Seats of token-holding
+   * Players are refused with `not-server-driven`. The same referee checks apply.
    */
   async playAs(id: MatchId, seat: Seat, move: string): Promise<MatchView> {
-    return this.#play(await this.#load(id), seat, move);
+    const record = await this.#load(id);
+    const seatRecord = Object.hasOwn(record.seats, seat)
+      ? record.seats[seat]
+      : undefined;
+    if (!seatRecord || isTokenHolder(seatRecord.player)) {
+      throw new MatchError(
+        "not-server-driven",
+        `Seat ${quote(seat)} is not played by the server`,
+      );
+    }
+    return this.#play(record, seat, move);
   }
 
   async #load(id: MatchId): Promise<MatchRecord> {
@@ -162,7 +201,7 @@ export class GameMaster {
     if (!record) {
       throw new MatchError(
         "unknown-match",
-        `Unknown Match ${JSON.stringify(id)}`,
+        `Unknown Match ${quote(id)}`,
       );
     }
     return record;
@@ -171,9 +210,12 @@ export class GameMaster {
   async #seatOf(record: MatchRecord, token: string): Promise<Seat> {
     if (token !== "") {
       const hash = await hashToken(token);
+      let found: Seat | undefined;
+      // Check every Seat, in constant time per comparison.
       for (const [seat, { tokenHash }] of Object.entries(record.seats)) {
-        if (tokenHash !== undefined && tokenHash === hash) return seat;
+        if (tokenHash !== undefined && sameHash(tokenHash, hash)) found = seat;
       }
+      if (found !== undefined) return found;
     }
     throw new MatchError(
       "invalid-token",
@@ -222,7 +264,7 @@ export class GameMaster {
     } catch (error) {
       throw new MatchError(
         "invalid-move",
-        `Cannot read Move ${JSON.stringify(text)}: ${message(error)}`,
+        `Cannot read Move ${quote(text)}: ${truncate(message(error), 200)}`,
       );
     }
     // Compare in Notation: Moves are opaque and may not be comparable with ===.
@@ -232,16 +274,17 @@ export class GameMaster {
     ) {
       throw new MatchError(
         "illegal-move",
-        `Move ${JSON.stringify(text)} is not legal`,
+        `Move ${quote(text)} is not legal`,
       );
     }
     let next: unknown;
     try {
       next = game.play(position, move);
     } catch (error) {
-      throw new MatchError(
-        "illegal-move",
-        `Move ${JSON.stringify(text)} is not legal: ${message(error)}`,
+      // legalMoves listed it, so the Game contradicts itself: a server fault.
+      throw new Error(
+        `Game ${game.id} refused its own legal Move ${quote(encoded)}`,
+        { cause: error },
       );
     }
 
@@ -260,21 +303,27 @@ export class GameMaster {
         "The Match changed meanwhile; fetch it and retry",
       );
     }
-    return this.#view(updated, game, next);
+    const match = this.#view(updated, game, next);
+    this.#notify(match);
+    return match;
   }
 
   #view(record: MatchRecord, game: AnyGameRules, position: unknown): MatchView {
     const { notation } = game;
     const seats: Record<Seat, PlayerSpec> = {};
     for (const seat of game.seats) seats[seat] = record.seats[seat]!.player;
+    // A stored Outcome (e.g. a forfeit, #7) ends the Match whatever the Position says.
+    const finished = record.outcome !== undefined;
     return {
       id: record.id,
       gameId: record.gameId,
       seats,
       moves: record.moves,
       position: notation.encodePosition(position),
-      toMove: game.toMove(position) ?? null,
-      legalMoves: game.legalMoves(position).map((m) => notation.encodeMove(m)),
+      toMove: finished ? null : game.toMove(position) ?? null,
+      legalMoves: finished
+        ? []
+        : game.legalMoves(position).map((m) => notation.encodeMove(m)),
       outcome: record.outcome ?? null,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -284,4 +333,13 @@ export class GameMaster {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** Client-supplied text for an error message: quoted and capped in length. */
+export function quote(text: string, max = 40): string {
+  return JSON.stringify(truncate(text, max));
 }

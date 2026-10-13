@@ -319,3 +319,121 @@ Deno.test("unexpected failures are 500 with the error shape", async () => {
 Deno.test("unknown routes are 404 with the error shape", async () => {
   await assertError(app().request("/api/nope"), 404, "not-found");
 });
+
+Deno.test("oversized bodies are 413 with the error shape", async () => {
+  const a = app();
+  const { match, tokens } = await create(a);
+  const huge = { move: "a".repeat(64 * 1024), token: tokens.x };
+  const body = await assertError(
+    post(a, `/api/matches/${match.id}/moves`, huge),
+    413,
+    "payload-too-large",
+  );
+  assert(body.error.message.length < 200);
+  await assertError(
+    post(a, "/api/matches", { gameId: "x".repeat(64 * 1024), seats: HUMANS }),
+    413,
+    "payload-too-large",
+  );
+  // Without Content-Length the limit applies while streaming.
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(JSON.stringify(huge)));
+      controller.close();
+    },
+  });
+  await assertError(
+    a.request(`/api/matches/${match.id}/moves`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: stream,
+    }),
+    413,
+    "payload-too-large",
+  );
+});
+
+Deno.test("long Moves are not echoed in full", async () => {
+  const a = app();
+  const { match, tokens } = await create(a);
+  const move = "z".repeat(8 * 1024);
+  const body = await assertError(
+    post(a, `/api/matches/${match.id}/moves`, { move, token: tokens.x }),
+    400,
+    "invalid-move",
+  );
+  assert(body.error.message.length < 400, body.error.message);
+});
+
+Deno.test("POST bodies must be application/json (415)", async () => {
+  const a = app();
+  const { match, tokens } = await create(a);
+  for (
+    const type of [undefined, "text/plain", "application/x-www-form-urlencoded"]
+  ) {
+    const headers: Record<string, string> = type
+      ? { "content-type": type }
+      : {};
+    await assertError(
+      a.request("/api/matches", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ gameId: "tic-tac-toe", seats: HUMANS }),
+      }),
+      415,
+      "unsupported-media-type",
+    );
+    await assertError(
+      a.request(`/api/matches/${match.id}/moves`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ move: "a1", token: tokens.x }),
+      }),
+      415,
+      "unsupported-media-type",
+    );
+  }
+  const res = await a.request("/api/matches", {
+    method: "POST",
+    headers: { "content-type": "Application/JSON; charset=utf-8" },
+    body: JSON.stringify({ gameId: "tic-tac-toe", seats: HUMANS }),
+  });
+  assertEquals(res.status, 201);
+});
+
+Deno.test("error ordering on POST /api/matches/:id/moves", async (t) => {
+  const a = app();
+  const { match, tokens } = await create(a);
+  const path = `/api/matches/${match.id}/moves`;
+
+  await t.step("bad body on an unknown Match is 400", async () => {
+    await assertError(
+      post(a, "/api/matches/nope/moves", { move: 1 }),
+      400,
+      "invalid-request",
+    );
+  });
+  await t.step("non-mover sending an illegal Move is 403", async () => {
+    await assertError(
+      post(a, path, { move: "z9", token: tokens.o }),
+      403,
+      "not-your-turn",
+    );
+  });
+  await t.step("wrong token on a finished Match is 403, not 409", async () => {
+    for (const [i, move] of ["a1", "a2", "b1", "b2", "c1"].entries()) {
+      const token = i % 2 === 0 ? tokens.x : tokens.o;
+      assertEquals((await post(a, path, { move, token })).status, 200);
+    }
+    await assertError(
+      post(a, path, { move: "c3", token: "wrong" }),
+      403,
+      "invalid-token",
+    );
+    await assertError(
+      post(a, path, { move: "c3", token: tokens.o }),
+      409,
+      "match-finished",
+    );
+  });
+});

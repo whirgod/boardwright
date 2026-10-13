@@ -51,8 +51,13 @@ core  <-  games/*  <-  engines/*
 - `game-master.ts` — `GameMaster`, the referee, independent of HTTP: creates Matches, rebuilds
   the current Position by replaying the stored Move list, and accepts a Move only from the Seat
   to move, if it decodes in the Game's Notation and is among `legalMoves` (compared in Notation,
-  since Moves are opaque). Refusals are `MatchError`s with a `code`. `playAs(id, seat, move)`
-  is the seam for Players the server drives itself (Engines, #7).
+  since Moves are opaque). Refusals are `MatchError`s with a `code`; a Game that refuses a Move
+  its own `legalMoves` listed is a server fault (500). A stored Outcome (e.g. a forfeit) ends
+  the Match regardless of the Position. Seams for #7/#9:
+  - `playAs(id, seat, move)` plays for Seats the server drives itself (Engines); token-holding
+    Seats are refused (`not-server-driven`).
+  - `onMatchChanged(listener)` runs listeners synchronously after every create and accepted Move
+    (e.g. to schedule an Engine's Move or push to WebSocket clients); returns an unsubscribe.
 - `players.ts` — `PlayerSpec`, a union discriminated by `kind` (today only `human`); new kinds
   such as `engine` extend it without reshaping requests, records or responses.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
@@ -61,7 +66,9 @@ core  <-  games/*  <-  engines/*
 - `tokens.ts` — seat tokens: 256-bit random hex; only their SHA-256 is stored.
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
   tiny and errors stay in our shape).
-- `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses.
+- `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses. Request bodies on `/api/*`
+  are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
+  client text echoed in error messages is truncated.
 
 ## API
 
@@ -81,9 +88,11 @@ Errors always have the body `{ "error": { "code", "message" } }`:
 | Status | Codes                                                                                            |
 | ------ | ------------------------------------------------------------------------------------------------ |
 | 400    | `invalid-request` (bad JSON/body), `invalid-seats`, `invalid-move` (undecodable), `illegal-move` |
-| 403    | `invalid-token`, `not-your-turn`                                                                 |
+| 403    | `invalid-token`, `not-your-turn`, `not-server-driven` (internal `playAs` only)                   |
 | 404    | `unknown-game`, `unknown-match`, `not-found` (no such route)                                     |
 | 409    | `match-finished`, `conflict` (concurrent update; refetch and retry)                              |
+| 413    | `payload-too-large`                                                                              |
+| 415    | `unsupported-media-type`                                                                         |
 | 500    | `internal`                                                                                       |
 
 Planned (sketch, not final):
