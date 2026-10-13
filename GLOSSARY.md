@@ -23,7 +23,7 @@ The complete state of play at one moment: the pieces, the Seat to move, and what
 _Avoid_: Board, state
 
 **Move**:
-One complete action of the Seat to move that turns one Position into the next. In backgammon, the full play of one roll.
+One complete action of the Seat to move that turns one Position into the next. In backgammon, the full play of one roll; when no checker can move, the play is empty (`pass`).
 _Avoid_: Turn, action
 
 **Chance event**:

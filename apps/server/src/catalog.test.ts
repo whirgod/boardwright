@@ -1,8 +1,10 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { checkers } from "@boardwright/game-checkers";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { verifyCatalog } from "./catalog.ts";
-import type { AnyGameRules } from "./games.ts";
+import { GameMaster } from "./game-master.ts";
+import { type AnyGameRules, GameRegistry } from "./games.ts";
+import { InMemoryMatchStore } from "./match-store.ts";
 import { hostedCatalog } from "./hosted-catalog.ts";
 
 const ttt = ticTacToe as unknown as AnyGameRules;
@@ -96,15 +98,42 @@ Deno.test("verifyCatalog rejects duplicate Engine ids of a Game", async () => {
   );
 });
 
-Deno.test("the hosted catalog is valid and hosts the four Games", async () => {
+Deno.test("the hosted catalog is valid and hosts the five Games", async () => {
   const { games, engines } = await verifyCatalog(hostedCatalog);
   assertEquals(games.map((g) => g.id), [
     "tic-tac-toe",
     "nine-mens-morris",
     "checkers",
     "chess",
+    "backgammon",
   ]);
   for (const id of ["tic-tac-toe", "nine-mens-morris", "checkers", "chess"]) {
     assertEquals(engines.list(id).map((e) => e.id), ["minimax"]);
   }
+  assertEquals(engines.list("backgammon"), []);
+});
+
+Deno.test("hosted backgammon: the Game master rolls, humans play", async () => {
+  const { games } = await verifyCatalog(hostedCatalog);
+  const master = new GameMaster({
+    games: new GameRegistry(games),
+    store: new InMemoryMatchStore(),
+  });
+  const human = { kind: "human" } as const;
+  const { match, tokens } = await master.createMatch("backgammon", {
+    white: human,
+    black: human,
+  });
+  // The opening roll was resolved at creation.
+  assertEquals(match.moves.length, 1);
+  assertEquals(match.moves[0]!.kind, "chance");
+  const seat = match.toMove!;
+  const move = match.legalMoves[0]!;
+  const next = await master.apply(match.id, { token: tokens[seat]! }, {
+    kind: "move",
+    move,
+  });
+  // The Move, then the Opponent's roll.
+  assertEquals(next.moves.map((e) => e.kind), ["chance", "move", "chance"]);
+  assertNotEquals(next.toMove, seat);
 });

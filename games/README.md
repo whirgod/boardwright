@@ -35,4 +35,5 @@ A Game with chance (dice, ADR 0005) implements `ChanceGameRules` (`chanceEvents`
 instead: the same checks with Chance events resolved at random by their probabilities, plus
 probabilities summing to 1, every result resolving, nothing pending or resolvable outside a
 pending Chance event, and replay through Chance events (shown as `[result]` in failures).
-`diceRace` from `@boardwright/testing` is the smallest example.
+`diceRace` from `@boardwright/testing` is the smallest example; `games/backgammon` is the
+real one.
