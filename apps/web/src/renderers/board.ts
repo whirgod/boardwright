@@ -124,4 +124,16 @@ export interface BoardRenderer<Position, Move> {
     selection: Selection,
     target: TargetId,
   ): MoveIntent<Move>;
+  /**
+   * Optional: the targets a click may continue a non-empty `selection` with
+   * (highlighted as destinations), for renderers whose `input` does not
+   * follow `moveTargets`' click order (e.g. backgammon, whose Steps may be
+   * entered in any order). Default: the next target of every legal Move's
+   * click order that starts with `selection`.
+   */
+  nextTargets?(
+    position: Position,
+    legalMoves: readonly Move[],
+    selection: Selection,
+  ): readonly TargetId[];
 }

@@ -10,6 +10,7 @@ import {
   type BackgammonSeat,
   CHECKERS,
   parseMove,
+  stepOrders,
 } from "./mod.ts";
 
 const n = g.notation;
@@ -474,4 +475,62 @@ Deno.test("legal plays match a brute-force reference in random Matches", () => {
   assert(checked > 300);
   // The rare cases are actually exercised.
   assert(kinds.pass >= 5 && kinds.singleDie >= 5 && kinds.partialDouble >= 2);
+});
+
+Deno.test("stepOrders: every order of single-die Steps that plays a legal Move", () => {
+  const p = roll(g.initialPosition(), "3-1");
+  const orders = stepOrders(p);
+  const of = (steps: string) =>
+    orders.find((o) => n.encodeMove({ steps: o.steps }) === steps);
+  assertEquals(n.encodeMove(of("8/5 6/5")!.move), "8/5 6/5");
+  assertEquals(n.encodeMove(of("6/5 8/5")!.move), "8/5 6/5");
+  // One checker moved by both dice, either die first.
+  assertEquals(n.encodeMove(of("24/23 23/20")!.move), "24/21 21/20");
+  assertEquals(n.encodeMove(of("24/21 21/20")!.move), "24/21 21/20");
+  // Steps one die each: no 24/20 in one Step.
+  assertEquals(of("24/20"), undefined);
+  // Every legal Move is covered, and nothing else.
+  const legal = moves(p);
+  assertEquals(
+    [...new Set(orders.map((o) => n.encodeMove(o.move)))].sort(),
+    legal,
+  );
+  // No order twice.
+  const texts = orders.map((o) => n.encodeMove({ steps: o.steps }));
+  assertEquals(new Set(texts).size, texts.length);
+  // Nothing to order before the roll; pass is played by no Steps.
+  assertEquals(stepOrders(g.initialPosition()), []);
+  const closed: Layout = { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 3 };
+  const stuck = setup({
+    white: { bar: 1, 13: 14 },
+    black: closed,
+    dice: [4, 2],
+  });
+  assertEquals(stepOrders(stuck).map((o) => [n.encodeMove(o.move), o.steps]), [
+    ["pass", []],
+  ]);
+});
+
+Deno.test("stepOrders: every order plays its Move in random Matches", () => {
+  const rand = seededRandom(5);
+  for (let match = 0; match < 3; match++) {
+    let p = g.initialPosition();
+    while (g.outcome(p) === undefined) {
+      const events = g.chanceEvents(p);
+      if (events.length > 0) {
+        p = g.resolveChance(p, pickChance(events, rand()));
+        continue;
+      }
+      for (const { move, steps } of stepOrders(p)) {
+        const text = n.encodeMove({ steps });
+        assertEquals(
+          n.encodeMove(n.decodeMove(text, p)),
+          n.encodeMove(move),
+          `${text} in ${n.encodePosition(p)}`,
+        );
+      }
+      const legal = g.legalMoves(p);
+      p = g.play(p, legal[Math.floor(rand() * legal.length)]!);
+    }
+  }
 });

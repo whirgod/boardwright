@@ -1,4 +1,5 @@
 import type { GameId, GameRules } from "@boardwright/core";
+import { backgammon } from "@boardwright/game-backgammon";
 import { checkers } from "@boardwright/game-checkers";
 import { chess } from "@boardwright/game-chess";
 import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
@@ -11,6 +12,7 @@ import type {
   Selection,
   TargetId,
 } from "./board.ts";
+import { backgammonRenderer } from "./backgammon.ts";
 import { clickOrder } from "./compose.ts";
 import { checkersRenderer } from "./checkers.ts";
 import { chessRenderer } from "./chess.ts";
@@ -152,7 +154,13 @@ export function bindRenderer<Position, Move>(
       for (const target of selection) {
         highlights.push({ target, kind: "selected" });
       }
-      if (selection.length > 0) {
+      if (selection.length > 0 && renderer.nextTargets) {
+        for (
+          const target of renderer.nextTargets(position, legalMoves, selection)
+        ) {
+          highlights.push({ target, kind: "destination" });
+        }
+      } else if (selection.length > 0) {
         const next = new Set<TargetId>();
         for (const move of legalMoves) {
           const targets = clicks(move, position);
@@ -200,6 +208,7 @@ const views: ReadonlyMap<GameId, GameView> = new Map(
     bindRenderer(nineMensMorris, nineMensMorrisRenderer),
     bindRenderer(checkers, checkersRenderer),
     bindRenderer(chess, chessRenderer),
+    bindRenderer(backgammon, backgammonRenderer),
   ].map((v) => [v.gameId, v]),
 );
 

@@ -289,8 +289,13 @@ Resignations stay REST.
   reach, `kind: "preview"`, `index` = step; it stops at the first Move that does not decode or
   apply); Moves that do not decode are skipped, and a Position that does not decode
   makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
-  `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe, nine men's morris, checkers and
-  chess; Games without one fall back to Notation text and legal-Move buttons. Chess input: a Move
+  `board.tsx` draws any scene as SVG. A renderer whose input does not follow `moveTargets`' click
+  order provides `nextTargets` for the destination highlights. Implemented for tic-tac-toe, nine
+  men's morris, checkers, chess and backgammon; Games without one fall back to Notation text and
+  legal-Move buttons. Backgammon input: each Step (one die) is a checker then its destination
+  (`bar` and the `off` tray are targets), in any playable order (the Game's `stepOrders`); the
+  Move is played after its last Step; the dice start over, or play `pass`. Its last Move is not
+  highlighted (the replay needs the Chance events). Chess input: a Move
   is `from` then `to` (castling is the king's two-square Move); promotion is a third click, an
   effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
   pieces of the Seat to move. The Move list still shows Notation text (UCI), not SAN; SAN

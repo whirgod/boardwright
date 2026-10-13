@@ -10,4 +10,6 @@ export {
   opponent,
   parseMove,
   type Step,
+  type StepOrder,
+  stepOrders,
 } from "./backgammon.ts";
