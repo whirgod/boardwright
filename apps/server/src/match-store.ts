@@ -11,16 +11,30 @@ export interface SeatRecord {
 }
 
 /**
- * Everything needed to restore a Match. Game-agnostic: Moves are Notation
- * strings, and the current Position is rebuilt by replaying them from the
- * Game's initial Position (Games are deterministic, ADR 0002).
+ * One entry of a Match's Move list (GLOSSARY), in the Game's Notation: a
+ * Move by a Seat, or a Chance event the Game master resolved (Games with
+ * chance only, ADR 0005).
+ */
+export type MoveListEntry =
+  | { readonly kind: "move"; readonly move: string }
+  | { readonly kind: "chance"; readonly chance: string };
+
+/**
+ * Everything needed to restore a Match. Game-agnostic: the Move list holds
+ * Notation strings, and the current Position is rebuilt by replaying it from
+ * the Game's initial Position (Games are deterministic, ADR 0002).
  */
 export interface MatchRecord {
   readonly id: MatchId;
   readonly gameId: GameId;
   readonly seats: Readonly<Record<Seat, SeatRecord>>;
-  /** Moves in play order, each in the Game's Notation. */
-  readonly moves: readonly string[];
+  /** The Move list: Moves and Chance events in play order. */
+  readonly moves: readonly MoveListEntry[];
+  /**
+   * Secret seed the Game master draws Chance events from (Games with chance
+   * only, ADR 0005). Never shown to clients before the Match has an Outcome.
+   */
+  readonly seed?: string;
   /** Set once the Match has ended, whatever the kind of ending. */
   readonly outcome?: Outcome;
   /** Incremented on every update; used for optimistic concurrency. */

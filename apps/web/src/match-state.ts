@@ -1,6 +1,6 @@
 // DOM-free view logic of the Match page.
 import type { Seat } from "@boardwright/core";
-import type { MatchView, PlayerSpec } from "./api.ts";
+import type { MatchView, MoveListEntry, PlayerSpec } from "./api.ts";
 import { describeOutcome, type OutcomeText } from "./outcome.ts";
 import type { BoardRequest, Selection } from "./renderers/mod.ts";
 import type { SeatHolding } from "./seat-tokens.ts";
@@ -14,7 +14,9 @@ export type MatchStatus =
     readonly kind: "waiting";
     readonly seat: Seat;
     readonly player: PlayerSpec | undefined;
-  };
+  }
+  /** A Chance event is pending: the Game master is about to roll. */
+  | { readonly kind: "chance" };
 
 export function matchStatus(
   match: MatchView,
@@ -23,8 +25,9 @@ export function matchStatus(
   if (match.outcome) {
     return { kind: "finished", outcome: describeOutcome(match.outcome) };
   }
-  // A Match without an Outcome always has a Seat to move.
-  const seat = match.toMove ?? "";
+  // Without an Outcome, no Seat to move means a pending Chance event.
+  if (match.toMove === null) return { kind: "chance" };
+  const seat = match.toMove;
   const token = tokens[seat];
   if (token !== undefined && match.seats[seat]?.kind === "human") {
     return { kind: "your-move", seat, token };
@@ -40,24 +43,43 @@ export function boardRequest(
 ): BoardRequest {
   return {
     position: match.position,
-    moves: match.moves,
+    // Renderers replay Moves only; Games with chance need their own handling.
+    moves: movesOnly(match.moves),
     legalMoves: status.kind === "your-move" ? match.legalMoves : [],
     selection,
   };
 }
 
+/** The Moves of a Move list, without its Chance events. */
+export function movesOnly(entries: readonly MoveListEntry[]): string[] {
+  return entries.flatMap((e) => e.kind === "move" ? [e.move] : []);
+}
+
 export interface MoveListRow {
   /** 1-based Move number: one Move per Seat. */
   readonly number: number;
-  readonly moves: readonly string[];
+  /** Up to two Moves, each with the Chance events right before it. */
+  readonly entries: readonly MoveListEntry[];
 }
 
-/** Move list grouped in pairs, as Seats alternate in two-Seat Games (ADR 0003). */
-export function moveListRows(moves: readonly string[]): MoveListRow[] {
+/**
+ * Move list grouped in pairs of Moves, as Seats alternate in two-Seat Games
+ * (ADR 0003). A Chance event goes in the row of the Move that follows it.
+ */
+export function moveListRows(entries: readonly MoveListEntry[]): MoveListRow[] {
   const rows: MoveListRow[] = [];
-  for (let i = 0; i < moves.length; i += 2) {
-    rows.push({ number: i / 2 + 1, moves: moves.slice(i, i + 2) });
+  let row: MoveListEntry[] = [];
+  let moves = 0;
+  for (const entry of entries) {
+    if (moves === 2) {
+      rows.push({ number: rows.length + 1, entries: row });
+      row = [];
+      moves = 0;
+    }
+    row.push(entry);
+    if (entry.kind === "move") moves++;
   }
+  if (row.length > 0) rows.push({ number: rows.length + 1, entries: row });
   return rows;
 }
 
@@ -78,7 +100,8 @@ export interface Invite {
  * until each Seat has moved (the Opponent has used it).
  */
 export function invites(match: MatchView, holding: SeatHolding): Invite[] {
-  if (match.outcome || match.moves.length >= 2) return [];
+  const moves = movesOnly(match.moves).length;
+  if (match.outcome || moves >= 2) return [];
   const seats = Object.keys(match.seats).filter((seat) =>
     holding.tokens[seat] !== undefined && match.seats[seat]?.kind === "human"
   );
@@ -88,7 +111,7 @@ export function invites(match: MatchView, holding: SeatHolding): Invite[] {
     seat,
     token: holding.tokens[seat]!,
     handedOver: holding.handedOver.includes(seat),
-    canHandOver: match.moves.length === 0 && playing.length > 1 &&
+    canHandOver: moves === 0 && playing.length > 1 &&
       playing.includes(seat),
   }));
   return result.some((i) => i.handedOver || i.canHandOver) ? result : [];

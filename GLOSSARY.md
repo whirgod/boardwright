@@ -99,5 +99,5 @@ Stepping through the Moves of a Match to examine its Positions, during or after 
 _Avoid_: Replay, playback
 
 **Game master**:
-The server's role as referee: it owns every Match's Position and accepts only legal Moves.
+The server's role as referee: it owns every Match's Position, accepts only legal Moves and resolves Chance events.
 _Avoid_: Arbiter, controller

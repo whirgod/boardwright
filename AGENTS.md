@@ -29,8 +29,9 @@ worktrees, PRs, reviews on GitHub, fix loop, usage-limit checkpoints. Tasks are 
 ## Layout
 
 ```
-packages/core     contracts: GameRules, Notation, Engine, Analysis (no deps)
-packages/testing  contract test kit for Games (assertGameRulesContract)
+packages/core     contracts: GameRules (+ ChanceGameRules), Notation, Engine, Analysis (no deps)
+packages/testing  contract test kits: Games (assertGameRulesContract / assertChanceGameRulesContract),
+                  Engines (assertEngineContract); diceRace, a tiny Game with chance for tests
 apps/server       Hono API + host of the web UI
 apps/web          browser UI: Preact, bundled to apps/web/dist (ADR 0004)
 games/<id>        one GameRules package per Game     (@boardwright/game-<id>)

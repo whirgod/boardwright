@@ -1,10 +1,19 @@
-import type { GameId, Outcome, RulesOutcome, Seat } from "@boardwright/core";
+import {
+  chancePending,
+  type GameId,
+  hasChance,
+  type Outcome,
+  type RulesOutcome,
+  type Seat,
+} from "@boardwright/core";
+import { drawChance, newChanceSeed, pickChance } from "./chance.ts";
 import { EngineRegistry } from "./engines.ts";
 import type { AnyGameRules, GameRegistry } from "./games.ts";
 import type {
   MatchId,
   MatchRecord,
   MatchStore,
+  MoveListEntry,
   SeatRecord,
 } from "./match-store.ts";
 import { type Player, usesSeatToken } from "./players.ts";
@@ -36,15 +45,24 @@ export interface MatchView {
   readonly gameId: GameId;
   /** Seats in the Game's order, each with its Player. */
   readonly seats: Readonly<Record<Seat, Player>>;
-  /** Moves in play order, in the Game's Notation. */
-  readonly moves: readonly string[];
+  /** The Move list: Moves and Chance events in play order, in the Game's Notation. */
+  readonly moves: readonly MoveListEntry[];
   /** Current Position in the Game's Notation. */
   readonly position: string;
-  /** Seat to move, or `null` once the Match has an Outcome. */
+  /**
+   * Seat to move, or `null` once the Match has an Outcome (or, briefly,
+   * while a Chance event is pending).
+   */
   readonly toMove: Seat | null;
   /** Legal Moves for `toMove`, in the Game's Notation. */
   readonly legalMoves: readonly string[];
   readonly outcome: Outcome | null;
+  /**
+   * The secret seed the Chance events were drawn from (see `chance.ts`),
+   * revealed once the Match has an Outcome. Absent for Games without chance
+   * and while the Match runs.
+   */
+  readonly seed?: string;
   /** 1 when created, +1 per change: the `version` of the last {@link MatchEvent}. */
   readonly version: number;
   readonly createdAt: string;
@@ -63,7 +81,7 @@ export interface CreatedMatch {
  * - `{ engineSeat }`: the server playing for the Engine in that Seat; a Seat
  *   whose Player is not an Engine is refused with `not-engine-seat`.
  * - `{ gameMaster: true }`: the Game master itself, imposing a change on the
- *   Match (a Forfeit now, a Chance event later).
+ *   Match (a Forfeit or a Chance event).
  */
 export type Actor = PlayerActor | GameMasterActor;
 export type PlayerActor =
@@ -99,12 +117,18 @@ export type PlayerChange =
 /**
  * A change the Game master imposes:
  * - `forfeit`: `seat`, which is to move, failed to play; the Opponent wins.
+ * - `chance`: resolve the pending Chance event (ADR 0005) with the next
+ *   draw from the Match's secret seed. The Game master does this on its
+ *   own right after every change that leaves one pending (and at creation),
+ *   so callers only need it to retry a roll that failed.
  */
-export type ImposedChange = {
-  readonly kind: "forfeit";
-  readonly seat: Seat;
-  readonly reason: ForfeitReason;
-};
+export type ImposedChange =
+  | {
+    readonly kind: "forfeit";
+    readonly seat: Seat;
+    readonly reason: ForfeitReason;
+  }
+  | { readonly kind: "chance" };
 
 export type MatchChange = PlayerChange | ImposedChange;
 
@@ -153,6 +177,11 @@ export type MatchEvent =
     readonly kind: "forfeit";
     /** The Seat that forfeited. */
     readonly seat: Seat;
+  }
+  | MatchEventBase & {
+    readonly kind: "chance";
+    /** The Chance event's result in Notation, as appended to the Move list. */
+    readonly chance: string;
   };
 
 /**
@@ -168,17 +197,26 @@ export interface GameMasterOptions {
   readonly engines?: EngineRegistry;
   readonly now?: () => Date;
   readonly newMatchId?: () => MatchId;
+  /**
+   * Source of each new Match's secret seed for Chance events (Games with
+   * chance only); defaults to 256 random bits. Inject a fixed one in tests
+   * for deterministic rolls.
+   */
+  readonly newSeed?: () => string;
 }
 
 /** What judging a change decided: the record's new contents and the event. */
 interface Verdict {
-  readonly moves: readonly string[];
+  readonly moves: readonly MoveListEntry[];
   readonly outcome?: Outcome;
   readonly position: unknown;
   readonly event:
     | { readonly kind: "move"; readonly seat: Seat; readonly move: string }
-    | { readonly kind: "resignation" | "forfeit"; readonly seat: Seat };
+    | { readonly kind: "resignation" | "forfeit"; readonly seat: Seat }
+    | { readonly kind: "chance"; readonly chance: string };
 }
+
+const GAME_MASTER: GameMasterActor = { gameMaster: true };
 
 /**
  * The referee (GLOSSARY: Game master). Creates Matches, holds their
@@ -193,6 +231,7 @@ export class GameMaster {
   readonly #engines: EngineRegistry;
   readonly #now: () => Date;
   readonly #newMatchId: () => MatchId;
+  readonly #newSeed: () => string;
   readonly #listeners = new Set<MatchListener>();
   /** Per Match, the tail of its queue of changes (see `#serialize`). */
   readonly #queues = new Map<MatchId, Promise<unknown>>();
@@ -203,6 +242,7 @@ export class GameMaster {
     this.#engines = options.engines ?? new EngineRegistry();
     this.#now = options.now ?? (() => new Date());
     this.#newMatchId = options.newMatchId ?? (() => crypto.randomUUID());
+    this.#newSeed = options.newSeed ?? newChanceSeed;
   }
 
   /** Start a Match of `gameId` with one Player per Seat of the Game. */
@@ -270,18 +310,24 @@ export class GameMaster {
       gameId,
       seats,
       moves: [],
+      ...(hasChance(game) ? { seed: this.#newSeed() } : {}),
       version: 1,
       createdAt: now,
       updatedAt: now,
     };
     await this.#store.create(record);
-    const match = this.#view(record, game, game.initialPosition());
+    const initial = game.initialPosition();
+    const created = this.#view(record, game, initial);
     this.#notify({
-      ...eventBase(match),
+      ...eventBase(created),
       kind: "created",
-      gameId: match.gameId,
-      seats: match.seats,
+      gameId: created.gameId,
+      seats: created.seats,
     });
+    // E.g. backgammon's opening roll.
+    const match = chancePending(game, initial)
+      ? await this.#serialize(record.id, () => this.#roll(record.id, created))
+      : created;
     return { match, tokens };
   }
 
@@ -337,6 +383,14 @@ export class GameMaster {
    * another server process got there first) and one event to listeners.
    * Refusals change nothing and emit nothing. Changes to one Match are
    * applied one at a time, in call order.
+   *
+   * Chance events (ADR 0005): when a change leaves a Chance event pending,
+   * the Game master resolves it right away, before any other change to the
+   * Match, as its own imposed `chance` change (one more version and event),
+   * repeating while one is pending; the returned view is the Match after
+   * those rolls. A roll that fails is logged and returns the view before it
+   * (the Match then waits for a retried `{ kind: "chance" }`). The n-th
+   * Chance event of a Match is drawn from its secret seed (`drawChance`).
    */
   apply(
     id: MatchId,
@@ -375,6 +429,39 @@ export class GameMaster {
     id: MatchId,
     actor: Actor,
     change: MatchChange,
+    options: ApplyOptions,
+  ): Promise<MatchView> {
+    const match = await this.#applyOne(id, actor, change, options);
+    return await this.#roll(id, match);
+  }
+
+  /**
+   * Resolve Chance events while one is pending in `match` (the Match's
+   * latest view), each as its own imposed change. Runs inside the Match's
+   * queue. A failure is logged, not thrown: the change that led here is
+   * already committed.
+   */
+  async #roll(id: MatchId, match: MatchView): Promise<MatchView> {
+    while (match.outcome === null && match.toMove === null) {
+      try {
+        match = await this.#applyOne(id, GAME_MASTER, { kind: "chance" }, {
+          expectedVersion: match.version,
+        });
+      } catch (error) {
+        console.error(
+          `Could not resolve a Chance event in Match ${id}:`,
+          error,
+        );
+        break;
+      }
+    }
+    return match;
+  }
+
+  async #applyOne(
+    id: MatchId,
+    actor: Actor,
+    change: MatchChange,
     { expectedVersion }: ApplyOptions,
   ): Promise<MatchView> {
     const record = await this.#load(id);
@@ -384,7 +471,7 @@ export class GameMaster {
         `The Match is at version ${record.version}, not ${expectedVersion}`,
       );
     }
-    const imposed = change.kind === "forfeit";
+    const imposed = change.kind === "forfeit" || change.kind === "chance";
     if (imposed !== "gameMaster" in actor) {
       // The overloads rule this out; reaching it is a server bug.
       throw new TypeError(
@@ -395,10 +482,13 @@ export class GameMaster {
       ? undefined
       : await this.#seatOf(record, actor);
     const { game, position } = this.#restore(record);
-    if (record.outcome || game.toMove(position) === undefined) {
+    if (record.outcome || game.outcome(position) !== undefined) {
       throw new MatchError("match-finished", "The Match is finished");
     }
-    const verdict = judge(game, record, position, change, seat);
+    const draw = change.kind === "chance"
+      ? await this.#draw(record, game, position)
+      : undefined;
+    const verdict = judge(game, record, position, change, seat, draw);
 
     const { outcome: _previous, ...rest } = record;
     const updated: MatchRecord = {
@@ -417,6 +507,27 @@ export class GameMaster {
     const match = this.#view(updated, game, verdict.position);
     this.#notify({ ...eventBase(match), ...verdict.event });
     return match;
+  }
+
+  /**
+   * The result of the Match's next Chance event: the n-th draw from its
+   * seed, n counting the Chance events already in the Move list. Refuses
+   * with `not-your-turn` when no Chance event is pending.
+   */
+  async #draw(
+    record: MatchRecord,
+    game: AnyGameRules,
+    position: unknown,
+  ): Promise<unknown> {
+    if (!hasChance(game) || !chancePending(game, position)) {
+      throw new MatchError("not-your-turn", "No Chance event is pending");
+    }
+    if (record.seed === undefined) {
+      throw new Error(`Match ${record.id} has no seed to draw Chance events`);
+    }
+    const n = record.moves.filter((entry) => entry.kind === "chance").length;
+    const results = game.chanceEvents(position);
+    return pickChance(results, await drawChance(record.seed, n));
   }
 
   #notify(event: MatchEvent): void {
@@ -474,7 +585,7 @@ export class GameMaster {
     );
   }
 
-  /** Rebuild the current Position by replaying the Move list. */
+  /** Rebuild the current Position by replaying the Move list (Moves and Chance events). */
   #restore(record: MatchRecord): { game: AnyGameRules; position: unknown } {
     const game = this.#games.get(record.gameId);
     if (!game) {
@@ -485,8 +596,18 @@ export class GameMaster {
       );
     }
     let position = game.initialPosition();
-    for (const text of record.moves) {
-      position = game.play(position, game.notation.decodeMove(text, position));
+    for (const entry of record.moves) {
+      if (entry.kind === "move") {
+        const move = game.notation.decodeMove(entry.move, position);
+        position = game.play(position, move);
+      } else if (hasChance(game)) {
+        const chance = game.notation.decodeChance(entry.chance, position);
+        position = game.resolveChance(position, chance);
+      } else {
+        throw new Error(
+          `Match ${record.id} has a Chance event, but ${game.id} has no chance`,
+        );
+      }
     }
     return { game, position };
   }
@@ -508,6 +629,8 @@ export class GameMaster {
         ? []
         : game.legalMoves(position).map((m) => notation.encodeMove(m)),
       outcome: record.outcome ?? null,
+      // Secret until the Match is over (ADR 0005).
+      ...(finished && record.seed !== undefined ? { seed: record.seed } : {}),
       version: record.version,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -517,7 +640,8 @@ export class GameMaster {
 
 /**
  * Decide a change to a running Match: pure, no I/O. `player` is the Seat of
- * the Player making a {@link PlayerChange}, `undefined` for an imposed one.
+ * the Player making a {@link PlayerChange}, `undefined` for an imposed one;
+ * `drawn` is the Chance event's result for a `chance` change (see `#draw`).
  * Throws a `MatchError` to refuse it.
  */
 function judge(
@@ -526,6 +650,7 @@ function judge(
   position: unknown,
   change: MatchChange,
   player: Seat | undefined,
+  drawn: unknown,
 ): Verdict {
   switch (change.kind) {
     case "move": {
@@ -534,7 +659,7 @@ function judge(
       const { move, next } = playLegal(game, position, change.move);
       const outcome = game.outcome(next);
       return {
-        moves: [...record.moves, move],
+        moves: [...record.moves, { kind: "move", move }],
         ...(outcome ? { outcome: byTheRules(outcome) } : {}),
         position: next,
         event: { kind: "move", seat, move },
@@ -564,6 +689,20 @@ function judge(
         event: { kind: "forfeit", seat },
       };
     }
+    case "chance": {
+      if (!hasChance(game)) {
+        throw new TypeError(`${game.id} has no Chance events`); // #draw refuses first
+      }
+      const next = game.resolveChance(position, drawn);
+      const chance = game.notation.encodeChance(drawn);
+      const outcome = game.outcome(next);
+      return {
+        moves: [...record.moves, { kind: "chance", chance }],
+        ...(outcome ? { outcome: byTheRules(outcome) } : {}),
+        position: next,
+        event: { kind: "chance", chance },
+      };
+    }
   }
 }
 
@@ -578,6 +717,13 @@ function byTheRules(outcome: RulesOutcome): Outcome {
 
 function requireTurn(game: AnyGameRules, position: unknown, seat: Seat): void {
   const toMove = game.toMove(position);
+  if (toMove === undefined) {
+    // The Match is not over, so a Chance event is pending.
+    throw new MatchError(
+      "not-your-turn",
+      "A Chance event is pending; the Game master is to act",
+    );
+  }
   if (toMove !== seat) {
     throw new MatchError(
       "not-your-turn",

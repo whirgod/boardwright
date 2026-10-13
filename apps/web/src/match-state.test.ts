@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import type { MatchView } from "./api.ts";
+import type { MatchView, MoveListEntry } from "./api.ts";
 import {
   boardRequest,
   invites,
@@ -10,11 +10,14 @@ import {
 } from "./match-state.ts";
 import { playingTokens } from "./seat-tokens.ts";
 
+const mv = (move: string): MoveListEntry => ({ kind: "move", move });
+const roll = (chance: string): MoveListEntry => ({ kind: "chance", chance });
+
 const MATCH: MatchView = {
   id: "m1",
   gameId: "tic-tac-toe",
   seats: { x: { kind: "human" }, o: { kind: "engine", engineId: "minimax" } },
-  moves: ["a1"],
+  moves: [mv("a1")],
   position: "x........:o",
   toMove: "o",
   legalMoves: ["b2", "c3"],
@@ -65,7 +68,7 @@ Deno.test("boardRequest: legal Moves only on your Move", () => {
   const mine = { ...MATCH, toMove: "x" };
   assertEquals(boardRequest(mine, matchStatus(mine, { x: "t" }), ["a"]), {
     position: MATCH.position,
-    moves: MATCH.moves,
+    moves: ["a1"],
     legalMoves: MATCH.legalMoves,
     selection: ["a"],
   });
@@ -94,12 +97,15 @@ Deno.test("invites: hand over one of several human Seats before the first Move",
     { seat: "o", token: "to", handedOver: true, canHandOver: false },
   ]);
   // The link stays visible after the first Move, until each Seat has moved.
-  const afterOne = { ...fresh, moves: ["a1"], toMove: "o" };
+  const afterOne = { ...fresh, moves: [mv("a1")], toMove: "o" };
   assertEquals(invites(afterOne, shared).map((i) => i.handedOver), [
     false,
     true,
   ]);
-  assertEquals(invites({ ...afterOne, moves: ["a1", "b2"] }, shared), []);
+  assertEquals(
+    invites({ ...afterOne, moves: [mv("a1"), mv("b2")] }, shared),
+    [],
+  );
   // Playing both Seats here (hot seat): nothing to offer once play started.
   assertEquals(invites(afterOne, both), []);
   // Holding one Seat, Engine Seats, finished Matches: nothing to offer.
@@ -128,10 +134,45 @@ Deno.test("matchStatus: a handed-over Seat is not played here", () => {
 
 Deno.test("moveListRows: pairs Moves under 1-based Move numbers", () => {
   assertEquals(moveListRows([]), []);
-  assertEquals(moveListRows(["a1", "b2", "c3"]), [
-    { number: 1, moves: ["a1", "b2"] },
-    { number: 2, moves: ["c3"] },
+  assertEquals(moveListRows([mv("a1"), mv("b2"), mv("c3")]), [
+    { number: 1, entries: [mv("a1"), mv("b2")] },
+    { number: 2, entries: [mv("c3")] },
   ]);
+});
+
+Deno.test("moveListRows: a Chance event goes with the Move after it", () => {
+  assertEquals(
+    moveListRows([roll("3"), mv("f"), roll("1"), mv("1"), roll("2")]),
+    [
+      { number: 1, entries: [roll("3"), mv("f"), roll("1"), mv("1")] },
+      { number: 2, entries: [roll("2")] },
+    ],
+  );
+});
+
+Deno.test("a Game with chance: status while rolling, board and invites count Moves only", () => {
+  const rolling: MatchView = {
+    ...MATCH,
+    seats: { a: { kind: "human" }, b: { kind: "human" } },
+    moves: [roll("2")],
+    toMove: null,
+  };
+  assertEquals(matchStatus(rolling, { a: "ta" }), { kind: "chance" });
+  const rolled = {
+    ...rolling,
+    moves: [roll("2"), mv("f"), roll("1")],
+    toMove: "b",
+  };
+  assertEquals(
+    boardRequest(rolled, matchStatus(rolled, {}), []).moves,
+    ["f"],
+  );
+  const both = { tokens: { a: "ta", b: "tb" }, handedOver: [] };
+  // The opening roll is no Move: Seats can still be handed over.
+  assertEquals(
+    invites({ ...rolling, toMove: "a" }, both).map((i) => i.canHandOver),
+    [true, true],
+  );
 });
 
 Deno.test("playerLabel: Human, or the Engine by name when known", () => {

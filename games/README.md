@@ -11,7 +11,8 @@ fixes for all Games:
 
 - `play` **throws** on an illegal Move (not in `legalMoves`) and never mutates its input.
 - `decodePosition` / `decodeMove` **throw** on invalid text.
-- `toMove` is `undefined` exactly when `outcome` is defined; terminal Positions have no legal Moves.
+- `toMove` is `undefined` exactly when `outcome` is defined (or, for a Game with chance, a
+  Chance event is pending); terminal Positions have no legal Moves.
 
 ## Contract test kit
 
@@ -28,3 +29,10 @@ It plays seeded random Matches and checks: `toMove`/`outcome` consistency, legal
 non-terminal and none in terminal Positions, `play` not mutating its input, Position and Move
 Notation round-trips, `decode*` throwing on garbage (extend with `garbage: [...]`), and replay
 determinism. Failures print the seed and the Move list. Add game-specific rule tests next to it.
+
+A Game with chance (dice, ADR 0005) implements `ChanceGameRules` (`chanceEvents`,
+`resolveChance`, `encodeChance`/`decodeChance`) and runs `assertChanceGameRulesContract`
+instead: the same checks with Chance events resolved at random by their probabilities, plus
+probabilities summing to 1, every result resolving, nothing pending or resolvable outside a
+pending Chance event, and replay through Chance events (shown as `[result]` in failures).
+`diceRace` from `@boardwright/testing` is the smallest example.
