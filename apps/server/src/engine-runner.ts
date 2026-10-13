@@ -2,20 +2,24 @@
  * The Engine runner: the one place the server runs Engine searches. It
  * streams an Engine's Analysis of a Position (in Notation) and owns
  * everything around a search that callers should not repeat: the default
- * time limit, the hard deadline, aborts, the concurrency cap and turning
- * every failure into a {@link SearchError} with a public code.
+ * time limit, the hard deadline, aborts, the concurrency cap and its queueing
+ * policy, checking what Engines report, and turning every failure into a
+ * {@link SearchError} with a public code.
  *
- * How an Engine actually runs is an {@link EngineAdapter} behind it: a fresh
- * Web Worker per search ({@link workerAdapter}, the default) or the server's
- * own thread ({@link inProcessAdapter}, tests only). Sandboxing workers (#29)
- * and out-of-process Engines (#18) change this module, not its callers.
+ * How an Engine actually runs is an {@link EngineAdapter} behind it: in
+ * production a fresh Web Worker per search ({@link workerAdapter}).
+ * Sandboxing workers (#29) and out-of-process Engines (#18) change this
+ * module, not its callers.
  */
-import type { Analysis, SearchLimits } from "@boardwright/core";
+import type { Analysis, Score, SearchLimits } from "@boardwright/core";
 import type { EngineEntry } from "./engines.ts";
-import { analyzeInNotation, type HostRequest } from "./engine-host.ts";
+import type { HostRequest, WorkerMessage } from "./engine-host.ts";
 
 /** Search time used when a request's `limits.maxTimeMs` is unset. */
 export const DEFAULT_SEARCH_TIME_MS = 5000;
+
+/** Longest delay `setTimeout` supports; longer deadlines are clamped to it. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** Why a search failed, in words safe to show publicly (details are logged). */
 export type SearchFailure =
@@ -23,7 +27,8 @@ export type SearchFailure =
   | "worker-error"
   | "unreadable-reply"
   | "timeout"
-  | "aborted";
+  | "aborted"
+  | "busy";
 
 export class SearchError extends Error {
   override readonly name = "SearchError";
@@ -51,6 +56,10 @@ export interface AnalysisRequest {
  * counts as `engine-error`. When `signal` aborts the adapter must release
  * what it holds (e.g. terminate its worker) at once; it need not settle a
  * pending `next()`, the runner does not wait for it.
+ *
+ * Production adapters must isolate the Engine from the server's thread
+ * (worker, process): the runner's deadline is a timer on that thread, so it
+ * can only cut off an Engine that does not block it.
  */
 export interface EngineAdapter {
   analyze(
@@ -62,65 +71,116 @@ export interface EngineAdapter {
 export interface EngineRunnerOptions {
   /** How Engines run. Default: {@link workerAdapter}. */
   readonly adapter?: EngineAdapter;
-  /** Searches running at once; further ones wait their turn. Default 4. */
+  /** Searches running at once, integer >= 1. Default 4. */
   readonly maxConcurrent?: number;
   /**
+   * Slots only `match` searches may use, integer in [0, maxConcurrent).
+   * Default 1 (0 when `maxConcurrent` is 1).
+   */
+  readonly reservedForMatches?: number;
+  /**
+   * `analysis` searches that may wait for a slot, integer >= 0; one more is
+   * refused with `busy`. Default 8.
+   */
+  readonly maxQueued?: number;
+  /**
    * Extra time beyond `limits.maxTimeMs` before a search counts as hung
-   * (covers worker start-up and the Engine's overshoot). Default 5000.
+   * (covers worker start-up and the Engine's overshoot), >= 0. Default 5000.
    */
   readonly graceMs?: number;
 }
 
+/**
+ * Who a search is for, which decides how it queues:
+ * - `match`: an Engine Seat must move. Never refused; waits ahead of every
+ *   `analysis` search and may also use the reserved slots, so it never
+ *   starves behind Analysis requests.
+ * - `analysis`: a client wants Analysis. Uses unreserved slots only; refused
+ *   with `busy` when `maxQueued` others already wait.
+ */
+export type SearchPurpose = "match" | "analysis";
+
 export interface AnalyzeOptions {
   /** Aborting stops the search (or its wait for a slot). */
   readonly signal?: AbortSignal;
+  /** Default `analysis`. */
+  readonly purpose?: SearchPurpose;
 }
 
 /**
  * Runs Engine searches, at most `maxConcurrent` at once, each on an adapter.
- * Share one runner between everything that searches so the cap is global.
+ * The server has one runner, shared by everything that searches, so the cap
+ * and queueing policy hold globally.
  */
 export class EngineRunner {
   readonly #adapter: EngineAdapter;
   readonly #graceMs: number;
   readonly #slots: Slots;
 
+  /** Throws a `RangeError` for invalid options. */
   constructor(options: EngineRunnerOptions = {}) {
+    const maxConcurrent = options.maxConcurrent ?? 4;
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
+      throw new RangeError(`maxConcurrent must be an integer >= 1`);
+    }
+    const reserved = options.reservedForMatches ?? (maxConcurrent > 1 ? 1 : 0);
+    if (
+      !Number.isInteger(reserved) || reserved < 0 || reserved >= maxConcurrent
+    ) {
+      throw new RangeError(
+        `reservedForMatches must be an integer in [0, maxConcurrent)`,
+      );
+    }
+    const maxQueued = options.maxQueued ?? 8;
+    if (!Number.isInteger(maxQueued) || maxQueued < 0) {
+      throw new RangeError(`maxQueued must be an integer >= 0`);
+    }
+    const graceMs = options.graceMs ?? 5000;
+    if (!Number.isFinite(graceMs) || graceMs < 0) {
+      throw new RangeError(`graceMs must be a finite number >= 0`);
+    }
     this.#adapter = options.adapter ?? workerAdapter();
-    this.#graceMs = options.graceMs ?? 5000;
-    this.#slots = new Slots(options.maxConcurrent ?? 4);
+    this.#graceMs = graceMs;
+    this.#slots = new Slots(maxConcurrent, reserved, maxQueued);
   }
 
   /**
    * Streams the Engine's Analysis of the request's Position, in the order the
-   * Engine yields it, each checked for shape (Moves are Notation strings, not
-   * judged for legality). Nothing happens until iteration starts; then the
-   * search waits for a free slot. An unset `limits.maxTimeMs` becomes
-   * {@link DEFAULT_SEARCH_TIME_MS}, so no search is unbounded.
+   * Engine yields it. Each Analysis is checked against the Engine contract's
+   * shape (integer depth; at most `limits.lines` Lines, each with at least
+   * one Move in Notation and a well-formed Score; an optional top-level
+   * expected Score, ADR 0005); Moves are not judged for legality. Other
+   * fields pass through. Analyses without Lines are passed on (a terminal
+   * Position, or a pending Chance event); choosing a Move is the caller's
+   * business.
+   *
+   * Nothing happens until iteration starts; then the search queues for a slot
+   * by `options.purpose`. An unset `limits.maxTimeMs` becomes
+   * {@link DEFAULT_SEARCH_TIME_MS}, so no search is unbounded; a negative or
+   * non-numeric one throws a `RangeError`.
    *
    * The stream ends when the Engine finishes. It throws a `SearchError`:
-   * `aborted` when `options.signal` aborts (also while waiting for a slot),
-   * `timeout` when the search runs past `maxTimeMs` + grace (counted from
-   * getting a slot, including time the consumer spends between Analyses),
-   * or the adapter's failure (`engine-error`, `worker-error`,
-   * `unreadable-reply`). Breaking out of the loop stops the search. In every
-   * case the Engine is stopped and the slot freed, at the latest at the
-   * deadline even if the consumer abandons the stream.
-   *
-   * Analyses without Lines are passed on (a terminal Position, or an expected
-   * Score while a Chance event is pending); choosing a Move is the caller's
-   * business.
+   * `busy` when the `analysis` queue is full, `aborted` when
+   * `options.signal` aborts (also while queued), `timeout` when the search
+   * runs past `maxTimeMs` + grace (counted from getting a slot, including
+   * time the consumer spends between Analyses), `unreadable-reply` for a
+   * malformed Analysis, or the adapter's failure (`engine-error`,
+   * `worker-error`). Breaking out of the loop stops the search. In every case
+   * the adapter is told to stop the Engine and the slot is freed, at the
+   * latest at the deadline even if the consumer abandons the stream.
    */
   async *analyze(
     request: AnalysisRequest,
     options: AnalyzeOptions = {},
   ): AsyncGenerator<Analysis<string>, void, undefined> {
     const { signal } = options;
-    const limits = {
-      ...request.limits,
-      maxTimeMs: request.limits.maxTimeMs ?? DEFAULT_SEARCH_TIME_MS,
-    };
-    await this.#slots.acquire(signal);
+    const maxTimeMs = request.limits.maxTimeMs ?? DEFAULT_SEARCH_TIME_MS;
+    if (typeof maxTimeMs !== "number" || !(maxTimeMs >= 0)) {
+      throw new RangeError(`maxTimeMs must be a number >= 0`);
+    }
+    const limits = { ...request.limits, maxTimeMs };
+    const purpose = options.purpose ?? "analysis";
+    await this.#slots.acquire(purpose, signal);
 
     const stop = new AbortController();
     let failure: SearchError | undefined;
@@ -133,7 +193,7 @@ export class EngineRunner {
       cleanUp();
     };
     const onAbort = () => fail(new SearchError("aborted", "search aborted"));
-    const deadlineMs = limits.maxTimeMs + this.#graceMs;
+    const deadlineMs = Math.min(maxTimeMs + this.#graceMs, MAX_TIMER_MS);
     const timer = setTimeout(
       () => fail(new SearchError("timeout", `no end within ${deadlineMs} ms`)),
       deadlineMs,
@@ -145,11 +205,12 @@ export class EngineRunner {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       stop.abort(); // The adapter stops the Engine.
-      this.#slots.release();
+      this.#slots.release(purpose);
     };
     signal?.addEventListener("abort", onAbort);
     if (signal?.aborted) onAbort();
 
+    const maxLines = limits.lines ?? 1;
     let iterator: AsyncIterator<Analysis<string>> | undefined;
     try {
       iterator = this.#adapter.analyze({ ...request, limits }, stop.signal)
@@ -157,7 +218,7 @@ export class EngineRunner {
       for (;;) {
         const step = await Promise.race([iterator.next(), stopped]);
         if (step.done) return;
-        if (!isAnalysis(step.value)) {
+        if (!isAnalysis(step.value, maxLines)) {
           throw new SearchError("unreadable-reply", "malformed Analysis");
         }
         yield step.value;
@@ -184,70 +245,116 @@ function asSearchError(error: unknown): SearchError {
 }
 
 /** Shape check for what an adapter yields (Moves in Notation; extra fields pass). */
-function isAnalysis(value: unknown): value is Analysis<string> {
+function isAnalysis(
+  value: unknown,
+  maxLines: number,
+): value is Analysis<string> {
   if (typeof value !== "object" || value === null) return false;
-  const { depth, lines } = value as { depth?: unknown; lines?: unknown };
-  return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 &&
-    Array.isArray(lines) && lines.every(isLine);
+  const { depth, lines, score } = value as Record<string, unknown>;
+  return Number.isInteger(depth) && (depth as number) >= 0 &&
+    Array.isArray(lines) && lines.length <= maxLines && lines.every(isLine) &&
+    (score === undefined || isScore(score));
 }
 
 function isLine(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
-  const { moves, score } = value as { moves?: unknown; score?: unknown };
-  return Array.isArray(moves) && moves.every((m) => typeof m === "string") &&
-    typeof score === "object" && score !== null;
+  const { moves, score } = value as Record<string, unknown>;
+  return Array.isArray(moves) && moves.length > 0 &&
+    moves.every((move) => typeof move === "string") && isScore(score);
 }
 
-/** A counting semaphore whose waiters can give up on abort. */
-class Slots {
-  #free: number;
-  readonly #waiting: (() => void)[] = [];
-
-  constructor(size: number) {
-    this.#free = size;
+function isScore(value: unknown): value is Score {
+  if (typeof value !== "object" || value === null) return false;
+  const score = value as Record<string, unknown>;
+  switch (score.kind) {
+    case "value":
+      return Number.isFinite(score.value);
+    case "win-in":
+    case "loss-in":
+      return Number.isInteger(score.plies) && (score.plies as number) >= 0;
+    default:
+      return false;
   }
+}
 
-  async acquire(signal?: AbortSignal): Promise<void> {
+interface Waiter {
+  readonly grant: () => void;
+}
+
+/**
+ * The concurrency cap and its queueing policy (see {@link SearchPurpose}):
+ * `match` waiters go first and may use every slot; `analysis` ones use at
+ * most `size - reserved` slots and their queue holds `maxQueued`.
+ */
+class Slots {
+  #running = 0;
+  #runningAnalyses = 0;
+  readonly #queues: Record<SearchPurpose, Waiter[]> = {
+    match: [],
+    analysis: [],
+  };
+
+  constructor(
+    readonly size: number,
+    readonly reserved: number,
+    readonly maxQueued: number,
+  ) {}
+
+  async acquire(purpose: SearchPurpose, signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) throw new SearchError("aborted", "search aborted");
-    if (this.#free > 0) {
-      this.#free--;
+    const queue = this.#queues[purpose];
+    if (queue.length === 0 && this.#canStart(purpose)) {
+      this.#start(purpose);
       return;
     }
-    // The slot is handed over by release() without freeing it.
+    if (purpose === "analysis" && queue.length >= this.maxQueued) {
+      throw new SearchError("busy", "too many Analysis requests waiting");
+    }
     await new Promise<void>((resolve, reject) => {
       const onAbort = () => {
-        this.#waiting.splice(this.#waiting.indexOf(granted), 1);
+        queue.splice(queue.indexOf(waiter), 1);
         reject(new SearchError("aborted", "search aborted"));
       };
-      const granted = () => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
+      const waiter: Waiter = {
+        grant: () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        },
       };
-      this.#waiting.push(granted);
+      queue.push(waiter);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
-  release(): void {
-    const next = this.#waiting.shift();
-    if (next) next();
-    else this.#free++;
+  release(purpose: SearchPurpose): void {
+    this.#running--;
+    if (purpose === "analysis") this.#runningAnalyses--;
+    for (const next of ["match", "analysis"] as const) {
+      const queue = this.#queues[next];
+      while (queue.length > 0 && this.#canStart(next)) {
+        this.#start(next);
+        queue.shift()!.grant();
+      }
+    }
+  }
+
+  #canStart(purpose: SearchPurpose): boolean {
+    if (this.#running >= this.size) return false;
+    if (purpose === "match") return true;
+    return this.#queues.match.length === 0 &&
+      this.#runningAnalyses < this.size - this.reserved;
+  }
+
+  #start(purpose: SearchPurpose): void {
+    this.#running++;
+    if (purpose === "analysis") this.#runningAnalyses++;
   }
 }
 
-/**
- * Message from the worker (`engine-worker.ts`), which receives one
- * {@link HostRequest} and answers with any number of `analysis` messages,
- * then `done` or `error` (the Engine's message, logged only).
- */
-export type WorkerMessage =
-  | { readonly kind: "analysis"; readonly analysis: Analysis<string> }
-  | { readonly kind: "done" }
-  | { readonly kind: "error"; readonly message: string };
-
 const WORKER_URL = new URL("./engine-worker.ts", import.meta.url);
 
-function hostRequest(request: AnalysisRequest): HostRequest {
+/** The plain-data request an adapter hands to the Engine's host. */
+export function hostRequest(request: AnalysisRequest): HostRequest {
   return {
     module: request.engine.module,
     position: request.position,
@@ -259,7 +366,7 @@ function hostRequest(request: AnalysisRequest): HostRequest {
  * Runs each search in a fresh Web Worker, so a busy or hung Engine never
  * blocks the server, and terminates it when the search ends, fails or is
  * stopped. Worker errors are `worker-error`, the Engine's own `engine-error`,
- * messages outside the protocol `unreadable-reply`.
+ * messages outside the protocol (`WorkerMessage`) `unreadable-reply`.
  */
 export function workerAdapter(): EngineAdapter {
   return {
@@ -315,17 +422,5 @@ export function workerAdapter(): EngineAdapter {
         worker.terminate();
       }
     },
-  };
-}
-
-/**
- * Runs the Engine module on the server's own thread, through the same
- * Notation code as the worker. No isolation: a busy Engine blocks the server
- * and a hung one cannot be cut off. For tests and debugging only.
- */
-export function inProcessAdapter(): EngineAdapter {
-  return {
-    analyze: (request, signal) =>
-      analyzeInNotation(hostRequest(request), signal),
   };
 }

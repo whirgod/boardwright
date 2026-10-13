@@ -10,8 +10,11 @@
  * The worker inherits the server's permissions (net, env, scoped read):
  * Engine code is trusted, sandboxing is a known gap (see #29).
  */
-import { analyzeInNotation, type HostRequest } from "./engine-host.ts";
-import type { WorkerMessage } from "./engine-runner.ts";
+import {
+  analyzeInNotation,
+  type HostRequest,
+  type WorkerMessage,
+} from "./engine-host.ts";
 
 self.onmessage = async (event: MessageEvent<HostRequest>) => {
   const post = (message: WorkerMessage) => self.postMessage(message);

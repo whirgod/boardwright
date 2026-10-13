@@ -103,22 +103,34 @@ core  <-  games/*  <-  engines/*
   master imposes a Forfeit with a `ForfeitReason` code (`engine-error`, `worker-error`, `timeout`,
   `illegal-move`, `not-registered`, ...; raw error text is only logged), so a Match never hangs.
   `close()` aborts searches in flight (no forfeit); `idle()` awaits them (tests).
-- `engine-runner.ts` — `EngineRunner`, the one place the server runs Engines (the driver uses it;
-  the Analysis stream of #9 will too, sharing one runner and so one cap).
-  `analyze({ engine, position, limits }, { signal })` is an async iterable of `Analysis<string>`
-  (Moves in Notation) in the Engine's order, each shape-checked; Analyses without Lines (terminal
-  Position, pending Chance event) pass through. It owns: an unset `limits.maxTimeMs` becoming
-  `DEFAULT_SEARCH_TIME_MS` (5 s), so no search is unbounded; the deadline `maxTimeMs` + grace
-  (default 5 s, from getting a slot); at most `maxConcurrent` (default 4) searches at once, the
-  rest queue (abortable); aborts; and failures as `SearchError` codes (`aborted`, `timeout`,
-  `engine-error`, `worker-error`, `unreadable-reply`). Breaking out of the loop, an abort or the
-  deadline stops the Engine and frees the slot. How an Engine runs is an `EngineAdapter` (seam):
-  `workerAdapter` (default) or `inProcessAdapter` (server thread, tests only). Worker sandboxing
-  (#29) and out-of-process Engines (#18, a further adapter) change only this module.
+- `engine-runner.ts` — `EngineRunner`, the one place the server runs Engines. `main.ts` creates
+  the one runner; the driver requires it, and the Analysis stream of #9 must reuse it, so the cap
+  is server-wide. `analyze({ engine, position, limits }, { signal, purpose })` is an async iterable
+  of `Analysis<string>` (Moves in Notation) in the Engine's order. Each one is checked against the
+  Engine contract's shape (integer depth, at most `limits.lines` Lines, each with >= 1 Move and a
+  well-formed Score, optional top-level expected Score per ADR 0005) or fails `unreadable-reply`;
+  Analyses without Lines (terminal Position, pending Chance event) pass through. It owns: an unset
+  `limits.maxTimeMs` becoming `DEFAULT_SEARCH_TIME_MS` (5 s), so no search is unbounded (invalid
+  ones throw `RangeError`); the deadline `maxTimeMs` + grace (default 5 s, from getting a slot,
+  clamped to the timer range); aborts; and failures as `SearchError` codes (`aborted`, `timeout`,
+  `busy`, `engine-error`, `worker-error`, `unreadable-reply`). Breaking out of the loop, an abort
+  or the deadline tells the adapter to stop the Engine and frees the slot.
+  **Queueing policy:** at most `maxConcurrent` (default 4) searches run at once. `purpose: "match"`
+  (the driver) is never refused, queues ahead of all Analysis requests and may use every slot;
+  `purpose: "analysis"` (default; #9) may use all but `reservedForMatches` (default 1) slots, and
+  when `maxQueued` (default 8) Analysis requests already wait, one more fails at once with `busy`.
+  So Engine Seats never starve behind clients; a Match search waits at most for other Match
+  searches and for running searches' deadlines. Waiting while queued is abortable but not
+  time-limited (bounded by the queue cap). How an Engine runs is an `EngineAdapter` (seam):
+  `workerAdapter` in production; `inProcessAdapter` (`engine-runner.testing.ts`, tests only: a
+  CPU-bound Engine there would block the thread and the deadline). Production adapters must
+  isolate the Engine from the server's thread. Worker sandboxing (#29) and out-of-process Engines
+  (#18, a further adapter) change only this module.
 - `engine-worker.ts` / `engine-host.ts` — the worker adapter starts one Web Worker per search and
   always terminates it afterwards (end, error, timeout, abort or break). Messages carry only
   Notation strings and limits: `{ module, position, limits }` -> any number of
-  `{ kind: "analysis", analysis }`, then `{ kind: "done" }` or `{ kind: "error", message }`.
+  `{ kind: "analysis", analysis }`, then `{ kind: "done" }` or `{ kind: "error", message }`
+  (`HostRequest` / `WorkerMessage`, both in `engine-host.ts`).
   `engine-host.ts` (shared with the in-process adapter) loads the Engine module by URL (`rules` +
   `engine` exports), decodes the Position and encodes each Analysis's Moves, passing other fields
   through. Workers inherit the server's permissions (Deno's per-worker
@@ -130,7 +142,8 @@ core  <-  games/*  <-  engines/*
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
   checkers (minimax Engines) and chess (no Engine yet).
-- `main.ts` wires it: `GameMaster` with the verified catalog, an `EngineDriver`,
+- `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
+  `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
   strings only (Move list, Outcome, Seats with token hashes, timestamps) and a `version` for

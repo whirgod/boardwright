@@ -8,15 +8,16 @@ import {
 import type { MatchId } from "./match-store.ts";
 import type { EnginePlayer, Player } from "./players.ts";
 import type { EngineEntry } from "./engines.ts";
-import { EngineRunner, SearchError } from "./engine-runner.ts";
+import { type EngineRunner, SearchError } from "./engine-runner.ts";
 
 export interface EngineDriverOptions {
   /**
-   * Runs the searches and owns their deadline, default time limit and
-   * concurrency cap. Default: a new `EngineRunner` (Web Workers). Pass the
-   * server's shared runner so that Matches and Analysis share one cap.
+   * The server's one runner (shared with Analysis requests, so the cap is
+   * global): owns the deadline, default time limit, cap and queueing. The
+   * driver's searches have purpose `match`, so they never queue behind
+   * Analysis requests.
    */
-  readonly runner?: EngineRunner;
+  readonly runner: EngineRunner;
   /** Searches per Move before the Seat forfeits (default 2: one retry). */
   readonly attempts?: number;
 }
@@ -33,8 +34,8 @@ interface Seating {
  * running Match's Engine Seats from its `created` event (or loads the Match
  * once, for Matches created before it subscribed) and, after every event
  * that leaves an Engine Seat to move, asks that Engine for a Move from the
- * event's Position through the {@link EngineRunner} (by default in a Web
- * Worker, so the server keeps answering requests), taking the first Move of
+ * event's Position through the {@link EngineRunner} (in a Web Worker, so the
+ * server keeps answering requests), taking the first Move of
  * the best Line of the last Analysis that has one.
  * It plays the Move with `GameMaster.apply` as that Engine Seat, expecting
  * the event's version, i.e. through the same referee checks as human Moves;
@@ -55,10 +56,10 @@ export class EngineDriver {
   /** Running Matches seen so far; dropped when they end. */
   readonly #seatings = new Map<MatchId, Seating>();
 
-  constructor(master: GameMaster, options: EngineDriverOptions = {}) {
+  constructor(master: GameMaster, options: EngineDriverOptions) {
     this.#master = master;
     this.#attempts = options.attempts ?? 2;
-    this.#runner = options.runner ?? new EngineRunner();
+    this.#runner = options.runner;
     this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
   }
 
@@ -164,7 +165,7 @@ export class EngineDriver {
     let best: string | undefined;
     const analyses = this.#runner.analyze(
       { engine, position, limits: player.limits },
-      { signal: this.#abort.signal },
+      { signal: this.#abort.signal, purpose: "match" },
     );
     for await (const analysis of analyses) {
       best = analysis.lines[0]?.moves[0] ?? best;
@@ -193,8 +194,12 @@ function seating(
 /** The public Forfeit reason for an attempt that failed with `error`. */
 function forfeitReason(error: unknown): ForfeitReason {
   if (error instanceof MatchError) return "illegal-move";
-  // `aborted` only happens on close(), which never forfeits.
-  if (error instanceof SearchError && error.code !== "aborted") {
+  // `aborted` only happens on close(), which never forfeits; `match` searches
+  // are never refused as `busy`.
+  if (
+    error instanceof SearchError && error.code !== "aborted" &&
+    error.code !== "busy"
+  ) {
     return error.code;
   }
   return "engine-error";

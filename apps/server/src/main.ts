@@ -1,6 +1,7 @@
 import { buildApp } from "./app.ts";
 import { verifyCatalog } from "./catalog.ts";
 import { EngineDriver } from "./engine-driver.ts";
+import { EngineRunner } from "./engine-runner.ts";
 import { GameMaster } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
 import { hostedCatalog } from "./hosted-catalog.ts";
@@ -17,7 +18,10 @@ const master = new GameMaster({
   store: new InMemoryMatchStore(),
   engines: catalog.engines,
 });
-new EngineDriver(master);
+// The one runner every search goes through (Matches now, Analysis with #9),
+// so its concurrency cap and queueing policy hold server-wide.
+const runner = new EngineRunner();
+new EngineDriver(master, { runner });
 
 // Built by `deno task build:web` (ADR 0004); `deno task start` builds it first.
 const webRoot = `${import.meta.dirname}/../../web/dist`;

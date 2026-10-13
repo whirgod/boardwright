@@ -213,7 +213,7 @@ Deno.test("an unregistered Engine forfeits (registry changed under a stored Matc
   });
   // The same store, served by a master that no longer offers the Engine.
   const after = new GameMaster({ games, store });
-  const driver = new EngineDriver(after);
+  const driver = new EngineDriver(after, { runner: new EngineRunner() });
   try {
     await after.apply(match.id, { token: tokens.x! }, X_A1);
     await driver.idle();
@@ -310,7 +310,7 @@ Deno.test("the Engine plays the best Line's first Move of the last Analysis that
   const driver = new EngineDriver(master, { runner });
   try {
     const { match } = await master.createMatch("tic-tac-toe", {
-      x: engine("minimax"),
+      x: engine("minimax", { lines: 2 }),
       o: human,
     });
     await driver.idle();
