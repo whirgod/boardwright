@@ -809,3 +809,125 @@ Deno.test("only the Game master imposes changes, and it makes no Player's", asyn
   await assertRejects(() => anyApply(m.id, GAME_MASTER, mv("a1")), TypeError);
   assertEquals((await master.getMatch(m.id)).version, 1);
 });
+
+/** A store whose calls hang (never settle) while `hang.get` / `hang.update` is set. */
+function hangingStore() {
+  const inner = new InMemoryMatchStore();
+  const hang = { get: false, update: false };
+  const never = <T>() => new Promise<T>(() => {});
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: (id) => hang.get ? never() : inner.get(id),
+    update: (r) => hang.update ? never() : inner.update(r),
+  };
+  return { store, hang };
+}
+
+Deno.test("a hung store call fails after storeTimeoutMs and does not block later changes", async () => {
+  const { store, hang } = hangingStore();
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store,
+    storeTimeoutMs: 20,
+  });
+  const { match, tokens } = await master.createMatch("tic-tac-toe", HUMANS);
+  const x = { token: tokens.x! };
+  hang.get = true;
+  const stuck = assertRejects(
+    () => master.apply(match.id, x, mv("a1")),
+    Error,
+    "did not settle in 20 ms",
+  );
+  // Queued behind the hung change, it fails the same way instead of waiting forever.
+  const queued = assertRejects(() => master.getMatch(match.id), Error);
+  await stuck;
+  await queued;
+  hang.get = false;
+  hang.update = true;
+  await assertRejects(
+    () => master.apply(match.id, x, mv("a1")),
+    Error,
+    "MatchStore.update did not settle",
+  );
+  hang.update = false;
+  const view = await master.apply(match.id, x, mv("a1"));
+  assertEquals(played(view), ["a1"]);
+});
+
+Deno.test("a store call that waits for a change to its own Match is cut off, not a deadlock", async () => {
+  const inner = new InMemoryMatchStore();
+  const ref: { master?: GameMaster; reenter: boolean } = { reenter: false };
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: async (id) => {
+      if (ref.reenter) {
+        ref.reenter = false; // one-shot: no timer chain after the test
+        // Waits for a change queued behind the one that is calling this.
+        await ref.master!.apply(id, GAME_MASTER, {
+          kind: "forfeit",
+          seat: "x",
+          reason: "timeout",
+        });
+      }
+      return inner.get(id);
+    },
+    update: (r) => inner.update(r),
+  };
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store,
+    storeTimeoutMs: 20,
+  });
+  ref.master = master;
+  const { match, tokens } = await master.createMatch("tic-tac-toe", HUMANS);
+  ref.reenter = true;
+  await assertRejects(
+    () => master.apply(match.id, { token: tokens.x! }, mv("a1")),
+    Error,
+    "did not settle",
+  );
+  // Drain: the queued forfeit still runs behind the timed-out change.
+  await assertMatchError(
+    () => master.apply(match.id, { token: "" }, mv("a1")),
+    "invalid-token",
+  ); // queued behind the forfeit, so it has run by now
+  assertEquals((await master.getMatch(match.id)).outcome?.kind, "forfeit");
+});
+
+Deno.test("a write that commits after its timeout emits no event, and the next change sees it", async () => {
+  const inner = new InMemoryMatchStore();
+  const late: { release?: () => void } = {};
+  let slow = false;
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    get: (id) => inner.get(id),
+    update: (r) => {
+      if (!slow) return inner.update(r);
+      return new Promise<boolean>((resolve) => {
+        late.release = () => resolve(inner.update(r));
+      });
+    },
+  };
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store,
+    storeTimeoutMs: 20,
+  });
+  const events = recordEvents(master);
+  const { match, tokens } = await master.createMatch("tic-tac-toe", HUMANS);
+  slow = true;
+  await assertRejects(
+    () => master.apply(match.id, { token: tokens.x! }, mv("a1")),
+    Error,
+    "did not settle",
+  );
+  slow = false;
+  late.release!(); // the write lands after the Game master gave up
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assertEquals(events.map((e) => e.kind), ["created"]);
+  const view = await master.getMatch(match.id);
+  assertEquals([view.version, played(view)], [2, ["a1"]]);
+  const next = await master.apply(match.id, { token: tokens.o! }, mv("b1"));
+  assertEquals(played(next), ["a1", "b1"]);
+  assertEquals(events.map((e) => e.kind), ["created", "move"]);
+});

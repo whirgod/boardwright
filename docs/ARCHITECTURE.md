@@ -138,6 +138,8 @@ core  <-  games/*  <-  engines/*
   master imposes a Forfeit with a `ForfeitReason` code (`engine-error`, `worker-error`, `timeout`,
   `illegal-move`, `not-registered`, ...; raw error text is only logged), so a Match never hangs.
   `close()` aborts searches in flight (no forfeit); `idle()` awaits them (tests).
+  The per-Match memory is bounded (`maxMatches`, default 1000, least recently moved forgotten and
+  reloaded on its next event) and a load that a concurrent finish outran is not cached.
 - `engine-runner.ts` — `EngineRunner`, the one place the server runs Engines. `main.ts` creates
   the one runner; the driver requires it, and the Analysis stream of #9 must reuse it, so the cap
   is server-wide. `analyze({ engine, position, limits }, { signal, purpose })` is an async iterable
@@ -185,6 +187,16 @@ core  <-  games/*  <-  engines/*
   strings only (Move list as typed entries `{ kind: "move", move }` / `{ kind: "chance", chance }`,
   Outcome, Seats with token hashes, the secret Chance `seed`, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
+  **Liveness contract:** every `MatchStore` call must settle (resolve or reject) in bounded time;
+  persistent adapters (#13) set their own timeouts. The Game master runs one change per Match at a
+  time, so a hung call would block that Match; as a safety net it fails any call after
+  `storeTimeoutMs` (default 10 s). It cannot cancel the call, so a timed-out `update` may still
+  commit later: no `MatchEvent` is emitted for it, so listeners (clients, the `EngineDriver`) miss that
+  version, and the next change sees it as a newer version. Store calls must not call back into
+  the Game master, and nothing may await `apply` for a Match from inside a change to that Match
+  (it queues behind itself and deadlocks).
+  Failed Chance rolls are retried with backoff; recovery triggers (`getMatch`, a refused Move) then
+  pause for `rollCooldownMs` (default 30 s) after a give-up.
 - `tokens.ts` — seat tokens: 256-bit random hex; only their SHA-256 is stored.
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
   tiny and errors stay in our shape).

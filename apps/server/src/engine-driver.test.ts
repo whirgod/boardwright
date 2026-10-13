@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { diceRace } from "@boardwright/testing";
 import { buildApp } from "./app.ts";
@@ -53,6 +53,7 @@ interface SetupOptions {
   readonly graceMs?: number;
   readonly maxConcurrent?: number;
   readonly attempts?: number;
+  readonly maxMatches?: number;
   /**
    * Replaces the Engine: each search answers with this Move (as one
    * Analysis) instead of running a worker.
@@ -71,7 +72,7 @@ function setup(options: SetupOptions = {}) {
 }
 
 function newDriver(master: GameMaster, options: SetupOptions): EngineDriver {
-  const { search, attempts, ...runnerOptions } = options;
+  const { search, attempts, maxMatches, ...runnerOptions } = options;
   const runner = new EngineRunner({
     adapter: testWorkerAdapter(),
     ...runnerOptions,
@@ -90,6 +91,7 @@ function newDriver(master: GameMaster, options: SetupOptions): EngineDriver {
   return new EngineDriver(master, {
     runner,
     ...attempts !== undefined && { attempts },
+    ...maxMatches !== undefined && { maxMatches },
   });
 }
 
@@ -398,10 +400,15 @@ Deno.test("a Resignation while the Engine searches ends the Match without a forf
 class GatedStore extends InMemoryMatchStore {
   #countdown = 0;
   #gate: Promise<void> | undefined;
+  #afterRead = false;
 
   /** Gate the `n`-th `get` after this call until `release` or `fail`. */
-  hold(n: number): { release(): void; fail(): void } {
+  hold(
+    n: number,
+    { afterRead = false } = {},
+  ): { release(): void; fail(): void } {
     const { promise, resolve, reject } = Promise.withResolvers<void>();
+    this.#afterRead = afterRead;
     this.#countdown = n;
     this.#gate = promise;
     promise.catch(() => {}); // Rejected only for the gated `get` to throw.
@@ -416,6 +423,12 @@ class GatedStore extends InMemoryMatchStore {
     if (this.#gate && --this.#countdown === 0) {
       const gate = this.#gate;
       this.#gate = undefined;
+      if (this.#afterRead) {
+        // The read is done: the caller gets what the Match was before the gate.
+        const record = await super.get(id);
+        await gate;
+        return record;
+      }
       await gate;
     }
     return super.get(id);
@@ -665,6 +678,79 @@ Deno.test("Engine Seats of a Game with chance play after each Chance event", asy
     kinds.forEach((kind, i) => assertEquals(kind, i % 2 ? "move" : "chance"));
     assert(searched.every((p) => !p.endsWith(":-")), searched.join(" "));
     assertEquals(searched.length, kinds.filter((k) => k === "move").length);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("the driver forgets the least recently active Match beyond maxMatches", async () => {
+  let searches = 0;
+  const { store, master, driver, id, x } = await lateDriver({
+    maxMatches: 1,
+    search: () => Promise.resolve(++searches === 1 ? "b1" : "b2"),
+  });
+  try {
+    await master.apply(id, x, X_A1);
+    await driver.idle();
+    assertEquals(driver.remembered, 1);
+    // A second Match pushes the first out of the cache.
+    await master.createMatch("tic-tac-toe", { x: human, o: engine("minimax") });
+    assertEquals(driver.remembered, 1);
+    const before = store.gets;
+    await master.apply(id, x, { kind: "move", move: "c1" });
+    await driver.idle();
+    // Move load, the driver's reload of the forgotten Match, the Engine's Move load.
+    assertEquals(store.gets - before, 3);
+    assertEquals(driver.remembered, 1);
+    assertEquals((await master.getMatch(id)).moves.length, 4);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("maxMatches must be a positive integer", () => {
+  const { master } = setup();
+  const runner = new EngineRunner({ adapter: testWorkerAdapter() });
+  for (const maxMatches of [0, -1, 1.5, NaN]) {
+    assertThrows(
+      () => new EngineDriver(master, { runner, maxMatches }),
+      RangeError,
+    );
+  }
+});
+
+Deno.test("a finished Match leaves the cache; Matches without Engines count against the bound", async () => {
+  const { master, driver } = setup({ maxMatches: 2 });
+  try {
+    await master.createMatch("tic-tac-toe", { x: human, o: human });
+    await master.createMatch("tic-tac-toe", { x: human, o: human });
+    await master.createMatch("tic-tac-toe", { x: human, o: human });
+    assertEquals(driver.remembered, 2);
+    const { match, tokens } = await master.createMatch("tic-tac-toe", {
+      x: human,
+      o: human,
+    });
+    await master.apply(match.id, { token: tokens.x! }, {
+      kind: "resignation",
+    });
+    assertEquals(driver.remembered, 1);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("a cache-miss load that a concurrent Resignation outruns is not cached", async () => {
+  const { store, master, driver, id, x } = await lateDriver({
+    search: () => Promise.resolve("b1"),
+  });
+  try {
+    // The driver reads the running Match (version 2), then waits at the gate.
+    const gate = store.hold(2, { afterRead: true });
+    await master.apply(id, x, X_A1);
+    await master.apply(id, x, { kind: "resignation" });
+    gate.release();
+    await driver.idle();
+    assertEquals(driver.remembered, 0);
   } finally {
     await driver.close();
   }

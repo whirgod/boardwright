@@ -20,6 +20,12 @@ export interface EngineDriverOptions {
   readonly runner: EngineRunner;
   /** Searches per Move before the Seat forfeits (default 2: one retry). */
   readonly attempts?: number;
+  /**
+   * How many Matches the driver remembers (default 1000); beyond that the
+   * Match least recently seen taking a turn is forgotten and loaded again on its next
+   * event. Bounds memory for Matches that are abandoned without an Outcome.
+   */
+  readonly maxMatches?: number;
 }
 
 /** What the driver remembers of a running Match: its Game and Engine Seats. */
@@ -53,14 +59,32 @@ export class EngineDriver {
   readonly #running = new Set<Promise<void>>();
   readonly #abort = new AbortController();
   readonly #unsubscribe: () => void;
-  /** Running Matches seen so far; dropped when they end. */
+  readonly #maxMatches: number;
+  /**
+   * Running Matches seen so far, least recently active first (Map order);
+   * dropped when they end, and the oldest dropped beyond `maxMatches`.
+   * Matches without Engine Seats are kept too, as an entry without Engines:
+   * forgetting them would cost a load on each of their events.
+   */
   readonly #seatings = new Map<MatchId, Seating>();
+  /** Cache-miss loads in flight; `ended` is set when the Match finishes meanwhile. */
+  readonly #loading = new Map<MatchId, Set<{ ended: boolean }>>();
 
   constructor(master: GameMaster, options: EngineDriverOptions) {
     this.#master = master;
     this.#attempts = options.attempts ?? 2;
     this.#runner = options.runner;
+    const max = options.maxMatches ?? 1000;
+    if (!Number.isInteger(max) || max < 1) {
+      throw new RangeError(`maxMatches must be a positive integer, got ${max}`);
+    }
+    this.#maxMatches = max;
     this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
+  }
+
+  /** How many running Matches the driver remembers now (for tests and diagnostics). */
+  get remembered(): number {
+    return this.#seatings.size;
   }
 
   /** Resolves when no Engine is searching or about to play. For tests and shutdown. */
@@ -77,10 +101,13 @@ export class EngineDriver {
 
   #onEvent(event: MatchEvent): void {
     if (event.kind === "created") {
-      this.#seatings.set(event.matchId, seating(event.gameId, event.seats));
+      this.#remember(event.matchId, seating(event.gameId, event.seats));
     }
     if (event.outcome !== null) {
       this.#seatings.delete(event.matchId);
+      for (const load of this.#loading.get(event.matchId) ?? []) {
+        load.ended = true;
+      }
       return;
     }
     if (event.toMove === null) return;
@@ -91,23 +118,43 @@ export class EngineDriver {
 
   async #onTurn(event: MatchEvent, seat: Seat): Promise<void> {
     let known = this.#seatings.get(event.matchId);
-    if (!known) {
-      // A Match created before this driver subscribed: load it once.
+    if (known) {
+      this.#remember(event.matchId, known); // most recently active
+    } else {
+      // A Match created before this driver subscribed, or forgotten: load it.
+      const load = { ended: false };
+      const loads = this.#loading.get(event.matchId) ?? new Set();
+      loads.add(load);
+      this.#loading.set(event.matchId, loads);
       try {
         const match = await this.#master.getMatch(event.matchId);
-        if (match.outcome === null) {
+        // Cache only a Match still running: one that finished after the read
+        // (`load.ended`, set by its event) must not be cached again.
+        if (match.outcome === null && !load.ended) {
           known = seating(match.gameId, match.seats);
-          this.#seatings.set(event.matchId, known);
+          this.#remember(event.matchId, known);
         }
         // The Match moved on while loading; its newer event is handled on its own.
         if (!known || match.version !== event.version) return;
       } catch (error) {
         console.error(`Could not load Match ${event.matchId}:`, error);
         return;
+      } finally {
+        loads.delete(load);
+        if (loads.size === 0) this.#loading.delete(event.matchId);
       }
     }
     const player = known.engines[seat];
     if (player) await this.#play(event, known.gameId, seat, player);
+  }
+
+  /** Cache `seating` as the most recently active Match, evicting the oldest beyond the bound. */
+  #remember(id: MatchId, seating: Seating): void {
+    this.#seatings.delete(id);
+    this.#seatings.set(id, seating);
+    while (this.#seatings.size > this.#maxMatches) {
+      this.#seatings.delete(this.#seatings.keys().next().value!);
+    }
   }
 
   async #play(
