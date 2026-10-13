@@ -11,7 +11,9 @@ import { drawChance, newChanceSeed } from "./chance.ts";
 import { EngineRegistry } from "./engines.ts";
 import type { AnyGameRules, GameRegistry } from "./games.ts";
 import type {
+  MatchCursor,
   MatchId,
+  MatchQuery,
   MatchRecord,
   MatchStore,
   MoveListEntry,
@@ -69,6 +71,29 @@ export interface MatchView {
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+/**
+ * A Match in a listing: who plays and how it stands, without Positions,
+ * Moves, seed or tokens (fetch the Match for those).
+ */
+export interface MatchSummary {
+  readonly id: MatchId;
+  readonly gameId: GameId;
+  readonly seats: Readonly<Record<Seat, Player>>;
+  /** Length of the Move list (Moves and Chance events). */
+  readonly moveCount: number;
+  readonly outcome: Outcome | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** One page of {@link MatchSummary}, newest Match first. */
+export interface MatchSummaries {
+  readonly matches: readonly MatchSummary[];
+  /** Pass as `after` for the next page; absent on the last page. */
+  readonly next?: MatchCursor;
 }
 
 export interface CreatedMatch {
@@ -406,6 +431,30 @@ export class GameMaster {
     const match = await this.#current(id);
     this.#healPending(match);
     return match;
+  }
+
+  /**
+   * One page of Matches, newest first, optionally of one Game and/or only
+   * finished (`true`) or running (`false`) ones. Reads the store only: no
+   * replay, so Matches of Games that are no longer registered still list.
+   */
+  async listMatches(query: MatchQuery): Promise<MatchSummaries> {
+    const page = await this.#store.list(query);
+    return {
+      matches: page.matches.map((record) => ({
+        id: record.id,
+        gameId: record.gameId,
+        seats: Object.fromEntries(
+          Object.entries(record.seats).map(([seat, s]) => [seat, s.player]),
+        ),
+        moveCount: record.moves.length,
+        outcome: record.outcome ?? null,
+        version: record.version,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      })),
+      ...(page.next ? { next: page.next } : {}),
+    };
   }
 
   async #current(id: MatchId): Promise<MatchView> {
@@ -855,6 +904,7 @@ function withTimeouts(store: MatchStore, ms: number): MatchStore {
     create: (record) => bounded("create", () => store.create(record)),
     get: (id) => bounded("get", () => store.get(id)),
     update: (record) => bounded("update", () => store.update(record)),
+    list: (query) => bounded("list", () => store.list(query)),
   };
 }
 

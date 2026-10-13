@@ -495,6 +495,7 @@ Deno.test("a lost store update is reported as a conflict and emits nothing", asy
   const inner = new InMemoryMatchStore();
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => inner.get(id),
     update: () => Promise.resolve(false),
   };
@@ -817,6 +818,7 @@ function hangingStore() {
   const never = <T>() => new Promise<T>(() => {});
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => hang.get ? never() : inner.get(id),
     update: (r) => hang.update ? never() : inner.update(r),
   };
@@ -859,6 +861,7 @@ Deno.test("a store call that waits for a change to its own Match is cut off, not
   const ref: { master?: GameMaster; reenter: boolean } = { reenter: false };
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: async (id) => {
       if (ref.reenter) {
         ref.reenter = false; // one-shot: no timer chain after the test
@@ -900,6 +903,7 @@ Deno.test("a write that commits after its timeout emits no event, and the next c
   let slow = false;
   const store: MatchStore = {
     create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
     get: (id) => inner.get(id),
     update: (r) => {
       if (!slow) return inner.update(r);

@@ -1,5 +1,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import type { MatchRecord, MatchStore, MoveListEntry } from "./match-store.ts";
+import type {
+  MatchQuery,
+  MatchRecord,
+  MatchStore,
+  MoveListEntry,
+} from "./match-store.ts";
 
 const mv = (move: string): MoveListEntry => ({ kind: "move", move });
 
@@ -93,5 +98,70 @@ export async function assertMatchStoreContract(
     const read = await store.get("m1");
     (read!.moves as MoveListEntry[]).push(mv("c1"));
     assertEquals((await store.get("m1"))?.moves, [mv("a1")]);
+  });
+
+  await t.step("list pages newest first, ties broken by id", async () => {
+    const store = await makeStore();
+    const at = (n: number) => `2026-01-0${n}T00:00:00.000Z`;
+    for (
+      const [id, day] of [["a", 2], ["c", 1], ["b", 1], ["d", 3]] as const
+    ) {
+      await store.create(sampleRecord({ id, createdAt: at(day) }));
+    }
+    const first = await store.list({ limit: 3 });
+    assertEquals(first.matches.map((m) => m.id), ["d", "a", "c"]);
+    assertEquals(first.next, { createdAt: at(1), id: "c" });
+    const second = await store.list({ limit: 3, after: first.next! });
+    assertEquals(second.matches.map((m) => m.id), ["b"]);
+    assertEquals(second.next, undefined);
+    // An exactly full last page has no next.
+    assertEquals((await store.list({ limit: 4 })).next, undefined);
+    assertEquals((await store.list({ limit: 50 })).matches.length, 4);
+  });
+
+  await t.step("list returns whole records", async () => {
+    const store = await makeStore();
+    const record = sampleRecord({ moves: [mv("a1")], seed: "s" });
+    await store.create(record);
+    assertEquals((await store.list({ limit: 10 })).matches, [record]);
+  });
+
+  await t.step("list filters by Game and by finished", async () => {
+    const store = await makeStore();
+    const over: MatchRecord["outcome"] = {
+      kind: "resignation",
+      winner: "o",
+      seat: "x",
+    };
+    await store.create(sampleRecord({ id: "t1", createdAt: "2026-01-01" }));
+    await store.create(
+      sampleRecord({ id: "t2", createdAt: "2026-01-02", outcome: over }),
+    );
+    await store.create(
+      sampleRecord({ id: "c1", gameId: "chess", createdAt: "2026-01-03" }),
+    );
+    const ids = async (q: Partial<MatchQuery>) =>
+      (await store.list({ limit: 10, ...q })).matches.map((m) => m.id);
+    assertEquals(await ids({ gameId: "tic-tac-toe" }), ["t2", "t1"]);
+    assertEquals(await ids({ finished: true }), ["t2"]);
+    assertEquals(await ids({ finished: false }), ["c1", "t1"]);
+    assertEquals(await ids({ gameId: "tic-tac-toe", finished: false }), ["t1"]);
+    assertEquals(await ids({ gameId: "go" }), []);
+    // A Match moves between the filters when its Outcome is set.
+    await store.update(sampleRecord({
+      id: "t1",
+      createdAt: "2026-01-01",
+      outcome: over,
+      version: 2,
+    }));
+    assertEquals(await ids({ finished: true }), ["t2", "t1"]);
+    // Filters and paging combine.
+    const page = await store.list({ finished: true, limit: 1 });
+    assertEquals(page.matches.map((m) => m.id), ["t2"]);
+    assertEquals(
+      (await store.list({ finished: true, limit: 1, after: page.next! }))
+        .matches.map((m) => m.id),
+      ["t1"],
+    );
   });
 }

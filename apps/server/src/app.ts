@@ -16,8 +16,10 @@ import { MatchFollower } from "./match-stream.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore, type MatchStore } from "./match-store.ts";
 import {
+  encodeCursor,
   parseCreateMatchBody,
   type Parsed,
+  parseListQuery,
   parsePlayMoveBody,
   parseResignBody,
 } from "./requests.ts";
@@ -226,6 +228,13 @@ export function buildApp(options: AppOptions): Hono {
       `/api/matches/${encodeURIComponent(created.match.id)}`,
     );
     return c.json(created, 201);
+  });
+
+  app.get("/api/matches", async (c) => {
+    const query = parseListQuery(new URL(c.req.url).searchParams);
+    if (!query.ok) return fail(c, "invalid-request", query.problem);
+    const { matches, next } = await master.listMatches(query.value);
+    return c.json({ matches, nextCursor: next ? encodeCursor(next) : null });
   });
 
   app.get(

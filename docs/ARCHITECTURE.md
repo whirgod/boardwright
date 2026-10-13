@@ -135,7 +135,8 @@ core  <-  games/*  <-  engines/*
   `{ kind: "engine", engineId, limits }` (limits: `maxDepth`, `maxTimeMs` <= 60 s, `lines`;
   optional, default none). Engine Seats have no seat token.
 - `engines.ts` — `EngineRegistry`: Engines per Game (`id`, `name`, `module` URL).
-- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`. It remembers each running
+- `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`; `resumeAll()` (called once by
+  `main.ts`) plays the Engine turns left waiting by a restart, which no event announces. It remembers each running
   Match's Engine Seats from its `created` event (loading a Match once if it was created before the
   driver subscribed) and, on an event that leaves an Engine Seat to move, searches from the event's
   Position through the Engine runner, takes the first Move of the best Line of the last Analysis
@@ -191,12 +192,14 @@ core  <-  games/*  <-  engines/*
 - `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
-- `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
+- `match-store.ts` — `MatchStore` interface (`create`/`get`/`update`/`list`) + `InMemoryMatchStore`;
+  `sqlite-match-store.ts` — `SqliteMatchStore`, the persistent store (ADR 0007; `main.ts` opens
+  `<data dir>/matches.db`, `BOARDWRIGHT_DATA_DIR`, default `data/`, `:memory:` for none). Records hold Notation
   strings only (Move list as typed entries `{ kind: "move", move }` / `{ kind: "chance", chance }`,
   Outcome, Seats with token hashes, the secret Chance `seed`, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
   **Liveness contract:** every `MatchStore` call must settle (resolve or reject) in bounded time;
-  persistent adapters (#13) set their own timeouts. The Game master runs one change per Match at a
+  persistent adapters set their own timeouts (SQLite: `busy_timeout`, 2 s; its calls are synchronous, so `storeTimeoutMs` cannot fire for it and the late-commit caveat below does not apply; see ADR 0007). The Game master runs one change per Match at a
   time, so a hung call would block that Match; as a safety net it fails any call after
   `storeTimeoutMs` (default 10 s). It cannot cancel the call, so a timed-out `update` may still
   commit later: no `MatchEvent` is emitted for it, so listeners (clients, the `EngineDriver`) miss that
@@ -279,6 +282,11 @@ Implemented (JSON; Positions and Moves are Notation strings):
   entries; `toMove`/`outcome` are `null` when absent; `outcome` is an `Outcome` with a `kind`:
   `rules`, `resignation` or `forfeit`; `seed` only for Games with chance, once there is an
   Outcome; `version` counts changes, matching Match events). Never contains tokens.
+- `GET  /api/matches?game=<id>&finished=true|false&limit=<1..100, default 20>&cursor=<opaque>` →
+  `{ matches: MatchSummary[], nextCursor: string | null }`, newest first. `MatchSummary`: `{ id,
+  gameId, seats: { <seat>: { kind } }, moveCount, outcome, version, createdAt, updatedAt }`:
+  no Positions, Moves, seed or tokens. `finished` = has an Outcome. Pass `nextCursor` as `cursor`
+  for the next page (`null` on the last); bad parameters give `400 invalid-request`.
 - `POST /api/matches/:id/moves` `{ move, token }` → updated `MatchView`.
 - `POST /api/matches/:id/resign` `{ token }` → updated `MatchView` with a Resignation Outcome
   (the Opponent wins). Allowed at any time, not only on the Seat's turn; Engine Seats have no
@@ -368,14 +376,9 @@ server's one `EngineRunner` with purpose `analysis`, so they never starve Engine
 **Cancellation:** `stop`, a replacing `start` and a closed socket all abort the runner's search,
 which stops the Engine (its Worker is terminated) and frees its slot at once.
 
-Planned (sketch, not final):
-
-- `GET  /api/matches` listing (#13)
-
 ## Open questions
 
 Track these here until resolved (then record an ADR in `docs/adr/` if it meets the bar):
 
-- Persistence for Matches: in-memory `MatchStore` today; a persistent store comes with #13.
 - Identity of human Players: per-Seat seat tokens for now (no accounts); accounts/sessions later?
 - Time controls.

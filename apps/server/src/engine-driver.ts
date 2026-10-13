@@ -5,7 +5,7 @@ import {
   MatchError,
   type MatchEvent,
 } from "./game-master.ts";
-import type { MatchId } from "./match-store.ts";
+import type { MatchCursor, MatchId } from "./match-store.ts";
 import type { EnginePlayer, Player } from "./players.ts";
 import type { EngineEntry } from "./engines.ts";
 import { type EngineRunner, SearchError } from "./engine-runner.ts";
@@ -27,6 +27,9 @@ export interface EngineDriverOptions {
    */
   readonly maxMatches?: number;
 }
+
+/** The part of a MatchEvent an Engine turn needs. */
+type Turn = Pick<MatchEvent, "matchId" | "version" | "position">;
 
 /** What the driver remembers of a running Match: its Game and Engine Seats. */
 interface Seating {
@@ -116,7 +119,51 @@ export class EngineDriver {
     this.#running.add(task);
   }
 
-  async #onTurn(event: MatchEvent, seat: Seat): Promise<void> {
+  /**
+   * Start the Engine turns that no event will ever announce: after a
+   * restart, every unfinished Match whose Seat to move is an Engine's would
+   * wait forever. Pages through the running Matches of the store and plays
+   * each such turn (not awaited; see {@link idle}). Returns how many turns it
+   * started. Call once after construction. A Match that cannot be loaded
+   * (e.g. of a Game no longer registered) is logged and skipped.
+   */
+  async resumeAll(): Promise<number> {
+    let started = 0;
+    let after: MatchCursor | undefined;
+    do {
+      const page = await this.#master.listMatches({
+        finished: false,
+        limit: 100,
+        ...(after ? { after } : {}),
+      });
+      for (const summary of page.matches) {
+        if (!Object.values(summary.seats).some((p) => p.kind === "engine")) {
+          continue;
+        }
+        try {
+          const match = await this.#master.getMatch(summary.id);
+          const mover = match.toMove;
+          if (mover === null || match.outcome !== null) continue;
+          if (match.seats[mover]?.kind !== "engine") continue;
+          const turn = {
+            matchId: match.id,
+            version: match.version,
+            position: match.position,
+          };
+          const task = this.#onTurn(turn, mover)
+            .finally(() => this.#running.delete(task));
+          this.#running.add(task);
+          started++;
+        } catch (error) {
+          console.error(`Could not resume Match ${summary.id}:`, error);
+        }
+      }
+      after = page.next;
+    } while (after);
+    return started;
+  }
+
+  async #onTurn(event: Turn, seat: Seat): Promise<void> {
     let known = this.#seatings.get(event.matchId);
     if (known) {
       this.#remember(event.matchId, known); // most recently active
@@ -158,7 +205,7 @@ export class EngineDriver {
   }
 
   async #play(
-    event: MatchEvent,
+    event: Turn,
     gameId: GameId,
     seat: Seat,
     player: EnginePlayer,
