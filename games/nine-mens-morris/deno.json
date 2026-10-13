@@ -1,0 +1,5 @@
+{
+  "name": "@boardwright/game-nine-mens-morris",
+  "version": "0.0.0",
+  "exports": "./src/mod.ts"
+}

@@ -11,13 +11,13 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Server skeleton: `/api/health`, `/api/games`
 - [x] Reference Game tic-tac-toe + `GameRules` contract test kit (`@boardwright/testing`) (#2)
 - [x] Server Match lifecycle for humans: create, play by seat token, referee (#6)
+- [x] Game nine men's morris (`games/nine-mens-morris`) (#3)
 
 ## Next
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-1. **First Games, Engine library, Match lifecycle** — nine men's morris (#3), checkers (#4),
-   generic alpha-beta Engine library (#5), server Match lifecycle for humans (#6).
+1. **First Games, Engine library** — checkers (#4), generic alpha-beta Engine library (#5).
 2. **Engines in play** — Engine Players in Matches, run in Web Workers (#7); morris and checkers
    Engines (#8).
 3. **Live + UI** — WebSocket Match/Analysis streams (#9); web UI foundation served by the
