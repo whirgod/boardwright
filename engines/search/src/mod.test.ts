@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import {
   createNodeCounter,
@@ -149,6 +149,41 @@ Deno.test("iterativeDeepening honours abort and time limits", async () => {
     await collect(iterativeDeepening({}, controller.signal, slow)),
     [1],
   );
+});
+
+Deno.test("maxTimeMs never interrupts depth 1", async () => {
+  // Depth 1 yields many times after the deadline (0 ms) and still completes.
+  let ticks = 0;
+  const longFirst = function* (depth: number): Search<Iteration<string>> {
+    for (let i = 0; i < 1000; i++) {
+      ticks++;
+      yield;
+    }
+    return { analysis: { depth, lines: [] }, solved: false };
+  };
+  assertEquals(
+    await collect(iterativeDeepening({ maxTimeMs: 0 }, undefined, longFirst)),
+    [1],
+  );
+  assertEquals(ticks, 1000);
+});
+
+Deno.test("a depth that overruns maxTimeMs is discarded", async () => {
+  // Depth 1 is instant; depth 2 yields until well past the deadline.
+  let stoppedEarly = true;
+  const overrun = function* (depth: number): Search<Iteration<string>> {
+    if (depth > 1) {
+      const until = performance.now() + 200;
+      while (performance.now() < until) yield;
+      stoppedEarly = false;
+    }
+    return { analysis: { depth, lines: [] }, solved: false };
+  };
+  assertEquals(
+    await collect(iterativeDeepening({ maxTimeMs: 20 }, undefined, overrun)),
+    [1],
+  );
+  assert(stoppedEarly, "depth 2 ran to completion past the deadline");
 });
 
 Deno.test("iterativeDeepening gives the event loop a turn during long depths", async () => {

@@ -63,7 +63,8 @@ export const engine = createExpectiminimaxEngine({
   name: "expectiminimax",
   // Heuristic value from `seat`'s perspective; may be a Position with a pending Chance event.
   evaluate: (position, seat) => pipLead(position, seat),
-  winValue: 1000, // what a forced win counts as in an average over dice (default MAX_EVALUATION)
+  // Required: a certain win on the evaluation's scale; evaluations are clamped to ±winValue.
+  winValue: 1000,
 });
 ```
 
@@ -75,7 +76,9 @@ export const engine = createExpectiminimaxEngine({
   `{ depth, lines: [], score, seat }`; `seat` is the Seat that moves after the roll when all
   results agree, otherwise the Game's first Seat.
 - `win-in` / `loss-in` only when forced whatever the dice (counting the slowest result); in a
-  mixed average a forced win counts as `+winValue`, a loss as `-winValue`.
+  mixed average a forced win counts as `+winValue`, a loss as `-winValue`. Averages need
+  _cardinal_ evaluations (e.g. expected points), unlike minimax, which only compares them.
+- A pending Position without `chanceEvents` (a Game bug) throws a descriptive `TypeError`.
 - Games without chance are refused with a `TypeError` (use minimax).
 
 ## Game Engines
