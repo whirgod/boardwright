@@ -12,7 +12,10 @@ packages/testing  Contract test kits every Game / Engine runs (assertGameRulesCo
                   assertChanceGameRulesContract, assertEngineContract) + diceRace, a tiny Game with chance
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference;
                   games/backgammon implements ChanceGameRules)
-engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
+engines/search    Shared search harness of the Engine libraries (iterative deepening, limits,
+                  time/abort, multi-PV, score scale); chance-agnostic
+engines/<algo>    Game-agnostic Engine libraries: engines/minimax (alpha-beta search),
+                  engines/expectiminimax (Games with chance, ADR 0005)
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
                   engines/tic-tac-toe-minimax (also engines/chess-minimax). It exports
                   `rules` and `engine`, so the server can load it by URL inside a Worker.
@@ -32,8 +35,9 @@ core  <-  games/*  <-  engines/*
 - `core` depends on nothing.
 - `testing` depends only on `core` (+ `@std/assert`); only tests import it.
 - A Game depends only on `core`. It is pure: no I/O, no randomness except via inputs.
-- An Engine library (`engines/<algorithm>`) depends only on `core`; it searches any Game
-  through the `GameRules` it is given.
+- An Engine library (`engines/<algorithm>`) depends only on `core` and the search harness
+  (`engines/search`, itself only on `core`); it searches any Game through the `GameRules` it is
+  given. The harness carries the plumbing, so each library's module is just its algorithm.
 - An Engine (`engines/<game>-<name>`) depends on `core`, on the Game it plays (to generate
   moves while searching) and usually on an Engine library it composes with an evaluation.
 - The server composes Games and Engines; Games and Engines never import the server.
@@ -59,11 +63,13 @@ core  <-  games/*  <-  engines/*
   expected `score` with an explicit `seat` (the Score's perspective, since no Seat is to move);
   other Analyses have neither. A Line ends at the next Chance event. `pickChance(results, u)` in
   core is the one selection rule (used by the Game master and the kits). `engines/minimax` refuses
-  Games with chance (type and run time).
+  Games with chance (type and run time); `engines/expectiminimax` searches them (and refuses
+  Games without chance).
 - **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
   (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
   `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine
-  must stand alone and throw `RangeError` for any host; only three numeric predicates overlap.
+  must stand alone and throw `RangeError` for any host (the Engine libraries share
+  `validateLimits` from `engines/search`); only three numeric predicates overlap.
   The kit's `badLimits` list is the shared source of truth for the Engine side.
 - **In-process first, out-of-process later** _(open question)_: Engines start as TypeScript
   workspace members loaded in-process (run in Web Workers to keep the server responsive). A
