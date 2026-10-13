@@ -44,6 +44,6 @@
       "dependencies": ["build:web"]
     },
     "start:server": "deno task --cwd apps/server start",
-    "test": "deno test --allow-read=apps,engines,games,packages --coverage --clean && deno coverage --exclude='/main\\.ts$'"
+    "test": "deno test --allow-read=apps,engines,games,packages --allow-net=127.0.0.1 --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
 }

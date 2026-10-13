@@ -32,7 +32,7 @@ worktrees, PRs, reviews on GitHub, fix loop, usage-limit checkpoints. Tasks are 
 packages/core     contracts: GameRules (+ ChanceGameRules), Notation, Engine, Analysis (no deps)
 packages/testing  contract test kits: Games (assertGameRulesContract / assertChanceGameRulesContract),
                   Engines (assertEngineContract); diceRace, a tiny Game with chance for tests
-apps/server       Hono API + host of the web UI
+apps/server       Hono API (+ WebSocket Match and Analysis streams) + host of the web UI
 apps/web          browser UI: Preact, bundled to apps/web/dist (ADR 0004)
 games/<id>        one GameRules package per Game     (@boardwright/game-<id>)
 engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>, e.g. minimax)
@@ -66,7 +66,7 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
 - Web UI: logic goes in DOM-free `.ts` modules with tests; `.tsx` components stay thin (only
   modules a test loads count toward coverage). A Game's board is a `BoardRenderer` in
   `apps/web/src/renderers/` (see `docs/ARCHITECTURE.md`).
-- Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.
+- Grant minimal permissions in tasks (`--allow-net`; tests only `--allow-net=127.0.0.1`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
 - Engine workers are sandboxed (ADR 0006): read of `packages/ games/ engines/` only; root `deno.json`
   enables `unstable: ["worker-options"]`. Test Engines load via `testWorkerAdapter()`.

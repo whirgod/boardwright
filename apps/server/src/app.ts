@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { upgradeWebSocket } from "hono/deno";
 import { serveDir } from "@std/http/file-server";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
@@ -9,6 +10,9 @@ import {
   quote,
 } from "./game-master.ts";
 import type { EngineRegistry } from "./engines.ts";
+import type { EngineRunner } from "./engine-runner.ts";
+import { AnalysisSession } from "./analysis-stream.ts";
+import { MatchFollower } from "./match-stream.ts";
 import { type AnyGameRules, GameRegistry } from "./games.ts";
 import { InMemoryMatchStore, type MatchStore } from "./match-store.ts";
 import {
@@ -27,6 +31,11 @@ export type AppOptions = (BuildMasterOptions | ExistingMasterOptions) & {
    * every non-API path; default none.
    */
   readonly webRoot?: string;
+  /**
+   * The server's one Engine runner (see `main.ts`). The Analysis stream
+   * (`/api/analysis/stream`) exists only with it.
+   */
+  readonly runner?: EngineRunner;
 };
 
 export interface BuildMasterOptions {
@@ -220,6 +229,65 @@ export function buildApp(options: AppOptions): Hono {
       ),
     );
   });
+
+  // Match stream (server to client only): snapshot, then every event.
+  app.get(
+    "/api/matches/:id/stream",
+    async (c, next) => {
+      await master.getMatch(c.req.param("id")); // unknown Match: 404 before upgrading
+      return next();
+    },
+    upgradeWebSocket((c) => {
+      let follower: MatchFollower | undefined;
+      return {
+        onOpen: (_event, ws) => {
+          follower = new MatchFollower(
+            master,
+            c.req.param("id")!,
+            (message) => ws.send(JSON.stringify(message)),
+          );
+          follower.start().catch((error) => {
+            console.error(error);
+            ws.close(1011, "internal error");
+          });
+        },
+        onMessage: (_event, ws) =>
+          ws.send(JSON.stringify({
+            type: "error",
+            error: {
+              code: "invalid-request",
+              message:
+                "the Match stream takes no messages; submit Moves with POST /api/matches/:id/moves",
+            },
+          })),
+        onClose: () => follower?.close(),
+        onError: () => follower?.close(),
+      };
+    }),
+  );
+
+  const { runner } = options;
+  if (runner) {
+    app.get(
+      "/api/analysis/stream",
+      upgradeWebSocket(() => {
+        let session: AnalysisSession | undefined;
+        return {
+          onOpen: (_event, ws) => {
+            session = new AnalysisSession({
+              games,
+              engines: master.engines,
+              runner,
+              send: (message) => ws.send(JSON.stringify(message)),
+            });
+          },
+          onMessage: (event) => session?.handle(event.data),
+          onClose: () => session?.close(),
+          onError: () => session?.close(),
+        };
+      }),
+    );
+  }
 
   const fsRoot = options.webRoot;
   if (fsRoot !== undefined) {

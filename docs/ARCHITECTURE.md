@@ -46,7 +46,7 @@ core  <-  games/*  <-  engines/*
 - **Positions and Moves are opaque** outside their Game. Everything crossing a process or
   network boundary uses the Game's `Notation` (strings), so the server, API, storage and UI
   stay game-agnostic.
-- **Analysis is a stream** _(planned, #9)_. `Engine.analyze` yields progressively deeper `Analysis`
+- **Analysis is a stream** (`/api/analysis/stream`). `Engine.analyze` yields progressively deeper `Analysis`
   (multiple `Line`s with a `Score`), which the server forwards to the UI for live overlays.
   "Best move" = first Move of the best Line once the search stops.
 - **Chance events** (ADR 0005). A Game with dice implements `ChanceGameRules`, extending
@@ -142,7 +142,7 @@ core  <-  games/*  <-  engines/*
   The per-Match memory is bounded (`maxMatches`, default 1000, least recently moved forgotten and
   reloaded on its next event) and a load that a concurrent finish outran is not cached.
 - `engine-runner.ts` — `EngineRunner`, the one place the server runs Engines. `main.ts` creates
-  the one runner; the driver requires it, and the Analysis stream of #9 must reuse it, so the cap
+  the one runner; the driver requires it, and the Analysis stream reuses it (purpose `analysis`), so the cap
   is server-wide. `analyze({ engine, position, limits }, { signal, purpose })` is an async iterable
   of `Analysis<string>` (Moves in Notation) in the Engine's order. Each one is checked against the
   Engine contract's shape (integer depth, at most `limits.lines` Lines, each with >= 1 Move and a
@@ -155,7 +155,7 @@ core  <-  games/*  <-  engines/*
   or the deadline tells the adapter to stop the Engine and frees the slot.
   **Queueing policy:** at most `maxConcurrent` (default 4) searches run at once. `purpose: "match"`
   (the driver) is never refused, queues ahead of all Analysis requests and may use every slot;
-  `purpose: "analysis"` (default; #9) may use all but `reservedForMatches` (default 1) slots, and
+  `purpose: "analysis"` (default; the Analysis stream) may use all but `reservedForMatches` (default 1) slots, and
   when `maxQueued` (default 8) Analysis requests already wait, one more fails at once with `busy`.
   So Engine Seats never starve behind clients; a Match search waits at most for other Match
   searches and for running searches' deadlines. Waiting while queued is abortable but not
@@ -202,11 +202,19 @@ core  <-  games/*  <-  engines/*
 - `tokens.ts` — seat tokens: 256-bit random hex; only their SHA-256 is stored.
 - `requests.ts` — hand-written validation of JSON bodies (no schema library: the bodies are
   tiny and errors stay in our shape).
+- `match-stream.ts` — `MatchFollower`: snapshot, then each `MatchEvent` once, built on
+  `onMatchChanged` (subscribe first, then `getMatch`, drop events `<=` the snapshot's version).
+- `analysis-stream.ts` — `AnalysisSession`: one connection's searches on the shared
+  `EngineRunner` (purpose `analysis`); cancels on `stop`, replacement or close. Both modules only
+  need a `send` callback, so tests drive them without a socket (`stream.testing.ts` has the
+  loopback helpers for the end-to-end tests; `deno task test` allows `--allow-net=127.0.0.1`).
 - `app.ts` — Hono routes; maps `MatchError` codes to HTTP statuses. `buildApp` builds its own
   `GameMaster` from `games`/`store`/`now`, or serves one passed as `master` (so an `EngineDriver` can attach
   to it first); `engines` is passed through to the built one. Request bodies on `/api/*`
   are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
-  client text echoed in error messages is truncated. With `webRoot`, every non-`/api/` GET is
+  client text echoed in error messages is truncated. The two WebSocket streams (see API) are
+  wired here (`hono/deno` `upgradeWebSocket`); `runner` (the one from `main.ts`) enables the
+  Analysis stream. With `webRoot`, every non-`/api/` GET is
   served from that directory (`@std/http` `serveDir`; missing files 404; `index.html` with
   `Cache-Control: no-cache`, all with `Referrer-Policy: no-referrer` and `nosniff`).
 
@@ -215,7 +223,7 @@ core  <-  games/*  <-  engines/*
 Preact SPA bundled by `deno bundle` from `index.html` into `dist/` (ADR 0004); hash routes
 (`#/`, `#/games/:gameId/new`, `#/matches/:id`), so the server only serves files. It talks to the
 API with Notation strings like any client and polls `GET /api/matches/:id` every second until the
-Match has an Outcome (switch to the stream once #9 lands).
+Match has an Outcome (switching to the Match stream is a follow-up).
 
 - DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`),
   `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
@@ -258,7 +266,7 @@ Implemented (JSON; Positions and Moves are Notation strings):
 - `POST /api/matches` `{ gameId, seats: { <seat>: { kind: "human" } | { kind: "engine", engineId,
   limits? } } }` → `201` `{ match, tokens: { <seat>: <seat token> } }` (tokens for human Seats
   only). Seats must be exactly the Game's Seats. Tokens are returned only here. After a Move,
-  Engine Seats move on their own: poll `GET /api/matches/:id` (live push comes with the WebSocket).
+  Engine Seats move on their own: follow the Match stream (below) or poll `GET /api/matches/:id`.
 - `GET  /api/matches/:id` → `MatchView`: `{ id, gameId, seats: { <seat>: { kind } }, moves,
   position, toMove, legalMoves, outcome, seed?, version, createdAt, updatedAt }` (`moves` is the
   Move list: `{ kind: "move", move }` and, for Games with chance, `{ kind: "chance", chance }`
@@ -282,11 +290,78 @@ Errors always have the body `{ "error": { "code", "message" } }`:
 | 415    | `unsupported-media-type`                                                                                                     |
 | 500    | `internal`                                                                                                                   |
 
+### Streams (WebSocket)
+
+Both streams are WebSockets carrying one JSON object per text message; the `type` field names the
+message. Errors have `{ "type": "error", "error": { "code", "message" } }` like REST errors, and
+never close the socket (a protocol-level problem the server cannot recover from closes it with
+1011). Browsers cannot set headers on a WebSocket, so nothing secret goes in the URL: **seat
+tokens never appear on a stream.**
+
+**Match stream** — `GET /api/matches/:id/stream` (WebSocket upgrade; an unknown Match answers
+`404 unknown-match` before upgrading). Server to client only; the stream is public like
+`GET /api/matches/:id`.
+
+| `type`     | Fields              | Meaning                                                                                           |
+| ---------- | ------------------- | ------------------------------------------------------------------------------------------------- |
+| `snapshot` | `match: MatchView`  | First message: the Match as `GET /api/matches/:id` returns it (incl. `version`).                  |
+| `event`    | `event: MatchEvent` | After it, one per committed change, each exactly once, `version` rising by 1 from the snapshot's. |
+| `error`    | `error`             | `invalid-request` if the client sends any message: the stream takes none.                         |
+
+A `MatchEvent` has `matchId`, `version`, `at`, `position`, `toMove`, `outcome` (the state right
+after the event) and a `kind`: `created` (`gameId`, `seats`), `move` (`seat`, `move`),
+`resignation` (`seat`), `forfeit` (`seat`), or `chance` (`chance`, the Chance event's result in
+Notation). The event that ends a Match carries its `outcome` (a Move that wins by the rules is
+one `move` event with the `outcome`, a Resignation one `resignation` event, and so on); the
+`seed` of a Game with chance is only in the `MatchView` fetched after that. The Match stays open
+after the Outcome; clients close it. A client that reconnects gets a fresh snapshot (compare
+`version`s to skip what it already has).
+
+**Submitting Moves stays REST** (`POST /api/matches/:id/moves`, `POST /api/matches/:id/resign`)
+rather than moving to the socket: one path with proper status codes and error bodies, seat tokens
+stay out of the stream, a read-only stream is trivially safe to expose to spectators, and every
+client already needs REST to create a Match. The reply of the POST and the `event` on the stream
+are the same change; a client may apply whichever arrives first and drop events with a `version`
+it has already seen.
+
+**Analysis stream** — `GET /api/analysis/stream` (WebSocket upgrade; present when the server has
+a runner). Chosen over SSE because the client must send a request and then _stop_ or replace it
+while the connection stays open (stepping through a Match's Positions), which SSE (one-way,
+request fixed in the URL, cancel only by dropping the connection) cannot do without a second
+HTTP call; a WebSocket is also the transport the Match stream already needs.
+
+Client to server (messages over 16 KiB are refused):
+
+- `{ "type": "start", "id"?, "gameId", "engineId", "position", "limits"? }` — analyse `position`
+  (the Game's Notation) with that Game's Engine; `limits` is `{ maxDepth?, maxTimeMs?, lines? }`
+  as for an Engine Seat (`lines` = how many best Lines; unset `maxTimeMs` is the server default,
+  capped at 60 s). `id` is an optional client string (<= 100 chars) echoed in every reply about
+  this search. One search per connection: a `start` while one runs **replaces** it (the old one
+  is cancelled and sends nothing more, not even `stopped`).
+- `{ "type": "stop" }` — cancel the running search, if any.
+
+Server to client:
+
+| `type`     | Fields                            | Meaning                                                                                                                                                                                                                    |
+| ---------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analysis` | `id?`, `analysis`                 | One `Analysis<string>` (`depth`, `lines` with `moves` in Notation and a `Score`), in the Engine's order, depth strictly increasing. A Position with a pending Chance event has no Lines but `score` and `seat` (ADR 0005). |
+| `done`     | `id?`                             | The Engine finished (its limits were reached); nothing more for this search.                                                                                                                                               |
+| `stopped`  | `id?`                             | Answer to `stop` (always sent, even with nothing running; `id` of the cancelled search if any).                                                                                                                            |
+| `error`    | `id?`, `error: { code, message }` | The request or search failed; the search is over, the socket stays open.                                                                                                                                                   |
+
+Error codes: `invalid-request` (not JSON, not an object, unknown `type`, bad or extra fields,
+bad `limits`, binary or oversized message), `unknown-game`, `unknown-engine`, `invalid-position`
+(`position` does not decode), `busy` (the shared runner's Analysis queue is full, see
+`engine-runner.ts`; retry later), and the runner's `timeout`, `engine-error`, `worker-error`,
+`unreadable-reply` (details are only logged), plus `internal`. Analysis requests go through the
+server's one `EngineRunner` with purpose `analysis`, so they never starve Engine Seats.
+
+**Cancellation:** `stop`, a replacing `start` and a closed socket all abort the runner's search,
+which stops the Engine (its Worker is terminated) and frees its slot at once.
+
 Planned (sketch, not final):
 
 - `GET  /api/matches` listing (#13)
-- `WS   /api/matches/:id/stream` — Match events (versioned, see `onMatchChanged`), live Analysis
-- `POST /api/analysis` (game, Position, engine, limits) → stream of Analysis
 
 ## Open questions
 

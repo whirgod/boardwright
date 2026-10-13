@@ -18,7 +18,7 @@ const master = new GameMaster({
   store: new InMemoryMatchStore(),
   engines: catalog.engines,
 });
-// The one runner every search goes through (Matches now, Analysis with #9),
+// The one runner every search goes through (Matches and the Analysis stream),
 // so its concurrency cap and queueing policy hold server-wide.
 const runner = new EngineRunner();
 new EngineDriver(master, { runner });
@@ -33,4 +33,4 @@ try {
   );
 }
 
-Deno.serve({ port, hostname }, buildApp({ master, webRoot }).fetch);
+Deno.serve({ port, hostname }, buildApp({ master, webRoot, runner }).fetch);
