@@ -17,6 +17,7 @@ import { Board } from "../board.tsx";
 import { errorMessage } from "../errors.ts";
 import { MatchFeed } from "../match-feed.ts";
 import {
+  analysisWanted,
   boardRequest,
   invites,
   type MatchStatus,
@@ -145,13 +146,19 @@ export function MatchPage(
   // Keyboard review: arrows step, Home/End jump (not while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
       const action = keyAction({
         key: e.key,
         altKey: e.altKey,
         ctrlKey: e.ctrlKey,
         metaKey: e.metaKey,
         shiftKey: e.shiftKey,
-        targetTag: (e.target as Element | null)?.tagName,
+        targetTag: target?.tagName,
+        targetRole: target?.getAttribute("role") ?? undefined,
+        targetEditable: target instanceof HTMLElement &&
+          target.isContentEditable,
+        // Keys in the Analysis panel (Line buttons, selects) stay there.
+        ownKeys: target !== null && target.closest(".analysis") !== null,
       });
       if (!action) return;
       e.preventDefault();
@@ -163,8 +170,7 @@ export function MatchPage(
 
   // Analysis: off by default while this browser plays a Seat in a running
   // Match; on for Spectators and finished Matches.
-  const wanted = analysisOn ??
-    (match?.outcome !== null || Object.keys(playing).length === 0);
+  const wanted = analysisWanted(match, playing, analysisOn);
   const analysing = wanted && engines.length > 0 && step !== undefined;
   const analysis = useAnalysis(
     connect,

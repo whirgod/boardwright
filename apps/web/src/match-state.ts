@@ -155,6 +155,21 @@ export function playerLabel(
   return `Engine: ${engineNames.get(player.engineId) ?? player.engineId}`;
 }
 
+/**
+ * Whether Engine analysis runs: the viewer's choice (`override`) if made;
+ * otherwise off while this browser plays a Seat of a running Match (no help
+ * during play), on for Spectators and finished Matches.
+ */
+export function analysisWanted(
+  match: MatchView | null,
+  playing: Readonly<Record<Seat, string>>,
+  override: boolean | undefined,
+): boolean {
+  if (override !== undefined) return override;
+  return (match !== null && match.outcome !== null) ||
+    Object.keys(playing).length === 0;
+}
+
 /** A Seat assignment from the new Match form: `"human"` or an Engine id. */
 export type SeatChoice = "human" | { readonly engineId: string };
 

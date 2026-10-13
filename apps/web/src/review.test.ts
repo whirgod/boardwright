@@ -121,4 +121,17 @@ Deno.test("keyAction: ignores modified keys and keys typed into form fields", ()
   for (const targetTag of ["INPUT", "SELECT", "TEXTAREA"]) {
     assertEquals(keyAction({ key: "ArrowRight", targetTag }), undefined);
   }
+  // contenteditable, arrow-key widgets, and regions keeping their own keys.
+  assertEquals(
+    keyAction({ key: "ArrowRight", targetEditable: true }),
+    undefined,
+  );
+  for (const targetRole of ["slider", "listbox", "tablist"]) {
+    assertEquals(keyAction({ key: "ArrowLeft", targetRole }), undefined);
+  }
+  assertEquals(keyAction({ key: "Home", ownKeys: true }), undefined);
+  // A button role (board targets) still navigates.
+  assertEquals(keyAction({ key: "End", targetRole: "button" }), {
+    kind: "last",
+  });
 });

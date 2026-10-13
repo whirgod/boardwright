@@ -27,8 +27,8 @@ export interface BoardRequest {
   /** Moves the Seat to move may play; empty when this client may not move. */
   readonly legalMoves: readonly string[];
   readonly selection: Selection;
-  /** Moves from `position` to draw as arrows, e.g. the first Moves of Analysis Lines, best first. */
-  readonly arrows?: readonly string[];
+  /** Moves from `position` to draw as arrows, e.g. the first Moves of Analysis Lines, best first; `null` keeps a rank without an arrow. */
+  readonly arrows?: readonly (string | null)[];
   /**
    * A Line from `position` to draw Move by Move (numbered arrows), e.g. a
    * previewed Analysis Line. Drawing stops at a Move that does not decode or
@@ -167,7 +167,7 @@ export function bindRenderer<Position, Move>(
       }
       const arrows: Arrow[] = [];
       for (const [index, text] of (request.arrows ?? []).entries()) {
-        const [move] = decodeMoves([text], position);
+        const [move] = text === null ? [] : decodeMoves([text], position);
         const arrow = move && arrowOf(move, position, "line", index);
         if (arrow) arrows.push(arrow);
       }

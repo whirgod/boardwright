@@ -141,9 +141,15 @@ export class AnalysisClient {
     this.#set({ kind: "idle" });
   }
 
-  /** Close the connection; the client is unusable afterwards. */
+  /**
+   * Cancel any search explicitly (`stop`), then close the connection; the
+   * client is unusable afterwards.
+   */
   close(): void {
     clearTimeout(this.#timer);
+    if (!this.#closed && this.#id !== undefined && this.#sent) {
+      this.#socket?.send(JSON.stringify({ type: "stop" }));
+    }
     this.#closed = true;
     this.#id = undefined;
     this.#socket?.close();

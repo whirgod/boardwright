@@ -220,6 +220,22 @@ Deno.test("feed: a dropped stream reloads over REST and reconnects with backoff"
   assertEquals(sockets[3]!.closed, true);
 });
 
+Deno.test("feed: close() during the reconnect backoff opens no further socket", async () => {
+  const { connect, sockets } = fakeConnect();
+  const feed = new MatchFeed({
+    matchId: "m 1",
+    connect,
+    load: () => Promise.resolve(MATCH),
+    onMatch: () => {},
+    onError: () => {},
+    retryDelaysMs: [10],
+  });
+  sockets[0]!.drop();
+  feed.close();
+  await tick(30);
+  assertEquals(sockets.length, 1);
+});
+
 Deno.test("feed: an unknown Match reports the error and stops", async () => {
   const missing = new ApiError("unknown-match", "No Match", 404);
   const { feed, sockets, errors } = setup(() => Promise.reject(missing));

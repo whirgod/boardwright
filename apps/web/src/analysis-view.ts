@@ -109,7 +109,7 @@ export function summarize(
 /** What the board draws for an Analysis (see `BoardRequest`). */
 export interface Overlay {
   /** The first Move of each Line, best first. */
-  readonly arrows: readonly string[];
+  readonly arrows: readonly (string | null)[];
   /** A previewed Line's Moves, drawn step by step. */
   readonly preview?: readonly string[];
 }
@@ -126,8 +126,7 @@ export function overlay(
   const line = previewed === undefined ? undefined : analysis.lines[previewed];
   if (line) return { arrows: [], preview: line.moves };
   return {
-    arrows: analysis.lines.flatMap((l) =>
-      l.moves[0] === undefined ? [] : [l.moves[0]]
-    ),
+    // `null` for a Line without Moves keeps the later Lines' ranks.
+    arrows: analysis.lines.map((l) => l.moves[0] ?? null),
   };
 }

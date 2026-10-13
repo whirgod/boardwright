@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import type { MatchView, MoveListEntry } from "./api.ts";
 import {
+  analysisWanted,
   boardRequest,
   invites,
   matchStatus,
@@ -111,6 +112,19 @@ Deno.test("boardRequest: Analysis arrows and a previewed Line pass through", () 
   assertEquals(previewed.arrows, []);
   assertEquals(previewed.preview, ["b2", "c3"]);
   assertEquals("arrows" in boardRequest(MATCH, status, []), false);
+});
+
+Deno.test("analysisWanted: off while playing a running Match, on otherwise, unless overridden", () => {
+  const finished = {
+    ...MATCH,
+    outcome: { kind: "rules", winner: "x", reason: "three-in-a-row" } as const,
+  };
+  assertEquals(analysisWanted(MATCH, { x: "t" }, undefined), false);
+  assertEquals(analysisWanted(MATCH, {}, undefined), true); // Spectator
+  assertEquals(analysisWanted(finished, { x: "t" }, undefined), true);
+  assertEquals(analysisWanted(null, { x: "t" }, undefined), false);
+  assertEquals(analysisWanted(MATCH, { x: "t" }, true), true);
+  assertEquals(analysisWanted(finished, {}, false), false);
 });
 
 Deno.test("invites: hand over one of several human Seats before the first Move", () => {

@@ -96,6 +96,17 @@ Deno.test("overlay: arrows for the first Move of each Line, best first", () => {
   assertEquals(overlay(ANALYSIS), { arrows: ["e2e4", "d2d4", "g1f3"] });
   assertEquals(overlay(undefined), { arrows: [] });
   assertEquals(overlay({ depth: 0, lines: [] }), { arrows: [] });
+  // A Line without Moves keeps its rank, so the best Line stays index 0.
+  assertEquals(
+    overlay({
+      depth: 1,
+      lines: [
+        { moves: [], score: { kind: "value", value: 1 } },
+        { moves: ["d2d4"], score: { kind: "value", value: 0 } },
+      ],
+    }).arrows,
+    [null, "d2d4"],
+  );
 });
 
 Deno.test("overlay: a previewed Line replaces the arrows with its Moves", () => {

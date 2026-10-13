@@ -165,6 +165,12 @@ Deno.test("board: a previewed Line is drawn Move by Move from the Positions it r
   );
 });
 
+Deno.test("board: a null arrow keeps the ranks of the later ones", () => {
+  assertEquals(view.board(request({ arrows: [null, "a-c"] })).arrows, [
+    { from: "a", to: "c", kind: "line", index: 1 },
+  ]);
+});
+
 Deno.test("board: a preview stops at the first Move that does not decode", () => {
   const model = view.board(request({ preview: ["a-b", "zz", "b-c"] }));
   assertEquals(model.arrows, [

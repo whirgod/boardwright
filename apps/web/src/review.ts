@@ -154,6 +154,12 @@ export interface KeyPress {
   readonly shiftKey?: boolean;
   /** Tag name of the focused element, e.g. "INPUT". */
   readonly targetTag?: string | undefined;
+  /** ARIA role of the focused element, if any. */
+  readonly targetRole?: string | undefined;
+  /** The focused element is `contenteditable`. */
+  readonly targetEditable?: boolean | undefined;
+  /** Focus is in a region that keeps its own keys (e.g. the Analysis panel). */
+  readonly ownKeys?: boolean | undefined;
 }
 
 const KEYS: Readonly<Record<string, ReviewAction>> = {
@@ -166,12 +172,33 @@ const KEYS: Readonly<Record<string, ReviewAction>> = {
 /** Fields whose own keys (arrows, Home, End) must keep working. */
 const EDITABLE = new Set(["INPUT", "SELECT", "TEXTAREA"]);
 
+/** ARIA widgets that use arrow keys themselves. */
+const WIDGET_ROLES = new Set([
+  "slider",
+  "listbox",
+  "menu",
+  "menubar",
+  "radiogroup",
+  "spinbutton",
+  "tablist",
+  "tree",
+  "grid",
+  "combobox",
+  "textbox",
+]);
+
 /** The navigation a key asks for: arrows step, Home/End jump; none with modifiers or in form fields. */
 export function keyAction(press: KeyPress): ReviewAction | undefined {
   if (press.altKey || press.ctrlKey || press.metaKey || press.shiftKey) {
     return undefined;
   }
   if (press.targetTag !== undefined && EDITABLE.has(press.targetTag)) {
+    return undefined;
+  }
+  if (
+    press.targetEditable || press.ownKeys ||
+    (press.targetRole !== undefined && WIDGET_ROLES.has(press.targetRole))
+  ) {
     return undefined;
   }
   return KEYS[press.key];

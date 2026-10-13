@@ -244,6 +244,25 @@ Deno.test("analysisOf: only an Analysis of the shown Position", () => {
   );
 });
 
+Deno.test("close: during the debounce, no search starts and no socket opens", async () => {
+  const { connect, sockets } = fakeConnect();
+  const client = new AnalysisClient({ connect, onState: () => {}, delayMs: 5 });
+  client.analyze(REQUEST);
+  client.close();
+  await tick(20);
+  assertEquals(sockets.length, 0);
+});
+
+Deno.test("close: a finished search sends no stop", async () => {
+  const { client, sockets } = setup();
+  client.analyze(REQUEST);
+  await tick();
+  sockets[0]!.accept();
+  sockets[0]!.receive({ type: "done", id: "s1" });
+  client.close();
+  assertEquals(sockets[0]!.sent, [start("s1", REQUEST)]);
+});
+
 Deno.test("close: closes the socket and ignores everything afterwards", async () => {
   const { client, sockets, states } = setup();
   client.analyze(REQUEST);
@@ -251,6 +270,8 @@ Deno.test("close: closes the socket and ignores everything afterwards", async ()
   const socket = sockets[0]!;
   socket.accept();
   client.close();
+  // A running search is cancelled explicitly before the socket closes.
+  assertEquals(socket.sent.at(-1), { type: "stop" });
   assertEquals(socket.closed, true);
   const seen = states.length;
   client.analyze(OTHER);
