@@ -93,7 +93,8 @@ const request = (over: Partial<BoardRequest> = {}): BoardRequest => ({
 
 Deno.test("gameView: tic-tac-toe has a board; unknown Games have none", () => {
   assertEquals(gameView("tic-tac-toe")?.gameId, "tic-tac-toe");
-  assertEquals(gameView("chess"), undefined);
+  assertEquals(gameView("chess")?.gameId, "chess");
+  assertEquals(gameView("go"), undefined);
 });
 
 Deno.test("board: the renderer receives the Position decoded with the Game's Notation", () => {

@@ -1,5 +1,6 @@
 import type { GameId, GameRules } from "@boardwright/core";
 import { checkers } from "@boardwright/game-checkers";
+import { chess } from "@boardwright/game-chess";
 import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import type {
@@ -12,6 +13,7 @@ import type {
 } from "./board.ts";
 import { clickOrder } from "./compose.ts";
 import { checkersRenderer } from "./checkers.ts";
+import { chessRenderer } from "./chess.ts";
 import { nineMensMorrisRenderer } from "./nine-mens-morris.ts";
 import { ticTacToeRenderer } from "./tic-tac-toe.ts";
 
@@ -159,6 +161,7 @@ const views: ReadonlyMap<GameId, GameView> = new Map(
     bindRenderer(ticTacToe, ticTacToeRenderer),
     bindRenderer(nineMensMorris, nineMensMorrisRenderer),
     bindRenderer(checkers, checkersRenderer),
+    bindRenderer(chess, chessRenderer),
   ].map((v) => [v.gameId, v]),
 );
 

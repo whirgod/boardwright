@@ -35,6 +35,12 @@ export const hostedCatalog: readonly CatalogGame[] = [
       module: import.meta.resolve("@boardwright/engine-checkers-minimax"),
     }],
   },
-  // No Engine for chess yet.
-  { game: erase(chess), engines: [] },
+  {
+    game: erase(chess),
+    engines: [{
+      id: "minimax",
+      name: "Minimax",
+      module: import.meta.resolve("@boardwright/engine-chess-minimax"),
+    }],
+  },
 ];

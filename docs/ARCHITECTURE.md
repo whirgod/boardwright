@@ -13,7 +13,7 @@ packages/testing  Contract test kits every Game / Engine runs (assertGameRulesCo
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
 engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
-                  engines/tic-tac-toe-minimax (planned: engines/chess-minimax). It exports
+                  engines/tic-tac-toe-minimax (also engines/chess-minimax). It exports
                   `rules` and `engine`, so the server can load it by URL inside a Worker.
 ```
 
@@ -177,7 +177,7 @@ core  <-  games/*  <-  engines/*
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
-  checkers (minimax Engines) and chess (no Engine yet).
+  checkers and chess (minimax Engines).
 - `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
@@ -228,8 +228,12 @@ Match has an Outcome (switch to the stream once #9 lands).
   highlights (last Move by replaying the Move list, selection, destinations) and arrows (for
   Analysis Lines later); Moves that do not decode are skipped, and a Position that does not decode
   makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
-  `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe; Games without one fall back to
-  Notation text and legal-Move buttons.
+  `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe, nine men's morris, checkers and
+  chess; Games without one fall back to Notation text and legal-Move buttons. Chess input: a Move
+  is `from` then `to` (castling is the king's two-square Move); promotion is a third click, an
+  effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
+  pieces of the Seat to move. The Move list still shows Notation text (UCI), not SAN; SAN
+  (`formatSan`) is not wired into the Move list display yet.
 
 ## API
 
