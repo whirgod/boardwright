@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
-import { composeMove } from "./compose.ts";
+import { clickOrder, composeMove } from "./compose.ts";
 
-const clicksOf = (m: string) => m.split(",");
+const clicksOf = (m: string) => ({ path: m.split(",") });
 
 Deno.test("composeMove: completes a Move when its last target is clicked", () => {
   assertEquals(composeMove(clicksOf, ["a,b", "a,c"], ["a"], "b"), {
@@ -33,6 +33,33 @@ Deno.test("composeMove: re-picking another start restarts; junk is ignored", () 
     kind: "select",
     selection: ["x"],
   });
-  assertEquals(composeMove(clicksOf, ["a,b"], ["a"], "z"), { kind: "ignore" });
   assertEquals(composeMove(clicksOf, [], [], "a"), { kind: "ignore" });
+});
+
+Deno.test("composeMove: re-clicking the last selected target deselects it", () => {
+  assertEquals(composeMove(clicksOf, ["a,b"], ["a"], "a"), {
+    kind: "select",
+    selection: [],
+  });
+  assertEquals(composeMove(clicksOf, ["a,b,c"], ["a", "b"], "b"), {
+    kind: "select",
+    selection: ["a"],
+  });
+});
+
+Deno.test("composeMove: a stray click keeps a partial selection", () => {
+  assertEquals(composeMove(clicksOf, ["a,b,c"], ["a", "b"], "z"), {
+    kind: "select",
+    selection: ["a", "b"],
+  });
+  assertEquals(composeMove(clicksOf, ["a,b"], [], "z"), { kind: "ignore" });
+});
+
+Deno.test("clickOrder: path then effects", () => {
+  assertEquals(clickOrder({ path: ["a", "b"], effects: ["x"] }), [
+    "a",
+    "b",
+    "x",
+  ]);
+  assertEquals(clickOrder({ path: ["a"] }), ["a"]);
 });

@@ -3,7 +3,7 @@ import type {
   CheckersPosition,
 } from "@boardwright/game-checkers";
 import { composeMove } from "./compose.ts";
-import type { BoardRenderer, Shape, Target } from "./board.ts";
+import type { BoardRenderer, MoveTargets, Shape, Target } from "./board.ts";
 
 const CELL = 100;
 const SIZE = 8 * CELL;
@@ -21,7 +21,10 @@ export function squareName(square: number): string {
   return "abcdefgh"[col]! + String(8 - row);
 }
 
-const clicks = (move: CheckersMove) => move.map(String);
+/** Every visited square is on the path, so a multi-jump is clicked square by square. */
+const moveTargets = (move: CheckersMove): MoveTargets => ({
+  path: move.map(String),
+});
 
 const SEATS = { b: "black", B: "black", w: "white", W: "white" } as const;
 
@@ -86,8 +89,7 @@ export const checkersRenderer: BoardRenderer<
     });
     return { width: SIZE, height: SIZE, board, pieces, targets };
   },
-  /** Every visited square is on the path, so a multi-jump is clicked square by square. */
-  moveTargets: (move) => ({ path: clicks(move) }),
+  moveTargets,
   input: (_position, legalMoves, selection, target) =>
-    composeMove(clicks, legalMoves, selection, target),
+    composeMove(moveTargets, legalMoves, selection, target),
 };

@@ -15,7 +15,18 @@ Deno.test("scene: 24 targets, one per point, rank 7 on top", () => {
   assertEquals(scene.pieces.filter((p) => p.kind === "circle"), []);
   assertEquals(pointCenter("a7"), { x: 50, y: 50 });
   assertEquals(pointCenter("g1"), { x: 650, y: 650 });
-  assertEquals(scene.board.filter((s) => s.className === "grid").length, 16);
+  const lines = scene.board.flatMap((s) => s.kind === "line" ? [s] : []);
+  assertEquals(lines.length, 16);
+  // Each line runs between the outer Points of a mill.
+  assertEquals(lines[0]!.from, pointCenter("a1"));
+  assertEquals(lines[0]!.to, pointCenter("g1"));
+  assertEquals(lines[8]!.from, pointCenter("a1"));
+  assertEquals(lines[8]!.to, pointCenter("a7"));
+  for (const l of lines) {
+    assertEquals(l.from.x === l.to.x || l.from.y === l.to.y, true);
+    assertEquals(l.from.x !== l.to.x || l.from.y !== l.to.y, true);
+  }
+  assertEquals(scene.board.filter((s) => s.className === "point").length, 24);
 });
 
 Deno.test("scene: pieces and in-hand counts", () => {
@@ -26,7 +37,7 @@ Deno.test("scene: pieces and in-hand counts", () => {
     ["disc disc-white", "disc disc-black"],
   );
   assertEquals(
-    scene.pieces.flatMap((p) => p.kind === "text" ? [p.text] : []),
+    scene.board.flatMap((p) => p.kind === "text" ? [p.text] : []),
     ["White in hand: 8", "Black in hand: 8"],
   );
   assertEquals(scene.targets.find((t) => t.id === "a1")!.label, "a1: white");
@@ -69,7 +80,10 @@ Deno.test("input: a mill placement needs the removal click", () => {
     move: { to: "g1", remove: "a7" },
   });
   // Removing one's own piece is not a legal Move.
-  assertEquals(r.input(pos, legal, ["g1"], "a1"), { kind: "ignore" });
+  assertEquals(r.input(pos, legal, ["g1"], "a1"), {
+    kind: "select",
+    selection: ["g1"],
+  });
 });
 
 Deno.test("input: moving phase selects a piece, then its destination", () => {

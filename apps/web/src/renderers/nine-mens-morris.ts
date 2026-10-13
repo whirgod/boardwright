@@ -40,11 +40,6 @@ function moveTargets(move: MorrisMove): MoveTargets {
   };
 }
 
-const clicks = (move: MorrisMove) => {
-  const { path, effects = [] } = moveTargets(move);
-  return [...path, ...effects];
-};
-
 export const nineMensMorrisRenderer: BoardRenderer<
   MorrisPosition,
   MorrisMove
@@ -94,20 +89,26 @@ export const nineMensMorrisRenderer: BoardRenderer<
         height: HIT,
       });
     });
-    pieces.push({
-      kind: "text",
-      at: { x: MARGIN, y: SIZE + 20 },
-      text: `White in hand: ${position.inHand.white}`,
-      className: "caption",
-    }, {
-      kind: "text",
-      at: { x: SIZE / 2 + MARGIN, y: SIZE + 20 },
-      text: `Black in hand: ${position.inHand.black}`,
-      className: "caption",
+    // Each in-hand count sits next to a disc of its Seat's colour.
+    (["white", "black"] as const).forEach((seat, i) => {
+      const x = MARGIN + i * (SIZE / 2);
+      board.push({
+        kind: "circle",
+        center: { x, y: SIZE + 5 },
+        r: 12,
+        className: `disc disc-${seat}`,
+      }, {
+        kind: "text",
+        at: { x: x + 24, y: SIZE + 14 },
+        text: `${seat === "white" ? "White" : "Black"} in hand: ${
+          position.inHand[seat]
+        }`,
+        className: "caption",
+      });
     });
     return { width: SIZE, height: HEIGHT, board, pieces, targets };
   },
   moveTargets,
   input: (_position, legalMoves, selection, target) =>
-    composeMove(clicks, legalMoves, selection, target),
+    composeMove(moveTargets, legalMoves, selection, target),
 };

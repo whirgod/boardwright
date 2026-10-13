@@ -75,7 +75,7 @@ Deno.test("input: a multi-jump is one Move composed square by square", () => {
 });
 
 Deno.test("input: mandatory captures hide steps", () => {
-  const pos = decode("B:W6:B1,2");
+  const pos = decode("B:W6:B1,4");
   const legal = checkers.legalMoves(pos);
-  assertEquals(r.input(pos, legal, ["2"], "7"), { kind: "ignore" });
+  assertEquals(r.input(pos, legal, [], "4"), { kind: "ignore" });
 });
