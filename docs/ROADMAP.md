@@ -17,16 +17,18 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Contract kit: bounded illegal-Move probing (#24)
 - [x] Engine Players in Matches, run in Web Workers; tic-tac-toe Engine (#7)
 - [x] Engines for nine men's morris and checkers (#8); Engine contract kit (#35); glossary drift (#37)
+- [x] Referee applies every Match change; structured Outcomes; versioned Match events (#33)
+- [x] Web UI foundation (Preact, bundled by Deno), served by the server (#10)
+- [x] Game chess (#14)
 
 ## Next
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-3. **Deepen before building on it** (architecture review 2026-10-13) — referee applies every Match
-   change with structured Outcomes and versioned events (#33); Engine runner streaming Analysis
-   (#34); hosted catalog of Games and Engines (#36); web UI foundation (#10).
+3. **Deepen before building on it** (architecture review 2026-10-13) — Engine runner streaming
+   Analysis (#34); hosted catalog of Games and Engines (#36).
 4. **Live + more Games** — Match/Analysis streams (#9), morris/checkers renderers (#11),
-   persistence (#13), chess rules (#14), backgammon rules + Chance events (#15), sandboxed Engine
-   workers (#29), Resignation (#31).
+   persistence (#13), backgammon rules + Chance events (#15), sandboxed Engine
+   workers (#29), Resignation (#31), EngineDriver cache bounds and store liveness (#46).
 5. **Later** — review mode and analysis overlay (#12), chess Engine + renderer (#16), backgammon
    Engine + renderer (#17), external Engine protocol (#18).
