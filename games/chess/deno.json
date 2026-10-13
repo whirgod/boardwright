@@ -1,0 +1,8 @@
+{
+  "name": "@boardwright/game-chess",
+  "version": "0.0.0",
+  "exports": "./src/mod.ts",
+  "tasks": {
+    "perft:deep": "CHESS_PERFT_DEEP=1 deno test --allow-env=CHESS_PERFT_DEEP src/perft.test.ts"
+  }
+}
