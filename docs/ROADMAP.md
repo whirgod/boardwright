@@ -28,7 +28,7 @@ Each step links its GitHub issues; waves run in order, tasks within a wave in pa
 3. **Deepen before building on it** (architecture review 2026-10-13) — Engine runner streaming
    Analysis (#34); hosted catalog of Games and Engines (#36).
 4. **Live + more Games** — Match/Analysis streams (#9), morris/checkers renderers (#11),
-   persistence (#13), backgammon rules + Chance events (#15), sandboxed Engine
+   persistence (#13), Chance events (ADR 0005) + backgammon rules (#15), sandboxed Engine
    workers (#29), Resignation (#31), EngineDriver cache bounds and store liveness (#46).
-5. **Later** — review mode and analysis overlay (#12), chess Engine + renderer (#16), backgammon
-   Engine + renderer (#17), external Engine protocol (#18).
+5. **Later** — review mode and analysis overlay (#12), chess Engine + renderer (#16), expectiminimax
+   Engine library (#48), backgammon Engine + renderer (#17), external Engine protocol (#18).
