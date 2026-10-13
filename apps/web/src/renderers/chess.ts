@@ -140,7 +140,7 @@ export const chessRenderer: BoardRenderer<ChessPosition, ChessMove> = {
       pieces.push(glyph(owned, x, y));
       targets.push({
         id: pickerId(piece),
-        label: `promote to ${NAMES[piece]}`,
+        label: `promote to ${NAMES[piece]} (after selecting a promoting Move)`,
         x,
         y,
         width: CELL,

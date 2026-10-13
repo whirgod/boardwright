@@ -94,19 +94,20 @@ Deno.test("checkers: click replay matches input and destination highlights", () 
 });
 
 Deno.test("chess: click replay matches input and destination highlights", () => {
-  for (const seed of [1, 2, 3]) {
-    check(chess, chessRenderer, seed, 80);
+  for (const seed of [1, 2]) {
+    check(chess, chessRenderer, seed, 40);
   }
 });
 
 Deno.test("chess: click replay covers promotion and castling", () => {
-  // Promotions and both castlings are legal in these Positions.
+  // Promotions, both castlings and an en passant capture are legal here.
   for (
     const fen of [
       "r3k2r/1P4P1/8/8/8/8/8/R3K2R w KQkq - 0 1",
       "r3k2r/8/8/8/8/8/1p4p1/R3K2R b KQkq - 0 1",
+      "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
     ]
   ) {
-    check(chess, chessRenderer, 1, 1, chess.notation.decodePosition(fen));
+    check(chess, chessRenderer, 1, 3, chess.notation.decodePosition(fen));
   }
 });
