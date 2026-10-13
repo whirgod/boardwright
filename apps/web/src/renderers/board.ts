@@ -78,13 +78,16 @@ export interface Highlight {
 }
 
 /**
- * An arrow between two targets, e.g. the first Move of an Engine's Line.
- * `from === to` marks a single target (a placement).
+ * An arrow between two targets. `from === to` marks a single target (a
+ * placement). `line`: the first Move of an Engine's Line, `index` its rank
+ * (0 = best Line); `preview`: one Move of a previewed Line, `index` its step
+ * in the Line (0 = first).
  */
 export interface Arrow {
   readonly from: TargetId;
   readonly to: TargetId;
-  readonly kind: "line";
+  readonly kind: "line" | "preview";
+  readonly index: number;
 }
 
 /** Targets picked so far while composing a Move (e.g. a piece before its destination). */

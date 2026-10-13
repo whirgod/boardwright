@@ -45,6 +45,36 @@ export interface MatchView {
   readonly version: number;
 }
 
+/** Fields of every Match event: the Match's state right after it. */
+interface MatchEventBase {
+  readonly matchId: string;
+  /** The Match's `version` after this event. */
+  readonly version: number;
+  /** When it happened: the Match's `updatedAt`. */
+  readonly at: string;
+  readonly position: string;
+  readonly toMove: Seat | null;
+  readonly outcome: Outcome | null;
+}
+
+/** One committed change of a Match, as the Match stream sends it. */
+export type MatchEvent =
+  | MatchEventBase & {
+    readonly kind: "created";
+    readonly gameId: GameId;
+    readonly seats: Readonly<Record<Seat, PlayerSpec>>;
+  }
+  | MatchEventBase & {
+    readonly kind: "move";
+    readonly seat: Seat;
+    readonly move: string;
+  }
+  | MatchEventBase & {
+    readonly kind: "resignation" | "forfeit";
+    readonly seat: Seat;
+  }
+  | MatchEventBase & { readonly kind: "chance"; readonly chance: string };
+
 export interface CreatedMatch {
   readonly match: MatchView;
   /** Seat tokens of the human Seats; the server shows them only once. */
