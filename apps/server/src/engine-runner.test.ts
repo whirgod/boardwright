@@ -9,9 +9,11 @@ import {
   SearchError,
   type SearchFailure,
   type SearchPurpose,
-  workerAdapter,
 } from "./engine-runner.ts";
-import { inProcessAdapter } from "./engine-runner.testing.ts";
+import {
+  inProcessAdapter,
+  testWorkerAdapter,
+} from "./engine-runner.testing.ts";
 import type { EngineEntry } from "./engines.ts";
 
 const START = ".........:x";
@@ -71,7 +73,7 @@ async function outcome(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
 const ADAPTERS: [string, () => EngineAdapter][] = [
-  ["worker", workerAdapter],
+  ["worker", testWorkerAdapter],
   ["in-process", inProcessAdapter],
 ];
 
@@ -213,7 +215,9 @@ Deno.test("worker: a busy (blocking) Engine is cut off at the deadline", async (
 
 Deno.test("worker: a crashing worker fails with 'worker-error' after what it streamed", async () => {
   const result = await outcome(
-    new EngineRunner().analyze(request(entry("crash-worker"))),
+    new EngineRunner({ adapter: testWorkerAdapter() }).analyze(
+      request(entry("crash-worker")),
+    ),
   );
   assertEquals(result.code, "worker-error");
   assertEquals(result.seen.map((a) => a.lines[0]!.moves), [["a1"]]);
@@ -221,7 +225,9 @@ Deno.test("worker: a crashing worker fails with 'worker-error' after what it str
 
 Deno.test("worker: a message outside the protocol fails with 'unreadable-reply'", async () => {
   const result = await outcome(
-    new EngineRunner().analyze(request(entry("junk"))),
+    new EngineRunner({ adapter: testWorkerAdapter() }).analyze(
+      request(entry("junk")),
+    ),
   );
   assertEquals(result, { seen: [], code: "unreadable-reply" });
 });

@@ -7,8 +7,9 @@
  * terminates the worker to stop it. Only Notation strings and plain data
  * cross the boundary.
  *
- * The worker inherits the server's permissions (net, env, scoped read):
- * Engine code is trusted, sandboxing is a known gap (see #29).
+ * The runner starts this worker with a minimal permission set (ADR 0006): read
+ * of the Engine source roots only, so the Engine code it imports cannot use
+ * net, env, other files or subprocesses.
  */
 import {
   analyzeInNotation,

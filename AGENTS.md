@@ -67,6 +67,8 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
   `apps/web/src/renderers/` (see `docs/ARCHITECTURE.md`).
 - Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
+- Engine workers are sandboxed (ADR 0006): read of `packages/ games/ engines/` only; root `deno.json`
+  enables `unstable: ["worker-options"]`. Test Engines load via `testWorkerAdapter()`.
 - Use `GLOSSARY.md` terms (Match, not "game instance"; Position, not "board state"; Seat, not "color").
 - All changes land via PR (template in `.github/`); squash-merge.
 - Update `docs/ROADMAP.md` when finishing or re-ordering roadmap work; record hard-to-reverse,

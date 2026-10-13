@@ -124,7 +124,7 @@ core  <-  games/*  <-  engines/*
   time-limited (bounded by the queue cap). How an Engine runs is an `EngineAdapter` (seam):
   `workerAdapter` in production; `inProcessAdapter` (`engine-runner.testing.ts`, tests only: a
   CPU-bound Engine there would block the thread and the deadline). Production adapters must
-  isolate the Engine from the server's thread. Worker sandboxing (#29) and out-of-process Engines
+  isolate the Engine from the server's thread. Out-of-process Engines
   (#18, a further adapter) change only this module.
 - `engine-worker.ts` / `engine-host.ts` — the worker adapter starts one Web Worker per search and
   always terminates it afterwards (end, error, timeout, abort or break). Messages carry only
@@ -133,10 +133,11 @@ core  <-  games/*  <-  engines/*
   (`HostRequest` / `WorkerMessage`, both in `engine-host.ts`).
   `engine-host.ts` (shared with the in-process adapter) loads the Engine module by URL (`rules` +
   `engine` exports), decodes the Position and encodes each Analysis's Moves, passing other fields
-  through. Workers inherit the server's permissions (Deno's per-worker
-  `deno.permissions` is still unstable; sandboxing is tracked in #29), so Engine code is trusted
-  with the server's net/env/read access and the tasks grant `--allow-read` of the workspace
-  source dirs, which loading the worker needs; Engines are first-party code.
+  through. Workers are sandboxed (ADR 0006): created with `deno.permissions` granting only
+  `read` of `packages/`, `games/`, `engines/` (needed for the run-time `import(module)`), so
+  Engine code cannot use net, env, write, subprocesses or any other file; attempts fail as
+  `engine-error`. Needs `"unstable": ["worker-options"]` in the root `deno.json`. Not capped:
+  CPU/memory inside the worker (the deadline terminates it).
 - `catalog.ts` — `verifyCatalog`: the hosted catalog (`hosted-catalog.ts`: Games with their
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
