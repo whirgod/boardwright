@@ -1,44 +1,74 @@
 import type { Seat } from "@boardwright/core";
-import { useEffect, useMemo, useState } from "preact/hooks";
-import { type ApiClient, ApiError, type MatchView } from "../api.ts";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { analysisOf } from "../analysis-client.ts";
+import {
+  AnalysisPanel,
+  type AnalysisSettings,
+  useAnalysis,
+} from "../analysis-panel.tsx";
+import { overlay } from "../analysis-view.ts";
+import {
+  type ApiClient,
+  ApiError,
+  type EngineInfo,
+  type MatchView,
+} from "../api.ts";
 import { Board } from "../board.tsx";
 import { errorMessage } from "../errors.ts";
+import { MatchFeed } from "../match-feed.ts";
 import {
   boardRequest,
   invites,
   type MatchStatus,
   matchStatus,
-  moveListRows,
   playerLabel,
 } from "../match-state.ts";
+import { MoveList, ReviewBar } from "../move-list.tsx";
 import { seatLabel } from "../outcome.ts";
-import { poll } from "../poller.ts";
 import { type BoardModel, gameView, type Selection } from "../renderers/mod.ts";
+import {
+  keyAction,
+  navigate,
+  replay,
+  type ReviewAction,
+  type ReviewPly,
+  shownPly,
+} from "../review.ts";
 import { routeHash, shareLink } from "../route.ts";
 import {
   playingTokens,
   type SeatHolding,
   type SeatTokens,
 } from "../seat-tokens.ts";
-
-const POLL_MS = 1000;
+import type { Connect } from "../socket.ts";
 
 export function MatchPage(
-  { api, tokens, matchId, invite }: {
+  { api, connect, tokens, matchId, invite }: {
     api: ApiClient;
+    connect: Connect;
     tokens: SeatTokens;
     matchId: string;
     invite?: { seat: Seat; token: string } | undefined;
   },
 ) {
   const [match, setMatch] = useState<MatchView | null>(null);
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [live, setLive] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [holding, setHolding] = useState(() => tokens.get(matchId));
   const [notice, setNotice] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>([]);
   const [busy, setBusy] = useState(false);
-  const [engineNames, setEngineNames] = useState(new Map<string, string>());
-  const [reload, setReload] = useState(0);
+  const [engines, setEngines] = useState<readonly EngineInfo[]>([]);
+  const [review, setReview] = useState<ReviewPly>("live");
+  const [analysisOn, setAnalysisOn] = useState<boolean | undefined>();
+  const [settings, setSettings] = useState<AnalysisSettings>({
+    engineId: undefined,
+    lines: 3,
+    maxTimeMs: 5000,
+  });
+  const [previewed, setPreviewed] = useState<number | undefined>();
+  const feed = useRef<MatchFeed | undefined>(undefined);
 
   // A share link hands this browser a Seat: keep its token (never replacing
   // one already held), drop it from the URL.
@@ -57,57 +87,120 @@ export function MatchPage(
     setHolding(tokens.get(matchId));
   }, [tokens, matchId, invite?.seat, invite?.token]);
 
+  // Follow the Match over its stream (REST catches up when it drops).
   useEffect(() => {
-    const abort = new AbortController();
-    poll({
-      load: () => api.getMatch(matchId),
-      onValue: (m) => {
-        setMatch(m);
-        setError(null);
-      },
-      onError: (e) => {
-        setError(errorMessage(e));
-        if (e instanceof ApiError && e.status === 404) abort.abort();
-      },
-      done: (m) => m.outcome !== null,
-      intervalMs: POLL_MS,
-      signal: abort.signal,
+    const following = new MatchFeed({
+      matchId,
+      connect,
+      load: (id) => api.getMatch(id),
+      onMatch: setMatch,
+      onError: (e) => setFeedError(e === null ? null : errorMessage(e)),
+      onLive: setLive,
     });
-    return () => abort.abort();
-  }, [api, matchId, reload]);
+    feed.current = following;
+    return () => following.close();
+  }, [api, connect, matchId]);
 
   const gameId = match?.gameId;
   useEffect(() => {
     if (gameId === undefined) return;
     api.listEngines(gameId).then(
-      (engines) => setEngineNames(new Map(engines.map((e) => [e.id, e.name]))),
-      () => {}, // Names are cosmetic; fall back to Engine ids.
+      (list) => {
+        setEngines(list);
+        setSettings((s) => ({ ...s, engineId: s.engineId ?? list[0]?.id }));
+      },
+      () => {}, // Names are cosmetic; without the list there is no analysis.
     );
   }, [api, gameId]);
+  const engineNames = useMemo(
+    () => new Map(engines.map((e) => [e.id, e.name])),
+    [engines],
+  );
 
   const playing = useMemo(() => playingTokens(holding), [holding]);
   const status = useMemo(() => match && matchStatus(match, playing), [
     match,
     playing,
   ]);
+  const moves = match?.moves;
+  const replayed = useMemo(
+    () => gameId === undefined || !moves ? undefined : replay(gameId, moves),
+    [gameId, moves],
+  );
+  const length = moves?.length ?? 0;
+  const ply = shownPly(review, length);
+  const current = ply === length;
+  // The current Position comes from the server; earlier ones from the replay.
+  const step = !match
+    ? undefined
+    : current
+    ? { position: match.position, toMove: match.toMove ?? undefined }
+    : replayed?.steps[ply];
+
+  const go = (action: ReviewAction) => {
+    setReview((r) => navigate(r, action, length));
+    setSelection([]);
+  };
+
+  // Keyboard review: arrows step, Home/End jump (not while typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const action = keyAction({
+        key: e.key,
+        altKey: e.altKey,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        targetTag: (e.target as Element | null)?.tagName,
+      });
+      if (!action) return;
+      e.preventDefault();
+      go(action);
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [length]);
+
+  // Analysis: off by default while this browser plays a Seat in a running
+  // Match; on for Spectators and finished Matches.
+  const wanted = analysisOn ??
+    (match?.outcome !== null || Object.keys(playing).length === 0);
+  const analysing = wanted && engines.length > 0 && step !== undefined;
+  const analysis = useAnalysis(
+    connect,
+    analysing && gameId !== undefined && settings.engineId !== undefined
+      ? {
+        gameId,
+        engineId: settings.engineId,
+        position: step.position,
+        lines: settings.lines,
+        maxTimeMs: settings.maxTimeMs,
+      }
+      : undefined,
+  );
+  const shownAnalysis = analysing
+    ? analysisOf(analysis.state, step?.position)
+    : undefined;
+  useEffect(() => setPreviewed(undefined), [step?.position]);
+
   const view = gameId === undefined ? undefined : gameView(gameId);
 
   if (!match || !status) {
-    return error
-      ? <p class="error" role="alert">{error}</p>
+    return feedError
+      ? <p class="error" role="alert">{feedError}</p>
       : <p>Loading Match…</p>;
   }
 
-  async function play(move: string, current: MatchStatus) {
-    if (current.kind !== "your-move" || busy) return;
+  async function play(move: string, now: MatchStatus) {
+    if (now.kind !== "your-move" || busy) return;
     setBusy(true);
     try {
-      setMatch(await api.playMove(matchId, move, current.token));
+      feed.current?.offer(await api.playMove(matchId, move, now.token));
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
       // The Match moved on (e.g. an Engine replied): show the current state.
-      if (e instanceof ApiError && e.status === 409) setReload((n) => n + 1);
+      if (e instanceof ApiError && e.status === 409) feed.current?.reload();
     } finally {
       setSelection([]);
       setBusy(false);
@@ -118,28 +211,34 @@ export function MatchPage(
     if (busy) return;
     setBusy(true);
     try {
-      setMatch(await api.resign(matchId, token));
+      feed.current?.offer(await api.resign(matchId, token));
       setError(null);
     } catch (e) {
       setError(errorMessage(e));
-      if (e instanceof ApiError && e.status === 409) setReload((n) => n + 1);
+      if (e instanceof ApiError && e.status === 409) feed.current?.reload();
     } finally {
       setSelection([]);
       setBusy(false);
     }
   }
 
-  const request = boardRequest(match, status, selection);
-  const interactive = status.kind === "your-move" && !busy;
+  const request = step && boardRequest(
+    match,
+    status,
+    selection,
+    { ply, position: step.position },
+    overlay(shownAnalysis, previewed),
+  );
+  const interactive = current && status.kind === "your-move" && !busy;
   let board: BoardModel | undefined;
   let boardError: string | undefined;
   try {
-    board = view?.board(request);
+    board = request && view?.board(request);
   } catch (e) {
     // E.g. a UI bundle out of sync with the server's Notation: show the text.
     boardError = errorMessage(e);
   }
-  const onTarget = view && interactive
+  const onTarget = view && request && interactive
     ? (target: string) => {
       const click = view.click(request, target);
       if (click.kind === "move") play(click.move, status);
@@ -154,6 +253,10 @@ export function MatchPage(
       <p class="status" aria-live="polite">
         <StatusText status={status} engineNames={engineNames} />
       </p>
+      {feedError && <p class="error" role="alert">{feedError}</p>}
+      {!live && match.outcome === null && !feedError && (
+        <p class="notice">Reconnecting to the Match…</p>
+      )}
       {error && <p class="error" role="alert">{error}</p>}
       {notice && <p class="notice">{notice}</p>}
       <div class="match-layout">
@@ -163,12 +266,26 @@ export function MatchPage(
               Cannot draw this Position: {boardError}
             </p>
           )}
-          {board ? <Board model={board} onTarget={onTarget} /> : (
-            <FallbackBoard
-              match={match}
-              onMove={interactive ? (move) => play(move, status) : undefined}
-            />
+          {!step && (
+            <p class="error" role="alert">
+              Cannot show this Position{replayed?.error
+                ? `: ${replayed.error}`
+                : "."}
+            </p>
           )}
+          {step &&
+            (board
+              ? <Board model={board} onTarget={onTarget} />
+              : (
+                <FallbackBoard
+                  position={step.position}
+                  legalMoves={interactive ? match.legalMoves : []}
+                  onMove={interactive
+                    ? (move) => play(move, status)
+                    : undefined}
+                />
+              ))}
+          <ReviewBar entries={match.moves} ply={ply} onGo={go} />
         </div>
         <aside>
           <h2>Seats</h2>
@@ -215,26 +332,25 @@ export function MatchPage(
               setHolding(tokens.get(matchId));
             }}
           />
+          <AnalysisPanel
+            enabled={wanted}
+            onEnabled={setAnalysisOn}
+            engines={engines}
+            settings={settings}
+            onSettings={setSettings}
+            state={analysis.state}
+            analysis={shownAnalysis}
+            toMove={step?.toMove}
+            previewed={previewed}
+            onPreview={setPreviewed}
+            onRetry={analysis.retry}
+          />
           <h2>Move list</h2>
-          {match.moves.length === 0
-            ? <p class="muted">No Moves yet.</p>
-            : (
-              <ol class="moves">
-                {moveListRows(match.moves).map((row) => (
-                  <li key={row.number} value={row.number}>
-                    {row.entries.map((entry, i) =>
-                      entry.kind === "move"
-                        ? <span key={i}>{i > 0 && " "}{entry.move}</span>
-                        : (
-                          <span key={i} class="chance" title="Chance event">
-                            {i > 0 && " "}({entry.chance})
-                          </span>
-                        )
-                    )}
-                  </li>
-                ))}
-              </ol>
-            )}
+          <MoveList
+            entries={match.moves}
+            ply={ply}
+            onGo={(target) => go({ kind: "go", ply: target })}
+          />
           {match.seed !== undefined && (
             <p class="muted seed">
               Chance events were drawn from seed <code>{match.seed}</code>.
@@ -333,18 +449,19 @@ function InviteBox(
 
 /** For Games without a board renderer: the Position in Notation and its legal Moves. */
 function FallbackBoard(
-  { match, onMove }: {
-    match: MatchView;
+  { position, legalMoves, onMove }: {
+    position: string;
+    legalMoves: readonly string[];
     onMove?: ((move: string) => void) | undefined;
   },
 ) {
   return (
     <div class="fallback-board">
       <p class="muted">No board for this Game yet. Position:</p>
-      <pre>{match.position}</pre>
+      <pre>{position}</pre>
       {onMove && (
         <div class="legal-moves">
-          {match.legalMoves.map((move) => (
+          {legalMoves.map((move) => (
             <button
               key={move}
               type="button"

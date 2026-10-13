@@ -2,6 +2,7 @@ import { assertEquals, assertMatch } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import type { MoveListEntry } from "./api.ts";
 import {
+  describePly,
   keyAction,
   navigate,
   replay,
@@ -89,6 +90,17 @@ Deno.test("navigate: a fixed ply stays put while the Match goes on", () => {
   assertEquals(shownPly(review, 4), 2);
   review = navigate(review, { kind: "next" }, 4);
   assertEquals(review, 3);
+});
+
+Deno.test("describePly: names the shown Position", () => {
+  const entries = [roll("3-1"), mv("8/5 6/5")];
+  assertEquals(describePly(entries, 0), "Initial Position (0 of 2)");
+  assertEquals(
+    describePly(entries, 1),
+    "After the Chance event 3-1 (1 of 2)",
+  );
+  assertEquals(describePly(entries, 2), "After 8/5 6/5 (2 of 2)");
+  assertEquals(describePly([], 0), "Initial Position (0 of 0)");
 });
 
 Deno.test("keyAction: arrows step, Home/End jump", () => {

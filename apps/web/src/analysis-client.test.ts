@@ -3,6 +3,7 @@ import type { Analysis } from "@boardwright/core";
 import {
   ANALYSIS_STREAM_PATH,
   AnalysisClient,
+  analysisOf,
   type AnalysisRequest,
   type AnalysisState,
 } from "./analysis-client.ts";
@@ -226,6 +227,21 @@ Deno.test("connection loss: a running search fails; the next search reconnects",
   sockets[1]!.receive({ type: "done", id: "s2" });
   sockets[1]!.drop();
   assertEquals(client.state.kind, "done");
+});
+
+Deno.test("analysisOf: only an Analysis of the shown Position", () => {
+  const state: AnalysisState = {
+    kind: "running",
+    request: REQUEST,
+    analysis: ANALYSIS,
+  };
+  assertEquals(analysisOf(state, REQUEST.position), ANALYSIS);
+  assertEquals(analysisOf(state, OTHER.position), undefined);
+  assertEquals(analysisOf({ kind: "idle" }, REQUEST.position), undefined);
+  assertEquals(
+    analysisOf({ ...state, kind: "error", message: "x" }, REQUEST.position),
+    ANALYSIS,
+  );
 });
 
 Deno.test("close: closes the socket and ignores everything afterwards", async () => {

@@ -7,7 +7,7 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 ```
 packages/core     Game-agnostic contracts: GameRules (+ ChanceGameRules, ADR 0005), Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
-apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play; planned: Review, analysis overlay
+apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play, Review, Engine analysis overlay
 packages/testing  Contract test kits every Game / Engine runs (assertGameRulesContract,
                   assertChanceGameRulesContract, assertEngineContract) + diceRace, a tiny Game with chance
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference;
@@ -231,15 +231,42 @@ core  <-  games/*  <-  engines/*
 
 Preact SPA bundled by `deno bundle` from `index.html` into `dist/` (ADR 0004); hash routes
 (`#/`, `#/games/:gameId/new`, `#/matches/:id`), so the server only serves files. It talks to the
-API with Notation strings like any client and polls `GET /api/matches/:id` every second until the
-Match has an Outcome (switching to the Match stream is a follow-up).
+API with Notation strings like any client and follows a Match over the Match stream; Moves and
+Resignations stay REST.
 
-- DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`),
-  `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
-  `match-state.ts` (Match status incl. "rolling" while a Chance event is pending, Move list rows
-  of two Moves each with the Chance events before them, Seat assignment; renderers and invites
-  see Moves only), `outcome.ts` (the only place
-  that words an Outcome, by its kind; reason codes are labelled, never parsed), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
+- DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`, wire
+  types incl. `MatchEvent`), `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per
+  Match in `localStorage`), `match-state.ts` (Match status incl. "rolling" while a Chance event is
+  pending, Move list rows of two Moves each with the Chance events before them, Seat assignment,
+  the board request for the shown Position; renderers and invites see Moves only), `outcome.ts`
+  (the only place that words an Outcome, by its kind; reason codes are labelled, never parsed),
+  `socket.ts` (the WebSocket seam `Connect`; tests use `socket.testing.ts` fakes),
+  `match-feed.ts`, `review.ts`, `analysis-client.ts`, `analysis-view.ts` (below). Components
+  (`app.tsx`, `pages/*.tsx`, `board.tsx`, `move-list.tsx`, `analysis-panel.tsx`) stay thin.
+- **Following a Match** (`match-feed.ts`): `MatchFeed` takes the stream's snapshot, applies each
+  event (`applyMatchEvent`: the next version only; a repeated one is ignored, a gap reloads), then
+  reloads the Match over REST, because events carry no legal Moves (nor the seed). Views are only
+  ever replaced by ones with a version at least as high, so POST replies and events can arrive in
+  any order. No polling: when the socket drops (or never opens) the feed reloads over REST and
+  reconnects with backoff (1, 2, 5, 10 s), and the new snapshot catches up; a `404` stops it. Once
+  the Match has an Outcome it closes the stream.
+- **Review** (`review.ts`): the server sends only the current Position, so the UI rebuilds earlier
+  ones by replaying the Move list with the Games' own rules (Moves via `play`, Chance events via
+  `resolveChance`; every hosted Game, incl. ones without a renderer). The shown ply is `"live"`
+  (follows the Match) or a fixed number that stays put while the Match goes on; buttons, clicking a
+  Move list entry and the keys Left/Right/Home/End (not inside form fields or with modifiers)
+  navigate. Earlier Positions are read-only; the current one stays playable.
+- **Engine analysis** (`analysis-client.ts`, `analysis-view.ts`): one `AnalysisClient` per page
+  keeps one Analysis-stream socket (opened lazily) and one search. A changed request (another
+  Position, Engine, number of Lines or time) replaces the search after a short debounce, clears
+  the shown Lines at once, and tags each `start` with a fresh `id`, so replies about a replaced
+  search are dropped; `analysisOf` also shows only an Analysis of the shown Position. Errors
+  (`busy`, connection lost, ...) become a state with "Try again". The panel is off by default while
+  this browser plays a Seat of a running Match, on for Spectators and finished Matches. Scores:
+  values signed, `Win in n` / `Loss in n` (Plies), from the Seat to move's perspective; while a
+  Chance event is pending, the expected Score from the Analysis's `seat`. Line -> overlay
+  (`overlay`): arrows for the first Move of each Line (best strongest); hovering, focusing or
+  clicking (pins) a Line previews it Move by Move instead.
 - Seat tokens never leave the browser except in Move requests and share links, and a held token
   is never overwritten or deleted (the server shows it only once). The creator of a human vs
   human Match holds both Seats; before the first Move it can give one away, which keeps the token
@@ -256,8 +283,11 @@ Match has an Outcome (switching to the Match stream is a follow-up).
   `[...path, ...effects]` composes the Move. `input(position, legalMoves, selection, target)`
   turns clicks into a Move intent (`move`, `select` for multi-click Moves, `ignore`).
   `bindRenderer(rules, renderer)` wraps it behind Notation strings as a `GameView`, which adds
-  highlights (last Move by replaying the Move list, selection, destinations) and arrows (for
-  Analysis Lines later); Moves that do not decode are skipped, and a Position that does not decode
+  highlights (last Move by replaying the Move list, selection, destinations) and arrows:
+  `request.arrows` (one Move each from the Position, `kind: "line"`, `index` = rank) and
+  `request.preview` (a Line drawn Move by Move, each decoded in the Position the earlier ones
+  reach, `kind: "preview"`, `index` = step; it stops at the first Move that does not decode or
+  apply); Moves that do not decode are skipped, and a Position that does not decode
   makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
   `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe, nine men's morris, checkers and
   chess; Games without one fall back to Notation text and legal-Move buttons. Chess input: a Move

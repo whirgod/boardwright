@@ -132,6 +132,19 @@ export function navigate(
   return ply === length ? "live" : ply;
 }
 
+/** Names the shown Position, e.g. "After e2e4 (5 of 12)" or "Initial Position (0 of 12)". */
+export function describePly(
+  entries: readonly MoveListEntry[],
+  ply: number,
+): string {
+  const of = `(${ply} of ${entries.length})`;
+  const entry = entries[ply - 1];
+  if (ply === 0 || entry === undefined) return `Initial Position ${of}`;
+  return entry.kind === "move"
+    ? `After ${entry.move} ${of}`
+    : `After the Chance event ${entry.chance} ${of}`;
+}
+
 /** A key press as far as navigation cares. */
 export interface KeyPress {
   readonly key: string;
@@ -140,7 +153,7 @@ export interface KeyPress {
   readonly metaKey?: boolean;
   readonly shiftKey?: boolean;
   /** Tag name of the focused element, e.g. "INPUT". */
-  readonly targetTag?: string;
+  readonly targetTag?: string | undefined;
 }
 
 const KEYS: Readonly<Record<string, ReviewAction>> = {

@@ -43,6 +43,19 @@ export interface AnalysisClientOptions {
   readonly delayMs?: number;
 }
 
+/**
+ * The Analysis to show for `position`: only one of that very Position, so a
+ * stale state (rendered before the client switched) never draws on it.
+ */
+export function analysisOf(
+  state: AnalysisState,
+  position: string | undefined,
+): Analysis<string> | undefined {
+  return state.kind !== "idle" && state.request.position === position
+    ? state.analysis
+    : undefined;
+}
+
 const ERROR_TEXT: Readonly<Record<string, string>> = {
   busy: "The server is busy with other searches; try again shortly.",
   timeout: "The Engine ran out of time.",
