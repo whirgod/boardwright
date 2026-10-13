@@ -35,3 +35,11 @@ Position: `board:turn:whiteHand:blackHand:quietPlies:history`
 - `history`: comma-separated repetition keys (`board` + turn letter) of every Position since the
   last placement or removal, including the current one (empty while placing). It is bounded by
   the 50-ply rule and always satisfies `quietPlies = history length - 1` in the moving phase.
+
+## Notes
+
+- `decodeMove` validates syntax only; legality is enforced by `play`.
+- Only the Seat to move is checked for "no legal Move". While placing this cannot happen (at most 18
+  of 24 points are occupied), so it only applies in the moving phase.
+- `decodePosition` is strict and canonical: accepted text re-encodes identically, piece counts must
+  fit the pieces placed so far, and history turn letters must alternate.

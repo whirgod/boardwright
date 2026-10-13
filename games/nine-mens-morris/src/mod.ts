@@ -62,7 +62,7 @@ export const POINTS: readonly Point[] = [
 ];
 
 /** The 16 mills; consecutive points on a line are adjacent. */
-const LINE_NAMES: readonly (readonly [Point, Point, Point])[] = [
+export const MILLS: readonly (readonly [Point, Point, Point])[] = [
   ["a1", "d1", "g1"],
   ["b2", "d2", "f2"],
   ["c3", "d3", "e3"],
@@ -91,7 +91,7 @@ function idx(point: Point): number {
   return i;
 }
 
-const LINES: readonly (readonly number[])[] = LINE_NAMES.map((l) => l.map(idx));
+const LINES: readonly (readonly number[])[] = MILLS.map((l) => l.map(idx));
 
 const NEIGHBORS: readonly (readonly number[])[] = (() => {
   const adj: number[][] = POINTS.map(() => []);
@@ -102,6 +102,11 @@ const NEIGHBORS: readonly (readonly number[])[] = (() => {
   }
   return adj;
 })();
+
+/** Points adjacent to `point`, derived from `MILLS`. */
+export function neighborsOf(point: Point): readonly Point[] {
+  return NEIGHBORS[idx(point)]!.map((i) => POINTS[i]!);
+}
 
 const PIECES = 9;
 export const QUIET_PLY_LIMIT = 50;
@@ -209,7 +214,7 @@ function decodePosition(text: string): MorrisPosition {
     );
   };
   const m =
-    /^([wb.]{24}):([wb]):(\d):(\d):(\d{1,2}):((?:[wb.]{24}[wb](?:,[wb.]{24}[wb])*)?)$/
+    /^([wb.]{24}):([wb]):(\d):(\d):(0|[1-9]\d?):((?:[wb.]{24}[wb](?:,[wb.]{24}[wb])*)?)$/
       .exec(text);
   if (!m) return bad("syntax");
   const board = [...m[1]!] as Cell[];
@@ -226,6 +231,11 @@ function decodePosition(text: string): MorrisPosition {
     ? inHand.white === inHand.black
     : inHand.black === inHand.white + 1 || !placing;
   if (!handsOk) return bad("hands do not match side to move");
+  for (const side of ["white", "black"] as const) {
+    if (count(board, side) > PIECES - inHand[side]) {
+      return bad("more pieces on board than placed");
+    }
+  }
   if (quietPlies > QUIET_PLY_LIMIT) return bad("quiet plies");
   if (placing) {
     if (quietPlies !== 0 || history.length !== 0) {
@@ -236,6 +246,15 @@ function decodePosition(text: string): MorrisPosition {
       return bad("history must end with the current position");
     }
     if (quietPlies !== history.length - 1) return bad("quiet plies vs history");
+    // Turn letters alternate, ending with the current Seat to move.
+    const letters = history.map((k) => k.at(-1));
+    const alternates = letters.every((l, i) =>
+      l ===
+        (((history.length - 1 - i) % 2 === 0) === (turn === "white")
+          ? "w"
+          : "b")
+    );
+    if (!alternates) return bad("history turns do not alternate");
   }
   return position;
 }

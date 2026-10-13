@@ -2,8 +2,10 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { assertGameRulesContract } from "@boardwright/testing";
 import {
   type Cell,
+  MILLS,
   type MorrisMove,
   type MorrisPosition,
+  neighborsOf,
   nineMensMorris as g,
   POINTS,
 } from "./mod.ts";
@@ -33,7 +35,9 @@ function pos(spec: Spec): MorrisPosition {
   const quiet = spec.quiet ?? 0;
   const placing = white > 0 || black > 0;
   const key = board.join("") + (turn === "white" ? "w" : "b");
-  const dummy = (i: number) => ".".repeat(23) + "w" + (i % 2 ? "w" : "b");
+  const dummy = (i: number) =>
+    ".".repeat(23) + "w" +
+    (((quiet - i) % 2 === 0) === (turn === "white") ? "w" : "b");
   const history = placing
     ? []
     : [...Array.from({ length: quiet }, (_, i) => dummy(i)), key];
@@ -185,11 +189,21 @@ Deno.test("adjacency follows the board lines, not the empty centre", () => {
 
 Deno.test("flying with exactly three pieces", () => {
   const p = pos({ white: "a1 a7 g7", black: "d1 d2 b2 b4 f6" });
-  const white = g.legalMoves(p);
-  // 3 pieces x 16 empty points, no mills possible at these targets? count only.
-  const targets = white.filter((m) => m.from === "a1").map((m) => m.to);
-  assertEquals(new Set(targets).size >= 16, true);
-  assertEquals(targets.includes("g4"), true);
+  const empties = POINTS.filter((q) =>
+    !"a1 a7 g7 d1 d2 b2 b4 f6".split(" ").includes(q)
+  );
+  assertEquals(empties.length, 16);
+  const fromA1 = g.legalMoves(p).filter((m) => m.from === "a1");
+  assertEquals(
+    [...new Set(fromA1.map((m) => m.to))].sort(),
+    [...empties].sort(),
+  );
+  // Flying to d7 completes a7-d7-g7: one Move per removal choice.
+  assertEquals(fromA1.filter((m) => m.to !== "d7").length, 15);
+  assertEquals(
+    enc(fromA1.filter((m) => m.to === "d7")),
+    ["a1-d7xb2", "a1-d7xb4", "a1-d7xd1", "a1-d7xd2", "a1-d7xf6"],
+  );
   // Black with five pieces cannot fly.
   const q = pos({ white: "a1 a7 g7", black: "d1 d2 b2 b4 f6", turn: "black" });
   assertEquals(
@@ -200,19 +214,27 @@ Deno.test("flying with exactly three pieces", () => {
   // Four pieces do not fly either.
   const r = pos({ white: "a1 a7 g7 g1" });
   assertEquals(
-    r.board.filter((c) => c === "w").length,
-    4,
-  );
-  assertEquals(
     g.legalMoves(r).some((m) => m.from === "a1" && m.to === "g4"),
     false,
   );
-  // Flying onto a mill point removes.
-  const f = pos({ white: "a1 d1 b4", black: "g4 f6 b2 d7" });
+});
+
+Deno.test("a Seat reduced to three by a removal flies on its next Move", () => {
+  const p = pos({ white: "a1 d1 g4 b6", black: "a7 d7 f4 f6", turn: "white" });
+  // With four pieces black may only slide: a7 reaches a4 only.
+  const slid = play(p, "b6-b4");
   assertEquals(
-    enc(g.legalMoves(f).filter((m) => m.to === "g1" && m.from === "b4")).length,
-    4,
+    enc(g.legalMoves(slid).filter((m) => m.from === "a7")),
+    ["a7-a4"],
   );
+  const q = play(p, "g4-g1xf4");
+  assertEquals(g.outcome(q), undefined);
+  const flights = g.legalMoves(q).filter((m) => m.from === "a7");
+  assertEquals(flights.some((m) => m.to === "c3"), true);
+  assertEquals(flights.length > 1, true);
+  const r = play(q, "a7-c3");
+  assertEquals(r.board[POINTS.indexOf("c3")], "b");
+  assertEquals(r.board[POINTS.indexOf("a7")], ".");
 });
 
 Deno.test("hand pieces do not allow flying", () => {
@@ -439,4 +461,234 @@ Deno.test("play never mutates its input", () => {
   assertEquals(n.encodePosition(p), before);
   assertThrows(() => play(p, "a4xb2"), Error, "Illegal");
   assertEquals(n.encodePosition(p), before);
+});
+
+// Independent literal topology (not derived from MILLS).
+const EXPECTED_MILLS = [
+  "a1 d1 g1",
+  "b2 d2 f2",
+  "c3 d3 e3",
+  "a4 b4 c4",
+  "e4 f4 g4",
+  "c5 d5 e5",
+  "b6 d6 f6",
+  "a7 d7 g7",
+  "a1 a4 a7",
+  "b2 b4 b6",
+  "c3 c4 c5",
+  "d1 d2 d3",
+  "d5 d6 d7",
+  "e3 e4 e5",
+  "f2 f4 f6",
+  "g1 g4 g7",
+].map((l) => l.split(" "));
+
+const EXPECTED_NEIGHBORS: Record<string, string[]> = Object.fromEntries(
+  Object.entries({
+    a1: "a4 d1",
+    a4: "a1 a7 b4",
+    a7: "a4 d7",
+    b2: "b4 d2",
+    b4: "a4 b2 b6 c4",
+    b6: "b4 d6",
+    c3: "c4 d3",
+    c4: "b4 c3 c5",
+    c5: "c4 d5",
+    d1: "a1 d2 g1",
+    d2: "b2 d1 d3 f2",
+    d3: "c3 d2 e3",
+    d5: "c5 d6 e5",
+    d6: "b6 d5 d7 f6",
+    d7: "a7 d6 g7",
+    e3: "d3 e4",
+    e4: "e3 e5 f4",
+    e5: "d5 e4",
+    f2: "d2 f4",
+    f4: "e4 f2 f6 g4",
+    f6: "d6 f4",
+    g1: "d1 g4",
+    g4: "f4 g1 g7",
+    g7: "d7 g4",
+  }).map(([k, v]) => [k, v.split(" ")]),
+);
+
+const sorted = (xs: readonly string[]) => [...xs].sort();
+
+Deno.test("topology: the 16 mills are exactly the expected lines", () => {
+  assertEquals(
+    sorted(MILLS.map((m) => sorted(m).join(" "))),
+    sorted(EXPECTED_MILLS.map((m) => sorted(m).join(" "))),
+  );
+});
+
+Deno.test("topology: neighbours of all 24 points", () => {
+  assertEquals(Object.keys(EXPECTED_NEIGHBORS).length, 24);
+  let edges = 0;
+  for (const point of POINTS) {
+    const expected = EXPECTED_NEIGHBORS[point]!;
+    edges += expected.length;
+    assertEquals(sorted(neighborsOf(point)), expected, point);
+    for (const q of expected) {
+      assertEquals(EXPECTED_NEIGHBORS[q]!.includes(point), true);
+    }
+  }
+  assertEquals(edges, 64); // 32 undirected edges
+});
+
+Deno.test("topology: a lone sliding piece reaches exactly its neighbours", () => {
+  for (const point of POINTS) {
+    // Four white pieces so nobody flies; the other three sit far away.
+    const others = POINTS.filter((q) =>
+      q !== point && !EXPECTED_NEIGHBORS[point]!.includes(q)
+    );
+    const p = pos({
+      white: [point, ...others.slice(0, 3)].join(" "),
+      black: noMill(others.slice(3), 4),
+    });
+    const targets = g.legalMoves(p).filter((m) => m.from === point).map((m) =>
+      m.to
+    );
+    assertEquals(
+      sorted([...new Set(targets)]),
+      EXPECTED_NEIGHBORS[point],
+      point,
+    );
+  }
+});
+
+/** First `k` candidates such that the chosen set holds no complete mill. */
+function noMill(candidates: readonly string[], k: number): string {
+  const chosen: string[] = [];
+  for (const c of candidates) {
+    const next = [...chosen, c];
+    if (EXPECTED_MILLS.some((m) => m.every((q) => next.includes(q)))) continue;
+    chosen.push(c);
+    if (chosen.length === k) break;
+  }
+  return chosen.join(" ");
+}
+
+function blackAvoiding(avoid: string[]): string {
+  return noMill(POINTS.filter((q) => !avoid.includes(q)), 4);
+}
+
+Deno.test("every mill: placing the third piece removes", () => {
+  for (const mill of EXPECTED_MILLS) {
+    for (const third of mill) {
+      const two = mill.filter((q) => q !== third);
+      const p = pos({
+        white: two.join(" "),
+        black: blackAvoiding(mill),
+        hand: [7, 7],
+      });
+      const placements = g.legalMoves(p).filter((m) => m.to === third);
+      assertEquals(placements.length, 4, `${mill} ${third}`);
+      assertEquals(placements.every((m) => m.remove !== undefined), true);
+      // Placing elsewhere never removes.
+      assertEquals(
+        g.legalMoves(p).filter((m) => m.to !== third && m.remove).length,
+        0,
+        `${mill}`,
+      );
+    }
+  }
+});
+
+Deno.test("every mill: sliding or flying the third piece removes", () => {
+  for (const mill of EXPECTED_MILLS) {
+    for (const third of mill) {
+      const two = mill.filter((q) => q !== third);
+      const via = EXPECTED_NEIGHBORS[third]!.find((q) => !mill.includes(q))!;
+      const extra = POINTS.find((q) =>
+        !mill.includes(q) && q !== via && !EXPECTED_NEIGHBORS[via]!.includes(q)
+      )!;
+      const black = blackAvoiding([...mill, via, extra]);
+      const slide = pos({ white: [...two, via, extra].join(" "), black });
+      const slides = g.legalMoves(slide).filter((m) =>
+        m.from === via && m.to === third
+      );
+      assertEquals(slides.length, 4, `slide ${via}-${third}`);
+      assertEquals(slides.every((m) => m.remove !== undefined), true);
+      const fly = pos({ white: [...two, via].join(" "), black });
+      const flights = g.legalMoves(fly).filter((m) =>
+        m.from === via && m.to === third
+      );
+      assertEquals(flights.length, 4, `fly ${via}-${third}`);
+      assertEquals(flights.every((m) => m.remove !== undefined), true);
+    }
+  }
+});
+
+Deno.test("mill detection only concerns the moved piece and one colour", () => {
+  // An existing white mill does not make other Moves remove.
+  const existing = pos({ white: "a1 d1 g1 b2", black: "a7 d7 f4 f6" });
+  const moves = g.legalMoves(existing);
+  assertEquals(moves.length > 0, true);
+  assertEquals(moves.filter((m) => m.remove).length, 0);
+  // Opening and closing the same mill does remove.
+  const open = play(existing, "g1-g4", "a7-a4");
+  assertEquals(
+    g.legalMoves(open).some((m) =>
+      m.from === "g4" && m.to === "g1" && m.remove
+    ),
+    true,
+  );
+  // Black completing a line that holds white pieces forms no mill.
+  const mixed = pos({
+    white: "a1 d1 b2 b6",
+    black: "g4 a7 d7 f6",
+    turn: "black",
+  });
+  const toG1 = g.legalMoves(mixed).filter((m) => m.to === "g1");
+  assertEquals(toG1.length, 1);
+  assertEquals(toG1[0]!.remove, undefined);
+  // A placement beside opposing pieces on a line is not a mill.
+  const placing = pos({ white: "a1 d1", black: "g1 g4", hand: [7, 6] });
+  assertEquals(g.legalMoves(placing).filter((m) => m.remove).length, 0);
+});
+
+Deno.test("placing phase ends with one Seat out of hand first", () => {
+  // White has placed all nine; black still holds one piece and is to move.
+  const white = "a1 a7 g1 g7 b2 b6 f2 f6 c3";
+  const black = "d1 d7 a4 g4 d2 d6 b4 f4";
+  const p = pos({ white, black, hand: [0, 1], turn: "black" });
+  assertEquals(g.outcome(p), undefined);
+  assertEquals(g.toMove(p), "black");
+  // Black must place (no slides) although white has nothing in hand.
+  const moves = g.legalMoves(p);
+  assertEquals(new Set(moves.map((m) => m.to)).size, 24 - 17);
+  assertEquals(moves.every((m) => m.from === undefined), true);
+  assertEquals(n.decodePosition(n.encodePosition(p)), p);
+  const q = play(p, "c5");
+  assertEquals(q.inHand, { white: 0, black: 0 });
+  assertEquals(g.toMove(q), "white");
+  assertEquals(q.history.length, 1);
+  assertEquals(q.quietPlies, 0);
+  assertEquals(g.outcome(q), undefined);
+  // "No legal Move" cannot occur while placing: at most 18 of the 24 points
+  // are ever occupied, so a free point always exists.
+});
+
+Deno.test("decoding is canonical and strict", () => {
+  const e = ".".repeat(24);
+  const keyW = e + "w";
+  const keyB = e + "b";
+  const ok = [
+    `${e}:w:9:9:0:`,
+    `${e}:w:0:0:0:${keyW}`,
+    `${e}:w:0:0:1:${keyB},${keyW}`,
+    `${e}:b:0:0:1:${keyW},${keyB}`,
+  ];
+  for (const t of ok) assertEquals(n.encodePosition(n.decodePosition(t)), t);
+  const bad = [
+    `${e}:w:0:0:00:${keyW}`, // leading zero
+    `${e}:w:0:0:01:${keyB},${keyW}`,
+    `${e}:w:0:0:1:${keyW},${keyW}`, // turns do not alternate
+    `${e}:w:0:0:2:${keyW},${keyB},${keyB}`,
+    `${"w".repeat(5)}${".".repeat(19)}:w:8:8:0:`, // 5 on board, only 1 placed
+    `${"b".repeat(3)}${".".repeat(21)}:w:9:9:0:`,
+  ];
+  for (const t of bad) {
+    assertThrows(() => n.decodePosition(t), Error, "Invalid", t);
+  }
 });
