@@ -31,3 +31,14 @@ export const engine = createMinimaxEngine({
 - A Seat may move several times in a row; perspective flips only when the Seat to move changes.
 - No transposition table yet; add one (keyed by `Notation.encodePosition`) when a Game's
   Engine shows it pays off.
+
+## Game Engines
+
+Each composes `engines/minimax` with a heuristic evaluation (from the Seat to move) and exports
+`rules` and `engine`. The trees are too large to solve: pass `maxDepth` and/or `maxTimeMs`.
+
+- `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
+- `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
+  opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked".
+- `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
+  guards and central squares.
