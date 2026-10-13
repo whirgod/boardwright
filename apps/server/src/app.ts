@@ -1,5 +1,6 @@
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { serveDir } from "@std/http/file-server";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   GameMaster,
@@ -20,6 +21,11 @@ import {
 export type AppOptions = (BuildMasterOptions | ExistingMasterOptions) & {
   /** Maximum request body size in bytes; default 16 KiB. */
   readonly maxBodyBytes?: number;
+  /**
+   * Directory of the built web UI (`apps/web/dist`, ADR 0004), served at
+   * every non-API path; default none.
+   */
+  readonly webRoot?: string;
 };
 
 export interface BuildMasterOptions {
@@ -181,6 +187,18 @@ export function buildApp(options: AppOptions): Hono {
       await master.apply(c.req.param("id"), { token }, { kind: "move", move }),
     );
   });
+
+  const fsRoot = options.webRoot;
+  if (fsRoot !== undefined) {
+    // The UI routes with the URL hash, so only real files exist here.
+    app.get(
+      "*",
+      (c) =>
+        c.req.path.startsWith("/api/")
+          ? c.notFound()
+          : serveDir(c.req.raw, { fsRoot, quiet: true }),
+    );
+  }
 
   app.notFound((c) =>
     fail(

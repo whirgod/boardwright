@@ -1,0 +1,17 @@
+{
+  "name": "@boardwright/web",
+  "version": "0.0.0",
+  "exports": "./src/main.tsx",
+  "imports": {
+    "preact": "npm:preact@10.29.8"
+  },
+  "compilerOptions": {
+    "lib": ["esnext", "dom", "dom.iterable", "deno.ns"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
+  },
+  "tasks": {
+    "build": "rm -rf dist && deno bundle --platform=browser --minify --sourcemap=linked --outdir=dist index.html",
+    "watch": "deno bundle --platform=browser --sourcemap=linked --outdir=dist --watch index.html"
+  }
+}

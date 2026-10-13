@@ -3,10 +3,11 @@
   "version": "0.0.0",
   "exports": "./src/app.ts",
   "imports": {
+    "@std/http": "jsr:@std/http@1.1.4",
     "hono": "jsr:@hono/hono@^4.13.13"
   },
   "tasks": {
-    "dev": "deno run --watch --allow-net --allow-env=PORT,HOST --allow-read=src,../../packages,../../games,../../engines src/main.ts",
-    "start": "deno run --allow-net --allow-env=PORT,HOST --allow-read=src,../../packages,../../games,../../engines src/main.ts"
+    "dev": "deno run --watch --allow-net --allow-env=PORT,HOST --allow-read=src,../web/dist,../../packages,../../games,../../engines src/main.ts",
+    "start": "deno run --allow-net --allow-env=PORT,HOST --allow-read=src,../web/dist,../../packages,../../games,../../engines src/main.ts"
   }
 }

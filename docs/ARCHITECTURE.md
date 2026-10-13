@@ -8,7 +8,7 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
 apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
                   (hosts only the tic-tac-toe Game and its minimax Engine until the hosted catalog, #36, lands)
-apps/web          (planned) Browser UI: board rendering, play, review, analysis overlay
+apps/web          Browser UI (Preact, ADR 0004): Game list, new Match, play; planned: Review, analysis overlay
 packages/testing  Contract test kit every Game runs (assertGameRulesContract)
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference)
 engines/<algo>    Game-agnostic Engine libraries, e.g. engines/minimax (alpha-beta search)
@@ -114,7 +114,8 @@ core  <-  games/*  <-  engines/*
   `deno.permissions` is still unstable; sandboxing is tracked in #29), so Engine code is trusted
   with the server's net/env/read access and the tasks grant `--allow-read` of the workspace
   source dirs, which loading the worker needs; Engines are first-party code.
-- `main.ts` wires it: `GameMaster` with the `minimax` tic-tac-toe Engine, an `EngineDriver`, `buildApp({ master })`.
+- `main.ts` wires it: `GameMaster` with the `minimax` tic-tac-toe Engine, an `EngineDriver`,
+  `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
 - `match-store.ts` — `MatchStore` interface + `InMemoryMatchStore`. Records hold Notation
   strings only (Move list, Outcome, Seats with token hashes, timestamps) and a `version` for
   optimistic concurrency. `match-store.contract.ts` is the contract test every store runs.
@@ -125,7 +126,33 @@ core  <-  games/*  <-  engines/*
   `GameMaster` from `games`/`store`/`now`, or serves one passed as `master` (so an `EngineDriver` can attach
   to it first); `engines` is passed through to the built one. Request bodies on `/api/*`
   are capped (16 KiB, `bodyLimit`), POST bodies must be `Content-Type: application/json`, and
-  client text echoed in error messages is truncated.
+  client text echoed in error messages is truncated. With `webRoot`, every non-`/api/` GET is
+  served from that directory (`@std/http` `serveDir`; missing files 404).
+
+## Web UI (`apps/web`)
+
+Preact SPA bundled by `deno bundle` from `index.html` into `dist/` (ADR 0004); hash routes
+(`#/`, `#/games/:gameId/new`, `#/matches/:id`), so the server only serves files. It talks to the
+API with Notation strings like any client and polls `GET /api/matches/:id` every second until the
+Match has an Outcome (switch to the stream once #9 lands).
+
+- DOM-free, tested modules: `api.ts` (`ApiClient`, `ApiError` with the server's `code`),
+  `route.ts` (routes, share links), `seat-tokens.ts` (seat tokens per Match in `localStorage`),
+  `match-state.ts` (Match status, Move list rows, Seat assignment), `outcome.ts` (the only place
+  that words an Outcome), `poller.ts`. Components (`app.tsx`, `pages/*.tsx`, `board.tsx`) stay thin.
+- Seat tokens never leave the browser except in Move requests and share links. A share link
+  `#/matches/:id?seat=<seat>&token=<token>` hands a Seat to the Opponent (the fragment is not sent
+  to the server); opening it stores the token and drops it from the URL.
+- **Board-renderer seam** (`renderers/`): a Game's `BoardRenderer<Position, Move>` receives the
+  Game's typed Position (decoded with its own Notation, never re-parsed) and returns a DOM-free
+  `BoardScene` (board and piece shapes, clickable targets such as squares or points, in board
+  coordinates); `moveTargets(move)` names the targets a Move touches (`[cell]`, `[from, to]`), and
+  `input(position, legalMoves, selection, target)` turns clicks into a Move intent (`move`,
+  `select` for multi-click Moves, `ignore`). `bindRenderer(rules, renderer)` wraps it behind
+  Notation strings as a `GameView`, which adds highlights (last Move by replaying the Move list,
+  selection, destinations) and arrows (for Analysis Lines later). One generic `board.tsx` draws any
+  scene as SVG. Implemented for tic-tac-toe; Games without one fall back to Notation text and
+  legal-Move buttons.
 
 ## API
 
@@ -168,6 +195,5 @@ Track these here until resolved (then record an ADR in `docs/adr/` if it meets t
 - Chance (backgammon dice): model rolls as Moves by a "chance" Seat, or as part of `play`
   with an injected random source? Must keep Games deterministic and Matches replayable.
 - Persistence for Matches: in-memory `MatchStore` today; a persistent store comes with #13.
-- Web UI framework and board rendering approach (SVG per Game?).
 - Identity of human Players: per-Seat seat tokens for now (no accounts); accounts/sessions later?
 - Time controls.
