@@ -200,3 +200,44 @@ Deno.test("custom garbage is checked", () => {
     { garbage: ["magic"] },
   );
 });
+
+Deno.test("sampled probing still catches lenient play with a capped pool", () => {
+  // Walk Game: counter 0..40; legal Moves are `m<k>` and `m<k+1>`. Many
+  // distinct Moves overflow the pool, so only a sample is ever probed.
+  const walk: GameRules<number, string> = {
+    id: "walk",
+    name: "Walk",
+    seats: ["a"],
+    initialPosition: () => 0,
+    toMove: (k) => (k >= 40 ? undefined : "a"),
+    legalMoves: (k) => (k >= 40 ? [] : [`m${k}`, `m${k + 1}`]),
+    play(k, m) {
+      if (!walk.legalMoves(k).includes(m)) throw new Error("illegal");
+      return Number(m.slice(1)) + 1;
+    },
+    outcome: (k) => (k >= 40 ? { reason: "done" } : undefined),
+    notation: {
+      encodePosition: (k) => String(k),
+      decodePosition(t) {
+        if (!/^\d+$/.test(t)) throw new Error("bad");
+        return Number(t);
+      },
+      encodeMove: (m) => m,
+      decodeMove(t) {
+        if (!/^m\d+$/.test(t)) throw new Error("bad");
+        return t;
+      },
+    },
+  };
+  const opts = { illegalPoolSize: 8, illegalSamples: 4, playouts: 20 };
+  assertGameRulesContract(walk, opts);
+  const err = assertThrows(() =>
+    assertGameRulesContract({
+      ...walk,
+      play: (_k, m) => Number(m.slice(1)) + 1,
+    }, opts)
+  );
+  if (!(err as Error).message.includes("play accepted illegal move")) {
+    throw err;
+  }
+});

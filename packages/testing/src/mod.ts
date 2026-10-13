@@ -12,6 +12,10 @@ export interface ContractOptions {
   readonly garbage?: readonly string[];
   /** Check that `play` throws on Moves that are not legal. Default true. */
   readonly checkIllegalMoves?: boolean;
+  /** Illegal-Move candidates sampled per Position. Default 8. */
+  readonly illegalSamples?: number;
+  /** Max size of the candidate Move pool (by Notation). Default 256. */
+  readonly illegalPoolSize?: number;
 }
 
 const DEFAULT_GARBAGE = [
@@ -53,8 +57,24 @@ export function assertGameRulesContract<Position, Move>(
   const garbage = [...DEFAULT_GARBAGE, ...(options.garbage ?? [])];
   const checkIllegal = options.checkIllegalMoves ?? true;
   const rand = seededRandom(seed);
-  // Encoded Moves seen anywhere; used as candidates for illegal-Move checks.
-  const movePool = new Set<string>();
+  // Bounded, deduplicated pool of encoded Moves seen anywhere; a seeded sample
+  // of it is probed in each Position, so the cost per Position is constant.
+  const samples = options.illegalSamples ?? 8;
+  const poolCap = options.illegalPoolSize ?? 256;
+  const probeRand = seededRandom(seed ^ 0x9e3779b9);
+  const movePool: string[] = [];
+  const poolSet = new Set<string>();
+  const addToPool = (text: string) => {
+    if (poolSet.has(text)) return;
+    if (movePool.length < poolCap) {
+      movePool.push(text);
+    } else {
+      const i = Math.floor(probeRand() * poolCap);
+      poolSet.delete(movePool[i] as string);
+      movePool[i] = text;
+    }
+    poolSet.add(text);
+  };
   const n = rules.notation;
   const label = `[contract ${rules.id} seed=${seed}]`;
   const fail = (msg: string): never => {
@@ -110,7 +130,13 @@ export function assertGameRulesContract<Position, Move>(
         );
         if (checkIllegal) {
           const legalSet = new Set(legal.map((m) => n.encodeMove(m)));
-          for (const text of movePool) {
+          const sampled = new Set<string>();
+          for (let k = 0; k < samples && movePool.length > 0; k++) {
+            sampled.add(
+              movePool[Math.floor(probeRand() * movePool.length)] as string,
+            );
+          }
+          for (const text of sampled) {
             if (legalSet.has(text)) continue;
             let candidate: Move;
             try {
@@ -157,7 +183,7 @@ export function assertGameRulesContract<Position, Move>(
           "legal moves encode uniquely",
         );
         for (const text of encodedMoves) {
-          movePool.add(text);
+          addToPool(text);
           assertEquals(
             n.encodeMove(n.decodeMove(text, position)),
             text,

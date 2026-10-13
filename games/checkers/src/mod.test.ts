@@ -12,7 +12,7 @@ const play = (p: CheckersPosition, ...texts: string[]): CheckersPosition =>
 Deno.test("satisfies the GameRules contract", () => {
   assertGameRulesContract(g, {
     seed: 7,
-    playouts: 15,
+    playouts: 150,
     garbage: ["B:W:B1:x", "11-", "11x", "0-4", "33-1", "1x2-3", "11-15-19"],
   });
 });

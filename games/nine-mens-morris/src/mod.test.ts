@@ -52,14 +52,7 @@ const enc = (moves: readonly MorrisMove[]) =>
   moves.map((m) => n.encodeMove(m)).sort();
 
 Deno.test("satisfies the GameRules contract", () => {
-  // Illegal-Move probing is quadratic in the Move pool; run it on few playouts
-  // and cover many playouts without it.
-  assertGameRulesContract(g, {
-    seed: 7,
-    playouts: 300,
-    checkIllegalMoves: false,
-  });
-  assertGameRulesContract(g, { seed: 11, playouts: 4 });
+  assertGameRulesContract(g, { seed: 7, playouts: 150 });
 });
 
 Deno.test("initial position", () => {
