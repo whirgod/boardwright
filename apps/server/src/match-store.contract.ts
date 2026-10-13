@@ -38,7 +38,7 @@ export async function assertMatchStoreContract(
     const store = await makeStore();
     const record = sampleRecord({
       moves: ["a1", "b2"],
-      outcome: { winner: "x", reason: "three-in-a-row" },
+      outcome: { kind: "forfeit", winner: "x", seat: "o", reason: "timeout" },
     });
     await store.create(record);
     assertEquals(await store.get("m1"), record);

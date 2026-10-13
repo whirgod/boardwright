@@ -68,7 +68,7 @@ Deno.test("buildApp serves an injected GameMaster", async () => {
   });
   const changed: string[] = [];
   master.onMatchChanged((m) => {
-    changed.push(m.id);
+    changed.push(m.matchId);
   });
   const a = buildApp({ master });
   const games = await (await a.request("/api/games")).json();
@@ -135,6 +135,7 @@ Deno.test("GET /api/matches/:id shows the Match without tokens", async () => {
     "seats",
     "toMove",
     "updatedAt",
+    "version",
   ]);
 });
 
@@ -153,7 +154,11 @@ Deno.test("POST /api/matches/:id/moves plays a full Match to an Outcome", async 
     view = await res.json();
     assertEquals(view?.moves, moves.slice(0, i + 1));
   }
-  assertEquals(view?.outcome, { winner: "x", reason: "three-in-a-row" });
+  assertEquals(view?.outcome, {
+    kind: "rules",
+    winner: "x",
+    reason: "three-in-a-row",
+  });
   assertEquals(view?.toMove, null);
   assertEquals(view?.legalMoves, []);
   assertEquals(

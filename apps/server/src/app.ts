@@ -177,7 +177,9 @@ export function buildApp(options: AppOptions): Hono {
     const body = await readBody(c, parsePlayMoveBody);
     if (!body.ok) return fail(c, body.code, body.problem);
     const { move, token } = body.value;
-    return c.json(await master.playMove(c.req.param("id"), move, token));
+    return c.json(
+      await master.apply(c.req.param("id"), { token }, { kind: "move", move }),
+    );
   });
 
   app.notFound((c) =>

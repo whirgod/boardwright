@@ -1,4 +1,4 @@
-import type { GameId, Outcome, Seat } from "@boardwright/core";
+import type { GameId, MatchOutcome, Seat } from "@boardwright/core";
 import type { PlayerSpec } from "./players.ts";
 
 export type MatchId = string;
@@ -21,7 +21,8 @@ export interface MatchRecord {
   readonly seats: Readonly<Record<Seat, SeatRecord>>;
   /** Moves in play order, each in the Game's Notation. */
   readonly moves: readonly string[];
-  readonly outcome?: Outcome;
+  /** Set once the Match has ended, whatever the kind of ending. */
+  readonly outcome?: MatchOutcome;
   /** Incremented on every update; used for optimistic concurrency. */
   readonly version: number;
   /** ISO 8601 timestamps. */

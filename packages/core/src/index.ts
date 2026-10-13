@@ -7,11 +7,38 @@ export type GameId = string;
 /** One of the two sides of a Game that a Player occupies, e.g. "white" / "black". Not a person. */
 export type Seat = string;
 
-/** Result of a finished Match. `winner` is absent on a draw. */
+/**
+ * An Outcome by the rules, as a Game decides it for a terminal Position.
+ * `winner` is absent on a draw; `reason` is a short code such as
+ * "three-in-a-row".
+ */
 export interface Outcome {
   readonly winner?: Seat;
   readonly reason: string;
 }
+
+/**
+ * How a Match ended, stating its kind (GLOSSARY: Outcome):
+ * - `rules`: the Game's rules ended it; `winner`/`reason` as in {@link Outcome}.
+ * - `resignation`: `seat` resigned; the Opponent is `winner`.
+ * - `forfeit`: the Game master ended it because `seat` failed to play;
+ *   the Opponent is `winner`, `reason` is a code such as "timeout".
+ *
+ * Every kind has an optional `winner`, so a draw check never needs the kind.
+ */
+export type MatchOutcome =
+  | ({ readonly kind: "rules" } & Outcome)
+  | {
+    readonly kind: "resignation";
+    readonly winner: Seat;
+    readonly seat: Seat;
+  }
+  | {
+    readonly kind: "forfeit";
+    readonly winner: Seat;
+    readonly seat: Seat;
+    readonly reason: string;
+  };
 
 /**
  * The rules of one Game. Pure and deterministic: the server uses it to
