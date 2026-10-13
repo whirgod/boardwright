@@ -15,6 +15,7 @@ and serves a web UI to review Matches, play against an Engine or a human, and vi
 analysis (evaluation + best Lines). Monorepo: server, web UI, Games and Engines together.
 
 Read before substantial work:
+
 - `docs/VISION.md` — goal, scope, non-goals
 - `docs/ARCHITECTURE.md` — layout, dependency rules, planned API, open questions
 - `docs/ROADMAP.md` — what's done and what's next (pick up work from here)
@@ -25,7 +26,7 @@ Read before substantial work:
 
 ```
 packages/core   contracts: GameRules, Notation, Engine, Analysis (no deps)
-apps/server     Fastify API + host of the web UI
+apps/server     Hono API + host of the web UI
 apps/web        (planned) browser UI
 games/<id>      one GameRules package per Game     (@boardwright/game-<id>)
 engines/<name>  one Engine package per Engine      (@boardwright/engine-<game>-<name>)
@@ -35,15 +36,18 @@ Dependencies flow `core <- games <- engines <- server`; never import the server 
 
 ## Commands
 
-- `npm install` — install all workspaces (Node >= 24, see `.nvmrc`)
-- `npm run check` — typecheck (`tsc`) + tests (`vitest run`); must pass before committing
-- `npm run dev:server` — run the server with watch mode on port 3000
+Deno 2.x; tasks are defined in `deno.json` (no npm, no `node_modules`).
+
+- `deno task check` — `fmt --check`, `lint`, `check`, `test`; must pass before committing
+- `deno task dev:server` — run the server with watch mode on port 3000
+- `deno add jsr:<pkg>` / `npm:<pkg>` in the member that needs it; prefer JSR packages
 
 ## Conventions
 
-- TypeScript run natively by Node; no build step. Use only erasable syntax (no `enum`,
-  namespaces, or parameter properties) and import local files with the `.ts` extension.
-- Packages export `./src/index.ts` directly. Tests live next to code as `*.test.ts`.
+- Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
+  `exports`. Import local files with the `.ts` extension; no build step.
+- Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`.
+- Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
 - Use `GLOSSARY.md` terms (Match, not "game instance"; Position, not "board state"; Seat, not "color").
 - Update `docs/ROADMAP.md` when finishing or re-ordering roadmap work; record hard-to-reverse,

@@ -1,13 +1,8 @@
 import { buildApp } from "./app.ts";
 
-const port = Number(process.env.PORT ?? 3000);
-const host = process.env.HOST ?? "127.0.0.1";
+const port = Number(Deno.env.get("PORT") ?? 3000);
+const hostname = Deno.env.get("HOST") ?? "127.0.0.1";
 
-const app = buildApp({ games: [], logger: true });
+const app = buildApp({ games: [] });
 
-try {
-  await app.listen({ port, host });
-} catch (err) {
-  app.log.error(err);
-  process.exit(1);
-}
+Deno.serve({ port, hostname }, app.fetch);

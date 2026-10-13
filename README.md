@@ -9,12 +9,11 @@ another human, and see Engine analysis (evaluation and best Lines) on the board.
 
 ## Quick start
 
-Requires Node >= 24 (see `.nvmrc`).
+Requires [Deno](https://deno.com) 2.x.
 
 ```sh
-npm install
-npm run check        # typecheck + tests
-npm run dev:server   # http://127.0.0.1:3000/api/health
+deno task check        # fmt + lint + typecheck + tests
+deno task dev:server   # http://127.0.0.1:3000/api/health
 ```
 
 ## Docs

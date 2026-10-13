@@ -4,7 +4,7 @@ Ordered; keep it current. Check items off (and move details into docs/code) as t
 
 ## Done
 
-- [x] Monorepo scaffold: npm workspaces, TypeScript (run natively by Node, `tsc` for typecheck only), Vitest, CI
+- [x] Monorepo scaffold: Deno workspace, TypeScript, `deno fmt`/`lint`/`check`/`test`, CI
 - [x] Draft contracts in `packages/core` (`GameRules`, `Notation`, `Engine`, `Analysis`)
 - [x] Server skeleton: `/api/health`, `/api/games`
 

@@ -1,18 +1,25 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import { Hono } from "hono";
 import type { GameRules } from "@boardwright/core";
 
 export interface AppOptions {
   readonly games: readonly GameRules<unknown, unknown>[];
-  readonly logger?: boolean;
 }
 
-export function buildApp({ games, logger = false }: AppOptions): FastifyInstance {
-  const app = Fastify({ logger });
+export function buildApp({ games }: AppOptions): Hono {
+  const app = new Hono();
 
-  app.get("/api/health", async () => ({ status: "ok" }));
+  app.get("/api/health", (c) => c.json({ status: "ok" }));
 
-  app.get("/api/games", async () =>
-    games.map((game) => ({ id: game.id, name: game.name, seats: game.seats })),
+  app.get(
+    "/api/games",
+    (c) =>
+      c.json(
+        games.map((game) => ({
+          id: game.id,
+          name: game.name,
+          seats: game.seats,
+        })),
+      ),
   );
 
   return app;

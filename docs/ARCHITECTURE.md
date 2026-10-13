@@ -6,13 +6,13 @@ Current state is a scaffold; sections marked _planned_ describe intent, not code
 
 ```
 packages/core     Game-agnostic contracts: GameRules, Notation, Engine, Analysis
-apps/server       Fastify server: HTTP API (+ planned WebSocket) and host of the web UI
+apps/server       Hono server: HTTP API (+ planned WebSocket) and host of the web UI
 apps/web          (planned) Browser UI: board rendering, play, review, analysis overlay
 games/<game>      (planned) One package per Game implementing GameRules, e.g. games/chess
 engines/<name>    (planned) One package per Engine implementing Engine, e.g. engines/chess-minimax
 ```
 
-Package names: `@boardwright/<dir>` (e.g. `@boardwright/core`, `@boardwright/game-chess`,
+Each member has a `deno.json` with `name`/`version`/`exports`. Package names: `@boardwright/<dir>` (e.g. `@boardwright/core`, `@boardwright/game-chess`,
 `@boardwright/engine-chess-minimax`).
 
 ## Dependency rules
@@ -40,7 +40,7 @@ core  <-  games/*  <-  engines/*
   (multiple `Line`s with a `Score`), which the server forwards to the UI for live overlays.
   "Best move" = first Move of the best Line once the search stops.
 - **In-process first, out-of-process later** _(open question)_: Engines start as TypeScript
-  packages loaded in-process (run in worker threads to keep the server responsive). A
+  workspace members loaded in-process (run in Web Workers to keep the server responsive). A
   stdio/HTTP engine protocol (UCI-like) may be added so Engines in other languages can plug in.
 
 ## Planned API surface (sketch, not final)

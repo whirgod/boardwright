@@ -1,17 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { assertEquals } from "@std/assert";
 import { buildApp } from "./app.ts";
 
-describe("server", () => {
-  it("reports health", async () => {
-    const app = buildApp({ games: [] });
-    const res = await app.inject({ method: "GET", url: "/api/health" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ status: "ok" });
-  });
+Deno.test("server reports health", async () => {
+  const app = buildApp({ games: [] });
+  const res = await app.request("/api/health");
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { status: "ok" });
+});
 
-  it("lists registered games", async () => {
-    const app = buildApp({ games: [] });
-    const res = await app.inject({ method: "GET", url: "/api/games" });
-    expect(res.json()).toEqual([]);
-  });
+Deno.test("server lists registered games", async () => {
+  const app = buildApp({ games: [] });
+  const res = await app.request("/api/games");
+  assertEquals(await res.json(), []);
 });
