@@ -19,9 +19,17 @@
   "exclude": [
     ".agents/"
   ],
+  "coverage": {
+    "thresholds": {
+      "lines": 85,
+      "branches": 75,
+      "functions": 85
+    }
+  },
   "tasks": {
-    "check": "deno fmt --check && deno lint && deno check && deno test",
+    "check": "deno fmt --check && deno lint && deno check && deno task test",
     "dev:server": "deno task --cwd apps/server dev",
-    "start:server": "deno task --cwd apps/server start"
+    "start:server": "deno task --cwd apps/server start",
+    "test": "deno test --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
 }

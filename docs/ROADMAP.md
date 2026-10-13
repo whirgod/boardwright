@@ -1,6 +1,8 @@
 # Roadmap
 
 Ordered; keep it current. Check items off (and move details into docs/code) as they land.
+Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
+[WORKFLOW.md](WORKFLOW.md).
 
 ## Done
 

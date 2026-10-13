@@ -22,6 +22,10 @@ Read before substantial work:
 - `GLOSSARY.md` — domain language; use these terms in code and docs
 - `docs/adr/` — decisions and why
 
+**Large, open-ended tasks** (e.g. "work through the roadmap"): follow the multi-agent
+workflow in [`docs/WORKFLOW.md`](docs/WORKFLOW.md) — coordinator, implementer subagents in
+worktrees, PRs, reviews on GitHub, fix loop, usage-limit checkpoints. Tasks are GitHub issues.
+
 ## Layout
 
 ```
@@ -38,18 +42,22 @@ Dependencies flow `core <- games <- engines <- server`; never import the server 
 
 Deno 2.x; tasks are defined in `deno.json` (no npm, no `node_modules`).
 
-- `deno task check` — `fmt --check`, `lint`, `check`, `test`; must pass before committing
+- `deno task check` — `fmt --check`, `lint`, `check`, `test` + coverage thresholds (`deno.json`);
+  must pass before committing. CI runs it on every PR; `main` requires it to pass.
 - `deno task dev:server` — run the server with watch mode on port 3000
+- `scripts/claude-usage.sh [--gate N]` — Claude plan usage snapshot (see `docs/WORKFLOW.md`)
 - `deno add jsr:<pkg>` / `npm:<pkg>` in the member that needs it; prefer JSR packages
 
 ## Conventions
 
 - Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
   `exports`. Import local files with the `.ts` extension; no build step.
-- Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`.
+- Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`. Entry points (`main.ts`)
+  are excluded from coverage; keep them thin.
 - Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
 - Use `GLOSSARY.md` terms (Match, not "game instance"; Position, not "board state"; Seat, not "color").
+- All changes land via PR (template in `.github/`); squash-merge.
 - Update `docs/ROADMAP.md` when finishing or re-ordering roadmap work; record hard-to-reverse,
   surprising trade-offs as ADRs in `docs/adr/`.
 - Look up library/tool docs with the `find-docs` skill rather than relying on memory.
