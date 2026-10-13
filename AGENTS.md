@@ -56,6 +56,7 @@ Deno 2.x; tasks are defined in `deno.json` (no npm, no `node_modules`).
 - Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
   `exports`. Import local files with the `.ts` extension; no build step.
 - Every Game runs `assertGameRulesContract` from `@boardwright/testing` in its tests (`games/README.md`).
+- Every Engine runs `assertEngineContract` from `@boardwright/testing` in its tests (checks the `Engine.analyze` guarantees).
 - Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`. Entry points (`main.ts`)
   are excluded from coverage; keep them thin.
 - Grant minimal permissions in tasks (`--allow-net`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.

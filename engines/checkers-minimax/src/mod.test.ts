@@ -5,7 +5,7 @@ import type {
   CheckersMove,
   CheckersPosition,
 } from "@boardwright/game-checkers";
-import { seededRandom } from "@boardwright/testing";
+import { assertEngineContract, seededRandom } from "@boardwright/testing";
 import { engine, evaluate, rules } from "./mod.ts";
 
 const decode = (t: string) => rules.notation.decodePosition(t);
@@ -145,4 +145,8 @@ Deno.test("beats a seeded random mover", async () => {
     else if (winner !== undefined) losses++;
   }
   assert(wins >= MATCHES - 1 && losses === 0, `wins ${wins} losses ${losses}`);
+});
+
+Deno.test("honours the Engine contract", async () => {
+  await assertEngineContract(engine, rules, { positions: 3, maxDepth: 2 });
 });

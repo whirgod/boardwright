@@ -95,6 +95,7 @@ export function createMinimaxEngine<Position, Move>(
   };
 }
 
+/** Checks the typed `SearchLimits` contract (see docs/ARCHITECTURE.md on why it is not shared). */
 function validateLimits(limits: SearchLimits): void {
   const { maxDepth, maxTimeMs, lines } = limits;
   if (

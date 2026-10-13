@@ -103,7 +103,7 @@ export function assertGameRulesContract<Position, Move>(
     const moves: string[] = [];
     try {
       let position = rules.initialPosition();
-      const history: string[] = [n.encodePosition(position)];
+      const visited: string[] = [n.encodePosition(position)];
       for (let ply = 0;; ply++) {
         assert(ply <= maxPlies, `playout exceeded maxPlies=${maxPlies}`);
         const encoded = n.encodePosition(position);
@@ -199,7 +199,7 @@ export function assertGameRulesContract<Position, Move>(
           "play mutated its input position",
         );
         moves.push(n.encodeMove(move));
-        history.push(n.encodePosition(next));
+        visited.push(n.encodePosition(next));
         position = next;
       }
 
@@ -210,10 +210,13 @@ export function assertGameRulesContract<Position, Move>(
         replay = rules.play(replay, n.decodeMove(text, replay));
         replayed.push(n.encodePosition(replay));
       }
-      assertEquals(replayed, history, "replay diverged");
+      assertEquals(replayed, visited, "replay diverged");
     } catch (e) {
       fail(`playout ${i} (moves: ${moves.join(" ")}): ${(e as Error).message}`);
     }
   }
   if (!reachedTerminal) fail("no playout reached a terminal position");
 }
+
+export { assertEngineContract } from "./engine.ts";
+export type { EngineContractOptions } from "./engine.ts";

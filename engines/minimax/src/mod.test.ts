@@ -11,6 +11,7 @@ import {
   type TicTacToeMove,
   type TicTacToePosition,
 } from "@boardwright/game-tic-tac-toe";
+import { assertEngineContract } from "@boardwright/testing";
 import { createMinimaxEngine, MAX_EVALUATION } from "./mod.ts";
 
 const engine = createMinimaxEngine({
@@ -514,4 +515,8 @@ Deno.test("handles a Seat moving several times in a row", async () => {
   });
   const c = await final(h, [], { maxDepth: 1 });
   assertEquals(c.lines[0], { moves: [1], score: { kind: "value", value: 7 } });
+});
+
+Deno.test("honours the Engine contract", async () => {
+  await assertEngineContract(engine, ttt);
 });

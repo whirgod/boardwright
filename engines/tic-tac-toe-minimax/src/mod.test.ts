@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { assertEngineContract } from "@boardwright/testing";
 import { engine, rules } from "./mod.ts";
 
 async function bestMove(text: string): Promise<string | undefined> {
@@ -20,4 +21,8 @@ Deno.test("blocks an immediate loss", async () => {
 Deno.test("belongs to tic-tac-toe", () => {
   assertEquals(engine.gameId, "tic-tac-toe");
   assertEquals(rules.id, "tic-tac-toe");
+});
+
+Deno.test("honours the Engine contract", async () => {
+  await assertEngineContract(engine, rules);
 });

@@ -48,6 +48,11 @@ core  <-  games/*  <-  engines/*
 - **Analysis is a stream** _(planned, #9)_. `Engine.analyze` yields progressively deeper `Analysis`
   (multiple `Line`s with a `Score`), which the server forwards to the UI for live overlays.
   "Best move" = first Move of the best Line once the search stops.
+- **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
+  (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
+  `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine
+  must stand alone and throw `RangeError` for any host; only three numeric predicates overlap.
+  The kit's `badLimits` list is the shared source of truth for the Engine side.
 - **In-process first, out-of-process later** _(open question)_: Engines start as TypeScript
   workspace members loaded in-process (run in Web Workers to keep the server responsive). A
   stdio/HTTP engine protocol (UCI-like) may be added so Engines in other languages can plug in.
