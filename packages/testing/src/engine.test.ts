@@ -6,7 +6,7 @@ import type {
   Line,
   SearchLimits,
 } from "@boardwright/core";
-import { assertEngineContract } from "./mod.ts";
+import { assertEngineContract, type EngineContractOptions } from "./mod.ts";
 
 // Toy Game: Nim with a pile of 5; take 1 or 2 stones; taking the last wins.
 interface P {
@@ -46,7 +46,11 @@ const nim: GameRules<P, Move> = {
 };
 
 type Bug =
-  | "partial-depth"
+  | "repeated-depth"
+  | "hang-after-abort"
+  | "empty-stream-time-zero"
+  | "empty-lines"
+  | "tied-win-order"
   | "illegal-line"
   | "illegal-continuation"
   | "no-range-error"
@@ -81,9 +85,14 @@ function makeEngine(bug?: Bug): Engine<P, Move> {
       };
       return;
     }
+    if (signal?.aborted) return; // pre-aborted: every variant honours this
+    if (bug === "empty-stream-time-zero" && limits.maxTimeMs === 0) return;
     const start = bug === "clock-from-analyze" ? created : performance.now();
     const maxDepth = limits.maxDepth ?? 5;
     for (let depth = 1; depth <= maxDepth; depth++) {
+      if (bug === "hang-after-abort" && signal?.aborted) {
+        await new Promise(() => {});
+      }
       if (bug !== "ignore-abort" && signal?.aborted) return;
       if (
         limits.maxTimeMs !== undefined &&
@@ -108,6 +117,14 @@ function makeEngine(bug?: Bug): Engine<P, Move> {
         (a.score.kind === "value" ? a.score.value : 0)
       );
       let out = lines.slice(0, wanted);
+      if (bug === "empty-lines") out = [];
+      if (bug === "tied-win-order" && wanted > 1 && lines.length > 1) {
+        // win-in 5 listed before win-in 3: not best first
+        out = [
+          { moves: lines[0]!.moves, score: { kind: "win-in", plies: 5 } },
+          { moves: lines[1]!.moves, score: { kind: "win-in", plies: 3 } },
+        ];
+      }
       if (bug === "unsorted-lines") out = [...out].reverse();
       if (bug === "illegal-line") {
         out = [{ moves: ["t9"], score: { kind: "value", value: 0 } }];
@@ -124,13 +141,13 @@ function makeEngine(bug?: Bug): Engine<P, Move> {
         out = [out[0]!, out[0]!];
       }
       yield {
-        depth: bug === "partial-depth" && depth === 2 ? 3 : depth,
+        depth: bug === "repeated-depth" && depth === 2 ? 1 : depth,
         lines: out,
       };
     }
     if (bug === "ignore-abort" && signal?.aborted) {
       for (;;) {
-        await sleep(5);
+        await Promise.resolve();
         yield { depth: maxDepth, lines: [] };
       }
     }
@@ -170,9 +187,13 @@ function validate(limits: SearchLimits) {
 
 const fast = { stepTimeoutMs: 300, slackMs: 150 };
 
-async function expectFailure(bug: Bug, message: string) {
+async function expectFailure(
+  bug: Bug | undefined,
+  message: string,
+  options: EngineContractOptions<P> = fast,
+) {
   const err = await assertRejects(() =>
-    assertEngineContract(makeEngine(bug), nim, fast)
+    assertEngineContract(makeEngine(bug), nim, options)
   );
   const text = (err as Error).message;
   if (!text.includes(message) || !text.includes("seed=")) {
@@ -184,16 +205,19 @@ Deno.test("engine contract: passes for a correct Engine", async () => {
   await assertEngineContract(makeEngine(), nim, fast);
 });
 
-Deno.test("engine contract: catches a skipped (partial) depth", async () => {
-  await expectFailure("partial-depth", "consecutive from 1");
+Deno.test("engine contract: catches a repeated depth", async () => {
+  await expectFailure("repeated-depth", "strictly increasing");
 });
 
 Deno.test("engine contract: catches an illegal Move in a Line", async () => {
-  await expectFailure("illegal-line", "illegal Move t9");
+  await expectFailure("illegal-line", "Line [t9] has illegal Move t9");
 });
 
 Deno.test("engine contract: catches a Line running past the end", async () => {
-  await expectFailure("illegal-continuation", "illegal Move");
+  await expectFailure(
+    "illegal-continuation",
+    "Line [t2 t2 t2 t2] has illegal Move",
+  );
 });
 
 Deno.test("engine contract: catches missing RangeError on bad limits", async () => {
@@ -204,8 +228,45 @@ Deno.test("engine contract: catches an asynchronous RangeError", async () => {
   await expectFailure("async-range-error", "synchronously");
 });
 
-Deno.test("engine contract: catches an ignored abort", async () => {
-  await expectFailure("ignore-abort", "abort");
+Deno.test("engine contract: catches an ignored mid-search abort", async () => {
+  await expectFailure(
+    "ignore-abort",
+    "mid-search abort: stream still yielding",
+  );
+});
+
+Deno.test("engine contract: catches a hang after abort", async () => {
+  await expectFailure(
+    "hang-after-abort",
+    "mid-search abort: stream did not end",
+  );
+});
+
+Deno.test("engine contract: catches no Analysis under maxTimeMs 0", async () => {
+  await expectFailure("empty-stream-time-zero", "no Analysis yielded");
+});
+
+Deno.test("engine contract: catches empty Lines for a non-terminal Position", async () => {
+  await expectFailure("empty-lines", "0 Lines, expected 1..");
+});
+
+Deno.test("engine contract: orders win-in by plies", async () => {
+  await expectFailure("tied-win-order", "not best first");
+});
+
+Deno.test("engine contract: fails when no terminal Position is found", async () => {
+  await expectFailure(undefined, "pass `terminalPositions`", {
+    ...fast,
+    maxPlies: 2,
+  });
+});
+
+Deno.test("engine contract: accepts supplied terminalPositions", async () => {
+  await assertEngineContract(makeEngine(), nim, {
+    ...fast,
+    maxPlies: 2,
+    terminalPositions: [{ n: 0, turn: "a" }],
+  });
 });
 
 Deno.test("engine contract: catches time counted from analyze()", async () => {
@@ -245,7 +306,7 @@ Deno.test("engine contract: catches an ignored time limit", async () => {
       return;
     }
     for (let depth = 1;; depth++) {
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 50));
       const m = nim.legalMoves(position)[0] as Move;
       yield {
         depth,
@@ -262,7 +323,11 @@ Deno.test("engine contract: catches an ignored time limit", async () => {
     },
   };
   const err = await assertRejects(() =>
-    assertEngineContract(slow, nim, { stepTimeoutMs: 5000, slackMs: 50 })
+    assertEngineContract(slow, nim, {
+      stepTimeoutMs: 5000,
+      slackMs: 50,
+      positions: 2,
+    })
   );
   if (!(err as Error).message.includes("maxTimeMs=30 search ran")) throw err;
 });

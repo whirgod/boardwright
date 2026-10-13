@@ -79,7 +79,14 @@ export interface Engine<Position, Move> {
    * - At least one Analysis is yielded unless `signal` aborts before the
    *   first one completes (`maxTimeMs` alone never yields nothing).
    * - Only completed depths are yielded; an interrupted one is discarded.
+   * - Yielded depths are integers >= 1 and strictly increasing.
+   * - Every Analysis of a non-terminal `position` has between 1 and
+   *   `limits.lines` (default 1) Lines. Every Line has at least one Move, its
+   *   Moves are legal in sequence from `position`, and Lines start with
+   *   distinct Moves, best first.
    * - A terminal `position` yields exactly one `{ depth: 0, lines: [] }`.
+   * - Once `signal` aborts, the stream ends promptly (no bound on buffered
+   *   Analyses already completed).
    * - Invalid `limits` throw a `RangeError` synchronously from `analyze`.
    * - `maxTimeMs` counts from the start of iteration (first `next()`).
    */

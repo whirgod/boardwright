@@ -7,7 +7,7 @@ import type {
 } from "@boardwright/core";
 import { seededRandom } from "./mod.ts";
 
-export interface EngineContractOptions {
+export interface EngineContractOptions<Position = unknown> {
   /** PRNG seed for sampling Positions; printed on failure. Default 1. */
   readonly seed?: number;
   /** Number of non-terminal Positions to analyze. Default 8. */
@@ -20,19 +20,32 @@ export interface EngineContractOptions {
   readonly stepTimeoutMs?: number;
   /** How far past `maxTimeMs` or an abort the Engine may run. Default 1000. */
   readonly slackMs?: number;
+  /**
+   * Terminal Positions to check (a Game whose random playouts rarely end, such
+   * as chess, must supply one). Default: found by random playouts; the check
+   * fails if none is found or given.
+   */
+  readonly terminalPositions?: readonly Position[];
 }
 
-/** Total order on Scores from the Seat-to-move's view (higher is better). */
-function rank(score: Score): number {
-  if (score.kind === "win-in") return 1e300 - score.plies;
-  if (score.kind === "loss-in") return -1e300 + score.plies;
-  return score.value;
+/**
+ * Orders Scores from the Seat-to-move's view: positive when `a` is better than
+ * `b`. Wins beat values beat losses; sooner wins and later losses are better.
+ */
+function compareScores(a: Score, b: Score): number {
+  const klass = (s: Score) =>
+    s.kind === "win-in" ? 2 : s.kind === "value" ? 1 : 0;
+  if (klass(a) !== klass(b)) return klass(a) - klass(b);
+  if (a.kind === "win-in" && b.kind === "win-in") return b.plies - a.plies;
+  if (a.kind === "loss-in" && b.kind === "loss-in") return a.plies - b.plies;
+  if (a.kind === "value" && b.kind === "value") return a.value - b.value;
+  return 0;
 }
 
 /**
  * Checks that `engine` obeys the `Engine.analyze` contract for `rules`:
  * invalid limits throw a RangeError synchronously; only completed depths
- * (1, 2, 3, ...) are yielded; a terminal Position yields exactly one depth-0
+ * (strictly increasing, from 1) are yielded; a terminal Position yields exactly one depth-0
  * Analysis; at least one Analysis despite `maxTimeMs` (time counts from the
  * first `next()`); every Line is a legal Move sequence with a well-formed
  * Score, best Lines first, distinct first Moves; time limits and aborts are
@@ -41,7 +54,7 @@ function rank(score: Score): number {
 export async function assertEngineContract<Position, Move>(
   engine: Engine<Position, Move>,
   rules: GameRules<Position, Move>,
-  options: EngineContractOptions = {},
+  options: EngineContractOptions<Position> = {},
 ): Promise<void> {
   const seed = options.seed ?? 1;
   const sampleCount = options.positions ?? 8;
@@ -95,16 +108,23 @@ export async function assertEngineContract<Position, Move>(
     limits: SearchLimits,
     what: string,
     signal?: AbortSignal,
+    totalMs?: number,
   ): Promise<Analysis<Move>[]> {
     const it = engine.analyze(position, limits, signal)[Symbol.asyncIterator]();
     const all: Analysis<Move>[] = [];
-    const deadline = performance.now() + stepTimeout;
+    const deadline = performance.now() + (totalMs ?? Infinity);
     try {
       for (;;) {
-        const left = Math.max(1, deadline - performance.now());
+        const left = Math.min(
+          stepTimeout,
+          Math.max(1, deadline - performance.now()),
+        );
         const r = await step(it, left, what);
         if (r.done) return all;
         all.push(r.value);
+        if (performance.now() > deadline) {
+          fail(`${what}: stream still yielding after ${totalMs}ms`);
+        }
       }
     } finally {
       close(it);
@@ -163,9 +183,15 @@ export async function assertEngineContract<Position, Move>(
   check(sampled.size > 0, "could not sample any non-terminal Position");
   // A full playout, so a terminal Position is covered whenever one is reachable.
   for (let w = 0; w < 20 && terminal === undefined; w++) walkTo(maxPlies);
+  const terminals = options.terminalPositions ??
+    (terminal === undefined ? [] : [terminal]);
+  check(
+    terminals.length > 0,
+    "no terminal Position found by random playouts; pass `terminalPositions`",
+  );
 
   // A terminal Position yields exactly one { depth: 0, lines: [] }.
-  if (terminal !== undefined) {
+  for (const terminal of terminals) {
     for (const limits of [{}, { maxDepth: 2 }, { maxTimeMs: 0 }]) {
       const got = await drain(terminal, limits, "terminal Position");
       const where = `terminal Position ${show(terminal)} with ${
@@ -200,8 +226,9 @@ export async function assertEngineContract<Position, Move>(
       got.forEach((a, i) => {
         const at = `${where}, depth ${a.depth}`;
         check(
-          a.depth === i + 1,
-          `${where}: depths must be completed and consecutive from 1, got ${depths}`,
+          Number.isInteger(a.depth) && a.depth >= 1 &&
+            (i === 0 || a.depth > got[i - 1]!.depth),
+          `${where}: depths must be integers >= 1 and strictly increasing, got ${depths}`,
         );
         check(
           a.depth <= (limits.maxDepth ?? Infinity),
@@ -212,7 +239,7 @@ export async function assertEngineContract<Position, Move>(
           `${at}: ${a.lines.length} Lines, expected 1..${wanted}`,
         );
         const firsts = new Set<string>();
-        let previous = Infinity;
+        let previous: Score | undefined;
         for (const line of a.lines) {
           const played = line.moves.map(moveText).join(" ");
           check(line.moves.length >= 1, `${at}: Line has no Moves`);
@@ -225,12 +252,12 @@ export async function assertEngineContract<Position, Move>(
             `${at}: malformed Score ${JSON.stringify(s)}`,
           );
           check(
-            rank(s) <= previous,
+            previous === undefined || compareScores(previous, s) >= 0,
             `${at}: Lines are not best first (${
               JSON.stringify(a.lines.map((l) => l.score))
             })`,
           );
-          previous = rank(s);
+          previous = s;
           let p = position;
           for (const move of line.moves) {
             const m = moveText(move);
@@ -279,29 +306,36 @@ export async function assertEngineContract<Position, Move>(
   // A pre-aborted signal ends the search without throwing.
   const pre = new AbortController();
   pre.abort();
-  await drain(root, {}, "pre-aborted search", pre.signal);
+  await drain(root, {}, "pre-aborted search", pre.signal, slack);
 
   // Aborting mid-search stops it within the slack.
   const controller = new AbortController();
   const it = engine.analyze(root, {}, controller.signal)
     [Symbol.asyncIterator]();
   try {
-    let aborted = false;
-    let afterAbort = 0;
+    // Once aborted, the stream must end within `slack`; how many buffered
+    // Analyses arrive before it ends is not constrained.
+    let abortDeadline: number | undefined;
     for (;;) {
+      const left = abortDeadline === undefined
+        ? stepTimeout
+        : Math.max(1, abortDeadline - performance.now());
       const r = await step(
         it,
-        aborted ? slack : stepTimeout,
-        aborted ? "search after abort (abort ignored?)" : "search before abort",
+        left,
+        abortDeadline === undefined
+          ? "search before abort"
+          : `mid-search abort: stream did not end within ${slack}ms`,
       );
       if (r.done) break;
-      if (!aborted) {
+      if (abortDeadline === undefined) {
         controller.abort();
-        aborted = true;
+        abortDeadline = performance.now() + slack;
       } else {
-        // The depth in flight when abort fires is discarded; nothing more
-        // than a stray Analysis or two may follow.
-        check(++afterAbort <= 2, "Engine keeps yielding Analyses after abort");
+        check(
+          performance.now() <= abortDeadline,
+          `mid-search abort: stream still yielding ${slack}ms after abort`,
+        );
       }
     }
   } finally {

@@ -95,12 +95,7 @@ export function createMinimaxEngine<Position, Move>(
   };
 }
 
-/**
- * Checks the typed `SearchLimits` contract. Deliberately not shared with the
- * server: its `parseLimits` validates untrusted JSON (shape, unknown fields)
- * and applies host-specific upper caps, while every Engine must stand alone
- * and throw `RangeError` for any host (`assertEngineContract` checks this).
- */
+/** Checks the typed `SearchLimits` contract (see docs/ARCHITECTURE.md on why it is not shared). */
 function validateLimits(limits: SearchLimits): void {
   const { maxDepth, maxTimeMs, lines } = limits;
   if (
