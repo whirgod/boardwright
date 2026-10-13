@@ -19,7 +19,6 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-1. **First Games** — checkers (#4).
 2. **Engines in play** — Engine Players in Matches, run in Web Workers (#7); morris and checkers
    Engines (#8).
 3. **Live + UI** — WebSocket Match/Analysis streams (#9); web UI foundation served by the
