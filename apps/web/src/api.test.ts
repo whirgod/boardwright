@@ -95,6 +95,14 @@ Deno.test("getMatch and playMove address the Match by encoded id", async () => {
   ]);
 });
 
+Deno.test("resign posts the token to the Match's resign route", async () => {
+  const { fetch, calls } = fakeFetch(() => json(MATCH));
+  assertEquals(await new ApiClient({ fetch }).resign("m 1", "secret"), MATCH);
+  assertEquals(calls.map((c) => [c.method, c.url, c.body]), [
+    ["POST", "/api/matches/m%201/resign", { token: "secret" }],
+  ]);
+});
+
 Deno.test("error bodies become ApiErrors with the server's code and status", async () => {
   const { fetch } = fakeFetch(() =>
     json({ error: { code: "not-your-turn", message: "Not x's turn" } }, 403)

@@ -114,6 +114,21 @@ export function MatchPage(
     }
   }
 
+  async function resign(token: string) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      setMatch(await api.resign(matchId, token));
+      setError(null);
+    } catch (e) {
+      setError(errorMessage(e));
+      if (e instanceof ApiError && e.status === 409) setReload((n) => n + 1);
+    } finally {
+      setSelection([]);
+      setBusy(false);
+    }
+  }
+
   const request = boardRequest(match, status, selection);
   const interactive = status.kind === "your-move" && !busy;
   let board: BoardModel | undefined;
@@ -167,6 +182,26 @@ export function MatchPage(
               </li>
             ))}
           </ul>
+          {match.outcome === null &&
+            Object.entries(playing).map(([seat, token]) => (
+              <div key={seat} class="field">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `Resign as ${seatLabel(seat)}? The Opponent wins.`,
+                      )
+                    ) {
+                      resign(token);
+                    }
+                  }}
+                >
+                  Resign as {seatLabel(seat)}
+                </button>
+              </div>
+            ))}
           <InviteBox
             match={match}
             holding={holding}

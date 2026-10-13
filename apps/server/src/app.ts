@@ -15,6 +15,7 @@ import {
   parseCreateMatchBody,
   type Parsed,
   parsePlayMoveBody,
+  parseResignBody,
 } from "./requests.ts";
 
 /** Either the parts to build a GameMaster from, or a ready one. */
@@ -204,6 +205,18 @@ export function buildApp(options: AppOptions): Hono {
     const { move, token } = body.value;
     return c.json(
       await master.apply(c.req.param("id"), { token }, { kind: "move", move }),
+    );
+  });
+
+  app.post("/api/matches/:id/resign", async (c) => {
+    const body = await readBody(c, parseResignBody);
+    if (!body.ok) return fail(c, body.code, body.problem);
+    return c.json(
+      await master.apply(
+        c.req.param("id"),
+        { token: body.value.token },
+        { kind: "resignation" },
+      ),
     );
   });
 

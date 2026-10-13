@@ -113,6 +113,15 @@ export class ApiClient {
     );
   }
 
+  /** Concede the Match as the holder of `token`; the Opponent wins. */
+  resign(id: string, token: string): Promise<MatchView> {
+    return this.#request(
+      "POST",
+      `/api/matches/${encodeURIComponent(id)}/resign`,
+      { token },
+    );
+  }
+
   async #request<T>(method: string, path: string, body?: unknown): Promise<T> {
     let response: Response;
     try {

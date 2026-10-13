@@ -18,6 +18,10 @@ export interface PlayMoveBody {
   readonly token: string;
 }
 
+export interface ResignBody {
+  readonly token: string;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -81,4 +85,21 @@ export function parsePlayMoveBody(body: unknown): Parsed<PlayMoveBody> {
     };
   }
   return { ok: true, value: { move, token } };
+}
+
+/** `{ token }` */
+export function parseResignBody(body: unknown): Parsed<ResignBody> {
+  if (!isObject(body)) {
+    return { ok: false, problem: "body must be a JSON object" };
+  }
+  const extra = unexpectedFields(body, ["token"]);
+  if (extra) return { ok: false, problem: extra };
+  const { token } = body;
+  if (typeof token !== "string") {
+    return {
+      ok: false,
+      problem: "`token` must be the Seat's seat token (string)",
+    };
+  }
+  return { ok: true, value: { token } };
 }

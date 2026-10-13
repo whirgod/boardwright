@@ -533,3 +533,62 @@ Deno.test("POST /api/matches seats Engines; bad Engine seats are 400", async () 
     "invalid-request",
   );
 });
+
+Deno.test("POST /api/matches/:id/resign ends the Match; the Opponent wins", async () => {
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store: new InMemoryMatchStore(),
+  });
+  const events: string[] = [];
+  master.onMatchChanged((e) => {
+    events.push(e.kind);
+  });
+  const a = buildApp({ master });
+  const { match, tokens } = await create(a);
+  const path = `/api/matches/${match.id}/resign`;
+
+  await assertError(post(a, path, { token: "wrong" }), 403, "invalid-token");
+  await assertError(post(a, path, {}), 400, "invalid-request");
+  await assertError(post(a, path, "{"), 400, "invalid-request");
+  await assertError(
+    post(a, "/api/matches/nope/resign", { token: "t" }),
+    404,
+    "unknown-match",
+  );
+
+  // o is not to move, but may resign anyway.
+  const res = await post(a, path, { token: tokens.o });
+  assertEquals(res.status, 200);
+  const view: MatchView = await res.json();
+  assertEquals(view.outcome, { kind: "resignation", winner: "x", seat: "o" });
+  assertEquals(view.toMove, null);
+  assertEquals(
+    await (await a.request(`/api/matches/${match.id}`)).json(),
+    view,
+  );
+
+  await assertError(post(a, path, { token: tokens.x }), 409, "match-finished");
+  assertEquals(events, ["created", "resignation"]);
+});
+
+Deno.test("POST /api/matches/:id/resign: Engine Seats have no token to resign with", async () => {
+  const a = buildApp({
+    games: [ticTacToe],
+    engines: new EngineRegistry([MINIMAX]),
+  });
+  const res = await post(a, "/api/matches", {
+    gameId: "tic-tac-toe",
+    seats: { x: { kind: "human" }, o: { kind: "engine", engineId: "m" } },
+  });
+  const created: CreatedMatch = await res.json();
+  assertEquals(Object.keys(created.tokens), ["x"]);
+  await assertError(
+    post(a, `/api/matches/${created.match.id}/resign`, { token: "" }),
+    403,
+    "invalid-token",
+  );
+  const view: MatchView = await (await a.request(
+    `/api/matches/${created.match.id}`,
+  )).json();
+  assertEquals(view.outcome, null);
+});
