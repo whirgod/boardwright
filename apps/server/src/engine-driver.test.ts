@@ -1,12 +1,13 @@
-import { assert, assertEquals, assertMatch, assertRejects } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { buildApp } from "./app.ts";
+import { EngineDriver } from "./engine-driver.ts";
 import {
+  type AnalysisRequest,
   DEFAULT_SEARCH_TIME_MS,
-  EngineDriver,
-  type EngineDriverOptions,
-} from "./engine-driver.ts";
-import { SearchError, searchInWorker } from "./engine-search.ts";
+  EngineRunner,
+  SearchError,
+} from "./engine-runner.ts";
 import { type EngineEntry, EngineRegistry } from "./engines.ts";
 import { GameMaster, type MatchView } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
@@ -41,14 +42,47 @@ const engine = (engineId: string, limits = {}): Player => ({
   limits,
 });
 
-function setup(options: EngineDriverOptions = {}) {
+interface SetupOptions {
+  readonly graceMs?: number;
+  readonly maxConcurrent?: number;
+  readonly attempts?: number;
+  /**
+   * Replaces the Engine: each search answers with this Move (as one
+   * Analysis) instead of running a worker.
+   */
+  readonly search?: (request: AnalysisRequest) => Promise<string>;
+}
+
+function setup(options: SetupOptions = {}) {
   const master = new GameMaster({
     games: new GameRegistry([ticTacToe]),
     store: new InMemoryMatchStore(),
     engines: ENGINES,
   });
-  const driver = new EngineDriver(master, options);
+  const driver = newDriver(master, options);
   return { master, driver, app: buildApp({ master }) };
+}
+
+function newDriver(master: GameMaster, options: SetupOptions): EngineDriver {
+  const { search, attempts, ...runnerOptions } = options;
+  const runner = new EngineRunner({
+    ...runnerOptions,
+    ...search && {
+      adapter: {
+        async *analyze(request: AnalysisRequest) {
+          const move = await search(request);
+          yield {
+            depth: 1,
+            lines: [{ moves: [move], score: { kind: "value", value: 0 } }],
+          };
+        },
+      },
+    },
+  });
+  return new EngineDriver(master, {
+    runner,
+    ...attempts !== undefined && { attempts },
+  });
 }
 
 Deno.test("human vs Engine: a full Match reaches an Outcome", async () => {
@@ -109,7 +143,7 @@ Deno.test("Engine vs Engine reaches an Outcome (a draw)", async () => {
 
 async function failedMatch(
   entry: string,
-  options: EngineDriverOptions,
+  options: SetupOptions,
   limits = {},
 ): Promise<MatchView> {
   const { master, driver } = setup(options);
@@ -179,7 +213,7 @@ Deno.test("an unregistered Engine forfeits (registry changed under a stored Matc
   });
   // The same store, served by a master that no longer offers the Engine.
   const after = new GameMaster({ games, store });
-  const driver = new EngineDriver(after);
+  const driver = new EngineDriver(after, { runner: new EngineRunner() });
   try {
     await after.apply(match.id, { token: tokens.x! }, X_A1);
     await driver.idle();
@@ -253,12 +287,44 @@ Deno.test("retries are exhausted by an always failing search, then the Seat forf
   }
 });
 
+Deno.test("the Engine plays the best Line's first Move of the last Analysis that has one", async () => {
+  const line = (move: string) => ({
+    moves: [move],
+    score: { kind: "value", value: 0 } as const,
+  });
+  const runner = new EngineRunner({
+    adapter: {
+      async *analyze() {
+        await Promise.resolve();
+        yield { depth: 1, lines: [line("a1"), line("b1")] };
+        yield { depth: 2, lines: [line("c1"), line("a1")] };
+        yield { depth: 3, lines: [] };
+      },
+    },
+  });
+  const master = new GameMaster({
+    games: new GameRegistry([ticTacToe]),
+    store: new InMemoryMatchStore(),
+    engines: ENGINES,
+  });
+  const driver = new EngineDriver(master, { runner });
+  try {
+    const { match } = await master.createMatch("tic-tac-toe", {
+      x: engine("minimax", { lines: 2 }),
+      o: human,
+    });
+    await driver.idle();
+    assertEquals((await master.getMatch(match.id)).moves, ["c1"]);
+  } finally {
+    await driver.close();
+  }
+});
+
 Deno.test("an unset maxTimeMs gets the default time limit, not none", async () => {
-  const seen: { limits: unknown; timeoutMs: number }[] = [];
+  const seen: unknown[] = [];
   const { master, driver } = setup({
-    graceMs: 100,
-    search: (request, options) => {
-      seen.push({ limits: request.limits, timeoutMs: options.timeoutMs });
+    search: (request) => {
+      seen.push(request.limits);
       return Promise.resolve("a1");
     },
   });
@@ -268,10 +334,7 @@ Deno.test("an unset maxTimeMs gets the default time limit, not none", async () =
       o: human,
     });
     await driver.idle();
-    assertEquals(seen, [{
-      limits: { maxDepth: 3, maxTimeMs: DEFAULT_SEARCH_TIME_MS },
-      timeoutMs: DEFAULT_SEARCH_TIME_MS + 100,
-    }]);
+    assertEquals(seen, [{ maxDepth: 3, maxTimeMs: DEFAULT_SEARCH_TIME_MS }]);
   } finally {
     await driver.close();
   }
@@ -353,7 +416,7 @@ class GatedStore extends InMemoryMatchStore {
  * A Match (human x, Engine o) created before the driver subscribes, so the
  * driver must load it on its first event.
  */
-async function lateDriver(options: EngineDriverOptions) {
+async function lateDriver(options: SetupOptions) {
   const store = new GatedStore();
   const master = new GameMaster({
     games: new GameRegistry([ticTacToe]),
@@ -364,7 +427,7 @@ async function lateDriver(options: EngineDriverOptions) {
     x: human,
     o: engine("minimax"),
   });
-  const driver = new EngineDriver(master, options);
+  const driver = newDriver(master, options);
   const x = { token: tokens.x! };
   return { store, master, driver, id: match.id, x };
 }
@@ -557,24 +620,4 @@ Deno.test("Matches without Engine Seats are left alone", async () => {
   } finally {
     await driver.close();
   }
-});
-
-Deno.test("searchInWorker rejects at once for an already aborted signal", async () => {
-  const error = await assertRejects(
-    () =>
-      searchInWorker(
-        { module: minimaxModule, position: "........._:x", limits: {} },
-        { timeoutMs: 1000, signal: AbortSignal.abort() },
-      ),
-    SearchError,
-  );
-  assertMatch(error.message, /aborted/);
-});
-
-Deno.test("searchInWorker answers with the best Move in Notation", async () => {
-  const move = await searchInWorker(
-    { module: minimaxModule, position: "xx.oo....:x", limits: {} },
-    { timeoutMs: 5000 },
-  );
-  assertEquals(move, "c1");
 });

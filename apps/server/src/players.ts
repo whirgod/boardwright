@@ -16,7 +16,7 @@ export interface HumanPlayer {
 export interface EnginePlayer {
   readonly kind: "engine";
   readonly engineId: string;
-  /** Applied to every search of this Seat; Unset `maxTimeMs` becomes the server default (`DEFAULT_SEARCH_TIME_MS`). */
+  /** Applied to every search of this Seat; Unset `maxTimeMs` becomes the server default (`DEFAULT_SEARCH_TIME_MS` in `engine-runner.ts`). */
   readonly limits: SearchLimits;
 }
 

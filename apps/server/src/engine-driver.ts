@@ -7,27 +7,19 @@ import {
 } from "./game-master.ts";
 import type { MatchId } from "./match-store.ts";
 import type { EnginePlayer, Player } from "./players.ts";
-import {
-  SearchError,
-  searchInWorker,
-  type SearchRequest,
-} from "./engine-search.ts";
-
-/** Search time used for an Engine Seat whose `limits.maxTimeMs` is unset. */
-export const DEFAULT_SEARCH_TIME_MS = 5000;
+import type { EngineEntry } from "./engines.ts";
+import { type EngineRunner, SearchError } from "./engine-runner.ts";
 
 export interface EngineDriverOptions {
   /**
-   * Extra time beyond a Seat's `limits.maxTimeMs` before a search counts as
-   * hung (covers worker start-up and the Engine's overshoot). Default 5000.
+   * The server's one runner (shared with Analysis requests, so the cap is
+   * global): owns the deadline, default time limit, cap and queueing. The
+   * driver's searches have purpose `match`, so they never queue behind
+   * Analysis requests.
    */
-  readonly graceMs?: number;
-  /** Searches running at once; further ones wait their turn. Default 4. */
-  readonly maxConcurrent?: number;
+  readonly runner: EngineRunner;
   /** Searches per Move before the Seat forfeits (default 2: one retry). */
   readonly attempts?: number;
-  /** How a search runs; defaults to a Web Worker. Replaceable in tests. */
-  readonly search?: typeof searchInWorker;
 }
 
 /** What the driver remembers of a running Match: its Game and Engine Seats. */
@@ -42,36 +34,32 @@ interface Seating {
  * running Match's Engine Seats from its `created` event (or loads the Match
  * once, for Matches created before it subscribed) and, after every event
  * that leaves an Engine Seat to move, asks that Engine for a Move from the
- * event's Position (in a Web Worker, so the server keeps answering requests).
+ * event's Position through the {@link EngineRunner} (in a Web Worker, so the
+ * server keeps answering requests), taking the first Move of
+ * the best Line of the last Analysis that has one.
  * It plays the Move with `GameMaster.apply` as that Engine Seat, expecting
  * the event's version, i.e. through the same referee checks as human Moves;
  * if the Match moved on meanwhile (e.g. a Resignation), the Move is dropped.
  *
- * A search that errors, hangs past its deadline or returns a Move the referee
- * refuses is retried with a fresh worker; when the attempts are used up the
+ * A search that errors, hangs past its deadline, proposes no Move or a Move
+ * the referee refuses is retried with a fresh search; when the attempts are used up the
  * Game master imposes a Forfeit on the Seat (reason: a {@link ForfeitReason}
  * code, no raw error text), so a Match never hangs on a broken Engine.
  */
 export class EngineDriver {
   readonly #master: GameMaster;
-  readonly #graceMs: number;
   readonly #attempts: number;
-  readonly #maxConcurrent: number;
-  #active = 0;
-  readonly #waiting: (() => void)[] = [];
-  readonly #search: typeof searchInWorker;
+  readonly #runner: EngineRunner;
   readonly #running = new Set<Promise<void>>();
   readonly #abort = new AbortController();
   readonly #unsubscribe: () => void;
   /** Running Matches seen so far; dropped when they end. */
   readonly #seatings = new Map<MatchId, Seating>();
 
-  constructor(master: GameMaster, options: EngineDriverOptions = {}) {
+  constructor(master: GameMaster, options: EngineDriverOptions) {
     this.#master = master;
-    this.#graceMs = options.graceMs ?? 5000;
     this.#attempts = options.attempts ?? 2;
-    this.#maxConcurrent = options.maxConcurrent ?? 4;
-    this.#search = options.search ?? searchInWorker;
+    this.#runner = options.runner;
     this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
   }
 
@@ -85,21 +73,6 @@ export class EngineDriver {
     this.#unsubscribe();
     this.#abort.abort();
     await this.idle();
-  }
-
-  async #acquire(): Promise<void> {
-    if (this.#active < this.#maxConcurrent) {
-      this.#active++;
-      return;
-    }
-    // The slot is handed over by #release without freeing it.
-    await new Promise<void>((resolve) => this.#waiting.push(resolve));
-  }
-
-  #release(): void {
-    const next = this.#waiting.shift();
-    if (next) next();
-    else this.#active--;
   }
 
   #onEvent(event: MatchEvent): void {
@@ -149,26 +122,8 @@ export class EngineDriver {
     // Public failure reason; details only go to the server log.
     let failure: ForfeitReason = "not-registered";
     for (let attempt = 1; entry && attempt <= this.#attempts; attempt++) {
-      const request: SearchRequest = {
-        module: entry.module,
-        position: event.position,
-        limits: {
-          ...player.limits,
-          maxTimeMs: player.limits.maxTimeMs ?? DEFAULT_SEARCH_TIME_MS,
-        },
-      };
       try {
-        let move: string;
-        await this.#acquire();
-        try {
-          if (this.#abort.signal.aborted) return;
-          move = await this.#search(request, {
-            timeoutMs: request.limits.maxTimeMs! + this.#graceMs,
-            signal: this.#abort.signal,
-          });
-        } finally {
-          this.#release();
-        }
+        const move = await this.#bestMove(entry, event.position, player);
         await this.#master.apply(
           id,
           { engineSeat: seat },
@@ -200,6 +155,26 @@ export class EngineDriver {
       console.error(`Could not forfeit ${seat} in Match ${id}:`, error);
     }
   }
+
+  /** First Move of the best Line of the last Analysis that has one. */
+  async #bestMove(
+    engine: EngineEntry,
+    position: string,
+    player: EnginePlayer,
+  ): Promise<string> {
+    let best: string | undefined;
+    const analyses = this.#runner.analyze(
+      { engine, position, limits: player.limits },
+      { signal: this.#abort.signal, purpose: "match" },
+    );
+    for await (const analysis of analyses) {
+      best = analysis.lines[0]?.moves[0] ?? best;
+    }
+    if (best === undefined) {
+      throw new SearchError("engine-error", "Engine proposed no Move");
+    }
+    return best;
+  }
 }
 
 /** Referee refusals that blame the Engine's Move (rather than a stale Match). */
@@ -219,8 +194,12 @@ function seating(
 /** The public Forfeit reason for an attempt that failed with `error`. */
 function forfeitReason(error: unknown): ForfeitReason {
   if (error instanceof MatchError) return "illegal-move";
-  // `aborted` only happens on close(), which never forfeits.
-  if (error instanceof SearchError && error.code !== "aborted") {
+  // `aborted` only happens on close(), which never forfeits; `match` searches
+  // are never refused as `busy`.
+  if (
+    error instanceof SearchError && error.code !== "aborted" &&
+    error.code !== "busy"
+  ) {
     return error.code;
   }
   return "engine-error";

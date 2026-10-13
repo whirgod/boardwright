@@ -1,42 +1,32 @@
 /// <reference no-default-lib="true" />
 /// <reference lib="deno.worker" />
 /**
- * Worker entry: runs one Engine search per message. Only Notation strings and
- * plain limits cross the boundary (see `engine-search.ts` for the protocol).
- * The worker inherits the server's permissions (net, env, scoped read): Engine
- * code is trusted, sandboxing is a known gap (see #29). The Engine module is
- * loaded by URL.
+ * Worker entry of the runner's worker adapter (`engine-runner.ts` documents
+ * the protocol): runs the one search it is sent and posts each Analysis as
+ * soon as the Engine yields it, then `done` (or `error`). The runner
+ * terminates the worker to stop it. Only Notation strings and plain data
+ * cross the boundary.
+ *
+ * The worker inherits the server's permissions (net, env, scoped read):
+ * Engine code is trusted, sandboxing is a known gap (see #29).
  */
-import type { Engine, GameRules, SearchLimits } from "@boardwright/core";
-import type { SearchReply, SearchRequest } from "./engine-search.ts";
+import {
+  analyzeInNotation,
+  type HostRequest,
+  type WorkerMessage,
+} from "./engine-host.ts";
 
-interface EngineModule {
-  readonly rules: GameRules<unknown, unknown>;
-  readonly engine: Engine<unknown, unknown>;
-}
-
-async function search(request: SearchRequest): Promise<string> {
-  const { rules, engine } = await import(request.module) as EngineModule;
-  const position = rules.notation.decodePosition(request.position);
-  const limits: SearchLimits = request.limits;
-  let best: unknown;
-  for await (const analysis of engine.analyze(position, limits)) {
-    const move = analysis.lines[0]?.moves[0];
-    if (move !== undefined) best = move;
-  }
-  if (best === undefined) throw new Error("Engine returned no Move");
-  return rules.notation.encodeMove(best);
-}
-
-self.onmessage = async (event: MessageEvent<SearchRequest>) => {
-  let reply: SearchReply;
+self.onmessage = async (event: MessageEvent<HostRequest>) => {
+  const post = (message: WorkerMessage) => self.postMessage(message);
   try {
-    reply = { ok: true, move: await search(event.data) };
+    for await (const analysis of analyzeInNotation(event.data)) {
+      post({ kind: "analysis", analysis });
+    }
+    post({ kind: "done" });
   } catch (error) {
-    reply = {
-      ok: false,
+    post({
+      kind: "error",
       message: error instanceof Error ? error.message : String(error),
-    };
+    });
   }
-  self.postMessage(reply);
 };
