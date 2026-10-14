@@ -473,7 +473,7 @@ Deno.test("readAnalysis checks Lines, Scores and the pending-chance shape", () =
   const v = { kind: "value", value: 0 };
   const bad = (value: unknown, rules = ttt, position: unknown = p) =>
     assertThrows(
-      () => readAnalysis(value, rules, position),
+      () => readAnalysis(value, rules, position, 3),
       SearchError,
       "malformed Analysis",
     );
@@ -500,7 +500,7 @@ Deno.test("readAnalysis checks Lines, Scores and the pending-chance shape", () =
   // Moves after the Game ended.
   bad(line(["a1", "a2", "b1", "b2", "c1", "c2"]));
   assertEquals(
-    readAnalysis(line(["a1"], { kind: "win-in", plies: 3, z: 1 }), ttt, p),
+    readAnalysis(line(["a1"], { kind: "win-in", plies: 3, z: 1 }), ttt, p, 1),
     {
       depth: 1,
       lines: [{ moves: ["a1"], score: { kind: "win-in", plies: 3 } }],
@@ -512,13 +512,23 @@ Deno.test("readAnalysis checks Lines, Scores and the pending-chance shape", () =
   const seat = bg.seats[0]!;
   const expected = { kind: "loss-in", plies: 2 };
   assertEquals(
-    readAnalysis({ depth: 1, lines: [], score: expected, seat }, bg, roll),
+    readAnalysis({ depth: 1, lines: [], score: expected, seat }, bg, roll, 1),
     { depth: 1, lines: [], score: { kind: "loss-in", plies: 2 }, seat },
   );
   bad({ depth: 1, lines: [], score: v, seat: { evil: 1 } }, bg, roll);
   bad({ depth: 1, lines: [], score: v, seat: "nobody" }, bg, roll);
   bad({ depth: 1, lines: [], score: { kind: "value" }, seat }, bg, roll);
   bad(line(["24/23"]), bg, roll);
+  // While a Chance event is pending, score and seat are required.
+  bad({ depth: 1, lines: [] }, bg, roll);
+  bad({ depth: 1, lines: [], score: v }, bg, roll);
+  bad({ depth: 1, lines: [], seat }, bg, roll);
+  // More Lines than the limit, checked before the Lines themselves.
+  assertThrows(
+    () => readAnalysis({ depth: 1, lines: [null, null] }, ttt, p, 1),
+    SearchError,
+    "more than 1 Lines",
+  );
 });
 
 Deno.test("connect handshakes once and keeps the process for the first search", async () => {
@@ -658,7 +668,7 @@ Deno.test("parseEngineMessage accepts protocol messages only", () => {
     type: "ready",
     protocol: 1,
     gameId: "g",
-    name: "Bad\u0000\nName " + "x".repeat(500),
+    name: "Bad\u0000\n\u202eName " + "x".repeat(500),
   }));
   assert(long?.type === "ready");
   assertEquals(long.name.length, MAX_NAME_LENGTH);

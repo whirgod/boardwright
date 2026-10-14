@@ -7,8 +7,8 @@
     "hono": "jsr:@hono/hono@^4.13.13"
   },
   "tasks": {
-    "dev": "deno run --watch --allow-net --allow-env=PORT,HOST,BOARDWRIGHT_DATA_DIR,BOARDWRIGHT_EXTERNAL_ENGINES --allow-read=src,../web/dist,../../packages,../../games,../../engines,../../data,../../external-engines.json --allow-write=../../data src/main.ts",
-    "start": "deno run --allow-net --allow-env=PORT,HOST,BOARDWRIGHT_DATA_DIR,BOARDWRIGHT_EXTERNAL_ENGINES --allow-read=src,../web/dist,../../packages,../../games,../../engines,../../data,../../external-engines.json --allow-write=../../data src/main.ts",
+    "dev": "deno run --watch --allow-net --allow-env=PORT,HOST,BOARDWRIGHT_DATA_DIR,BOARDWRIGHT_EXTERNAL_ENGINES,PATH,HOME,LANG --allow-read=src,../web/dist,../../packages,../../games,../../engines,../../data,../../external-engines.json --allow-write=../../data src/main.ts",
+    "start": "deno run --allow-net --allow-env=PORT,HOST,BOARDWRIGHT_DATA_DIR,BOARDWRIGHT_EXTERNAL_ENGINES,PATH,HOME,LANG --allow-read=src,../web/dist,../../packages,../../games,../../engines,../../data,../../external-engines.json --allow-write=../../data src/main.ts",
     "start:example-engine": "BOARDWRIGHT_EXTERNAL_ENGINES=../../examples/random-engine/external-engines.json deno run --allow-run=../../examples/random-engine/random-engine.ts --allow-net --allow-env=PORT,HOST,BOARDWRIGHT_DATA_DIR,BOARDWRIGHT_EXTERNAL_ENGINES,PATH,HOME,LANG --allow-read=src,../web/dist,../../packages,../../games,../../engines,../../data,../../examples/random-engine/external-engines.json --allow-write=../../data src/main.ts"
   }
 }

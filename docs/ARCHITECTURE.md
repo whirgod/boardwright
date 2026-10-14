@@ -195,7 +195,7 @@ core  <-  games/*  <-  engines/*
   (`hello` -> `ready`, Game id checked, name cleaned and capped) and reused for one search after
   another (`analyze` -> `analysis`* -> `done`); at most `maxIdle` (2) kept idle. Every Analysis is
   rebuilt by `readAnalysis` with the Game's rules (Moves decoded, legal in sequence, re-encoded;
-  Scores rebuilt; `score`/`seat` only while a Chance event is pending) or the search fails
+  Scores rebuilt; `score`/`seat` exactly while a Chance event is pending) or the search fails
   `unreadable-reply`. Ending a search early sends `stop` in the background and kills the process
   if no `done` follows within `stopTimeoutMs` (1 s); a handshake whose search was aborted
   completes in the background and the process joins the idle pool. Failures: cannot start /

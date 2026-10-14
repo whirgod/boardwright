@@ -101,7 +101,7 @@ export function parseEngineMessage(line: string): EngineMessage | undefined {
         typeof m.protocol !== "number" || typeof m.gameId !== "string" ||
         typeof m.name !== "string"
       ) return undefined;
-      const name = [...m.name.replace(/\p{Cc}/gu, "").trim()]
+      const name = [...m.name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim()]
         .slice(0, MAX_NAME_LENGTH).join("").trim();
       return name.length > 0
         ? { type: "ready", protocol: m.protocol, gameId: m.gameId, name }
@@ -129,15 +129,16 @@ export function parseEngineMessage(line: string): EngineMessage | undefined {
  * an integer `depth` >= 0; Lines of Moves that decode in the Game's Notation
  * and are legal in sequence from `position` (re-encoded, none after the Game
  * ends or a Chance event is pending), each with a Score rebuilt field by
- * field; a top-level `score` with `seat` (one of the Game's Seats) only while
- * a Chance event is pending at `position`. Everything else is dropped.
- * Throws an `unreadable-reply` {@link SearchError} saying what is wrong. (The
- * runner still checks the number of Lines against the limits.)
+ * field, at most `maxLines` of them (checked first); a top-level `score`
+ * with `seat` (one of the Game's Seats) exactly while a Chance event is
+ * pending at `position`. Everything else is dropped. Throws an
+ * `unreadable-reply` {@link SearchError} saying what is wrong.
  */
 export function readAnalysis(
   value: unknown,
   rules: AnyGameRules,
   position: unknown,
+  maxLines: number,
 ): Analysis<string> {
   const bad = (problem: string): never => {
     throw new SearchError("unreadable-reply", `malformed Analysis: ${problem}`);
@@ -146,6 +147,7 @@ export function readAnalysis(
   const { depth, lines, score, seat } = value;
   if (!Number.isInteger(depth) || (depth as number) < 0) bad("depth");
   if (!Array.isArray(lines)) return bad("lines");
+  if (lines.length > maxLines) return bad(`more than ${maxLines} Lines`);
   const readLine = (line: unknown): Line<string> => {
     if (!isRecord(line)) return bad("Line is not an object");
     const { moves } = line;
@@ -174,8 +176,8 @@ export function readAnalysis(
     return { moves: encoded, score: lineScore };
   };
   const analysis = { depth: depth as number, lines: lines.map(readLine) };
-  if (score === undefined && seat === undefined) return analysis;
   if (!chancePending(rules, position)) {
+    if (score === undefined && seat === undefined) return analysis;
     return bad("score and seat are only for a pending Chance event");
   }
   const expected = readScore(score) ?? bad("score");
@@ -609,7 +611,12 @@ class EnginePool {
         const message = event.message;
         if (message.type === "analysis" && message.id === id) {
           // A rejected Analysis throws; the search is stopped in `finally`.
-          yield readAnalysis(message.analysis, this.rules, decoded);
+          yield readAnalysis(
+            message.analysis,
+            this.rules,
+            decoded,
+            limits.lines ?? 1,
+          );
         } else if (message.type === "done" && message.id === id) {
           open = false;
           this.#succeeded();

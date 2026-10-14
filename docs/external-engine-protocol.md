@@ -32,7 +32,7 @@ A Score is `{ "kind": "value", "value": <finite number> }`, `{ "kind": "win-in",
 - A terminal Position gets exactly one `{ "depth": 0, "lines": [] }`.
 - At least one Analysis per search, even with `maxTimeMs: 0`.
 
-The server rebuilds every Analysis from checked parts before anyone sees it, and rejects it (`unreadable-reply`) otherwise: `depth` an integer >= 0; each Move must decode in the Game's Notation and be legal in sequence from the searched Position (no Move after the Game ends or a Chance event is pending), and is passed on in the Notation's canonical form; Scores are rebuilt from `kind` and `value`/`plies`; `score` and `seat` (one of the Game's Seats) only while a Chance event is pending. Any other field is dropped.
+The server rebuilds every Analysis from checked parts before anyone sees it, and rejects it (`unreadable-reply`) otherwise: `depth` an integer >= 0; at most `limits.lines` Lines; each Move must decode in the Game's Notation and be legal in sequence from the searched Position (no Move after the Game ends or a Chance event is pending), and is passed on in the Notation's canonical form; Scores are rebuilt from `kind` and `value`/`plies`; `score` and `seat` (one of the Game's Seats) exactly while a Chance event is pending. Any other field is dropped.
 
 ## Messages
 
@@ -47,12 +47,12 @@ Server to Engine:
 
 Engine to server:
 
-| `type`     | Fields                           | Meaning                                                                                                                                                                                                                      |
-| ---------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ready`    | `protocol` (1), `gameId`, `name` | Reply to `hello`: the Engine plays `gameId` (must equal the requested one); `name` is shown to users unless the config sets one (control characters are removed, then it is cut to 64 characters; it must not end up empty). |
-| `analysis` | `id`, `analysis`                 | One completed depth of search `id`.                                                                                                                                                                                          |
-| `done`     | `id`                             | Search `id` is over (also after `stop`).                                                                                                                                                                                     |
-| `error`    | `id`, `message`                  | Search `id` failed (it is over). Without `id`, in reply to `hello`: the Engine refuses (e.g. an unsupported Game).                                                                                                           |
+| `type`     | Fields                           | Meaning                                                                                                                                                                                                                                 |
+| ---------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`    | `protocol` (1), `gameId`, `name` | Reply to `hello`: the Engine plays `gameId` (must equal the requested one); `name` is shown to users unless the config sets one (control and format characters are removed, then it is cut to 64 characters; it must not end up empty). |
+| `analysis` | `id`, `analysis`                 | One completed depth of search `id`.                                                                                                                                                                                                     |
+| `done`     | `id`                             | Search `id` is over (also after `stop`).                                                                                                                                                                                                |
+| `error`    | `id`, `message`                  | Search `id` failed (it is over). Without `id`, in reply to `hello`: the Engine refuses (e.g. an unsupported Game).                                                                                                                      |
 
 ## Session
 
