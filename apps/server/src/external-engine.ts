@@ -7,18 +7,44 @@
  * {@link externalAdapter} is the Engine runner's adapter for them. Per Engine
  * it keeps a small pool of processes, each started once, handshaken and then
  * reused for one search after another. It turns everything that can go wrong
- * with a process into a {@link SearchError}, and decides when a process is
- * still usable and when it is killed and replaced.
+ * with a process into a {@link SearchError}, decides when a process is still
+ * usable and when it is killed and replaced, and rebuilds every Analysis from
+ * checked parts (Moves decoded and played through the Game's rules), so
+ * nothing else an Engine sends reaches clients.
  */
-import type { Analysis, GameId, SearchLimits } from "@boardwright/core";
+import {
+  type Analysis,
+  chancePending,
+  type GameId,
+  type Line,
+  type Score,
+  type SearchLimits,
+} from "@boardwright/core";
 import { type EngineAdapter, SearchError } from "./engine-runner.ts";
 import type { ExternalEngineCommand, ExternalEngineEntry } from "./engines.ts";
+import type { AnyGameRules, GameRegistry } from "./games.ts";
 
 /** The protocol version this server speaks. */
 export const PROTOCOL_VERSION = 1;
 
-/** Longest line (in UTF-16 code units) an Engine may send; longer is `unreadable-reply`. */
-export const MAX_LINE_LENGTH = 1 << 20;
+/** Longest line (in bytes, without its `\n`) an Engine may send; longer is `unreadable-reply`. */
+export const MAX_LINE_BYTES = 1 << 20;
+
+/** Longest Engine name kept from `ready` (characters, after removing control characters). */
+export const MAX_NAME_LENGTH = 64;
+
+/**
+ * Environment variables an Engine process inherits from the server (when the
+ * server may read them); everything else is cleared. `PATH` finds
+ * interpreters such as `deno` in a shebang, `HOME` their caches.
+ */
+export const INHERITED_ENV = ["PATH", "HOME", "LANG"] as const;
+
+/**
+ * How long, after the process exits, its remaining output is still read
+ * before the exit is reported (a grandchild may hold stdout open forever).
+ */
+const EXIT_DRAIN_MS = 200;
 
 /** A message from the server to an external Engine. */
 export type ServerMessage =
@@ -54,8 +80,10 @@ export type EngineMessage =
 
 /**
  * Parses one line from an Engine; `undefined` when it is not a protocol
- * message (not JSON, unknown `type`, missing or mistyped fields). The Analysis
- * itself is checked by the runner.
+ * message (not JSON, unknown `type`, missing or mistyped fields). A `ready`
+ * name loses control characters and is cut to {@link MAX_NAME_LENGTH}; it
+ * must not end up empty. The Analysis itself is checked by
+ * {@link readAnalysis}.
  */
 export function parseEngineMessage(line: string): EngineMessage | undefined {
   let value: unknown;
@@ -64,20 +92,21 @@ export function parseEngineMessage(line: string): EngineMessage | undefined {
   } catch {
     return undefined;
   }
-  if (typeof value !== "object" || value === null) return undefined;
-  const m = value as Record<string, unknown>;
+  if (!isRecord(value)) return undefined;
+  const m = value;
   const isId = (id: unknown) => Number.isSafeInteger(id);
   switch (m.type) {
-    case "ready":
-      return typeof m.protocol === "number" && typeof m.gameId === "string" &&
-          typeof m.name === "string" && m.name.length > 0
-        ? {
-          type: "ready",
-          protocol: m.protocol,
-          gameId: m.gameId,
-          name: m.name,
-        }
+    case "ready": {
+      if (
+        typeof m.protocol !== "number" || typeof m.gameId !== "string" ||
+        typeof m.name !== "string"
+      ) return undefined;
+      const name = [...m.name.replace(/\p{Cc}/gu, "").trim()]
+        .slice(0, MAX_NAME_LENGTH).join("").trim();
+      return name.length > 0
+        ? { type: "ready", protocol: m.protocol, gameId: m.gameId, name }
         : undefined;
+    }
     case "analysis":
       return isId(m.id) && "analysis" in m
         ? { type: "analysis", id: m.id as number, analysis: m.analysis }
@@ -95,6 +124,86 @@ export function parseEngineMessage(line: string): EngineMessage | undefined {
   }
 }
 
+/**
+ * Rebuilds an Analysis an Engine sent for `position` from checked parts only:
+ * an integer `depth` >= 0; Lines of Moves that decode in the Game's Notation
+ * and are legal in sequence from `position` (re-encoded, none after the Game
+ * ends or a Chance event is pending), each with a Score rebuilt field by
+ * field; a top-level `score` with `seat` (one of the Game's Seats) only while
+ * a Chance event is pending at `position`. Everything else is dropped.
+ * Throws an `unreadable-reply` {@link SearchError} saying what is wrong. (The
+ * runner still checks the number of Lines against the limits.)
+ */
+export function readAnalysis(
+  value: unknown,
+  rules: AnyGameRules,
+  position: unknown,
+): Analysis<string> {
+  const bad = (problem: string): never => {
+    throw new SearchError("unreadable-reply", `malformed Analysis: ${problem}`);
+  };
+  if (!isRecord(value)) return bad("not an object");
+  const { depth, lines, score, seat } = value;
+  if (!Number.isInteger(depth) || (depth as number) < 0) bad("depth");
+  if (!Array.isArray(lines)) return bad("lines");
+  const readLine = (line: unknown): Line<string> => {
+    if (!isRecord(line)) return bad("Line is not an object");
+    const { moves } = line;
+    if (!Array.isArray(moves) || moves.length === 0) return bad("Line moves");
+    const lineScore = readScore(line.score) ?? bad("Line score");
+    let p = position;
+    const encoded = moves.map((text: unknown) => {
+      if (typeof text !== "string") return bad("Move is not a string");
+      if (rules.outcome(p) !== undefined || chancePending(rules, p)) {
+        return bad(`Move ${clip(text)} after the end or a Chance event`);
+      }
+      let move: unknown;
+      try {
+        move = rules.notation.decodeMove(text, p);
+      } catch {
+        return bad(`undecodable Move ${clip(text)}`);
+      }
+      const canonical = rules.notation.encodeMove(move);
+      const legal = rules.legalMoves(p).some((m) =>
+        rules.notation.encodeMove(m) === canonical
+      );
+      if (!legal) return bad(`illegal Move ${clip(text)}`);
+      p = rules.play(p, move);
+      return canonical;
+    });
+    return { moves: encoded, score: lineScore };
+  };
+  const analysis = { depth: depth as number, lines: lines.map(readLine) };
+  if (score === undefined && seat === undefined) return analysis;
+  if (!chancePending(rules, position)) {
+    return bad("score and seat are only for a pending Chance event");
+  }
+  const expected = readScore(score) ?? bad("score");
+  if (typeof seat !== "string" || !rules.seats.includes(seat)) {
+    return bad("seat");
+  }
+  return { ...analysis, score: expected, seat };
+}
+
+/** A Score rebuilt from its own fields, or `undefined` if malformed. */
+function readScore(value: unknown): Score | undefined {
+  if (!isRecord(value)) return undefined;
+  const { kind, value: v, plies } = value;
+  if (kind === "value") {
+    return Number.isFinite(v) ? { kind, value: v as number } : undefined;
+  }
+  if (kind === "win-in" || kind === "loss-in") {
+    return Number.isInteger(plies) && (plies as number) >= 0
+      ? { kind, plies: plies as number }
+      : undefined;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** What a process has to say: a message, a line outside the protocol, or its end. */
 type ProcessEvent =
   | { readonly kind: "message"; readonly message: EngineMessage }
@@ -102,6 +211,30 @@ type ProcessEvent =
   | { readonly kind: "exit"; readonly reason: string };
 
 const encoder = new TextEncoder();
+const NO_BYTES = new Uint8Array(0);
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const joined = new Uint8Array(a.length + b.length);
+  joined.set(a);
+  joined.set(b, a.length);
+  return joined;
+}
+
+/** The environment of an Engine process: {@link INHERITED_ENV} plus its own. */
+function engineEnv(command: ExternalEngineCommand): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const variable of INHERITED_ENV) {
+    // Asking first: reading without permission could prompt on a terminal.
+    if (
+      Deno.permissions.querySync({ name: "env", variable }).state !== "granted"
+    ) {
+      continue;
+    }
+    const value = Deno.env.get(variable);
+    if (value !== undefined) env[variable] = value;
+  }
+  return { ...env, ...command.env };
+}
 
 /**
  * One running external Engine process: writes messages to its stdin, turns
@@ -111,11 +244,15 @@ const encoder = new TextEncoder();
 class EngineProcess {
   readonly #child: Deno.ChildProcess;
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
+  readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
   readonly #inbox: ProcessEvent[] = [];
   #wake: (() => void) | undefined;
   #exited = false;
   #killed = false;
-  /** Resolves once the process has exited and its output is read. */
+  /**
+   * Resolves once the process has exited and its output is read (or, if
+   * something else holds stdout open, shortly after the exit).
+   */
   readonly closed: Promise<void>;
   /** The id of the last search started on this process. */
   lastId = 0;
@@ -125,23 +262,34 @@ class EngineProcess {
     this.#child = new Deno.Command(command.command, {
       args: [...(command.args ?? [])],
       ...(command.cwd !== undefined && { cwd: command.cwd }),
+      clearEnv: true,
+      env: engineEnv(command),
       stdin: "piped",
       stdout: "piped",
       stderr,
     }).spawn();
     this.#writer = this.#child.stdin.getWriter();
-    this.closed = Promise.all([this.#read(), this.#child.status]).then(
-      async ([, status]) => {
-        this.#exited = true;
-        await this.#writer.close().catch(() => {});
-        this.#deliver({
-          kind: "exit",
-          reason: status.signal === null
-            ? `exited with code ${status.code}`
-            : `killed by ${status.signal}`,
-        });
-      },
-    );
+    this.#reader = this.#child.stdout.getReader();
+    const reading = this.#read();
+    this.closed = this.#child.status.then(async (status) => {
+      // Output written before the exit still counts, but a grandchild that
+      // holds stdout open must not keep the exit from being reported.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        reading,
+        new Promise((resolve) => timer = setTimeout(resolve, EXIT_DRAIN_MS)),
+      ]);
+      clearTimeout(timer);
+      this.#exited = true;
+      this.#release();
+      await reading;
+      this.#deliver({
+        kind: "exit",
+        reason: status.signal === null
+          ? `exited with code ${status.code}`
+          : `killed by ${status.signal}`,
+      });
+    });
   }
 
   /** Not exited, not killed, and nothing unread: ready for a search. */
@@ -149,35 +297,40 @@ class EngineProcess {
     return !this.#exited && !this.#killed && this.#inbox.length === 0;
   }
 
+  /** Splits stdout into lines (bytes, linear) and parses each. */
   async #read(): Promise<void> {
     const decoder = new TextDecoder();
-    let buffer = "";
+    let pending: Uint8Array = NO_BYTES; // The start of an unfinished line.
     try {
-      for await (const chunk of this.#child.stdout) {
-        buffer += decoder.decode(chunk, { stream: true });
-        let end: number;
-        while ((end = buffer.indexOf("\n")) >= 0) {
-          this.#line(buffer.slice(0, end));
-          buffer = buffer.slice(end + 1);
+      for (;;) {
+        const { done, value: chunk } = await this.#reader.read();
+        if (done) return;
+        let start = 0;
+        for (let end; (end = chunk.indexOf(10, start)) >= 0; start = end + 1) {
+          const piece = chunk.subarray(start, end);
+          const line = pending.length > 0 ? concat(pending, piece) : piece;
+          pending = NO_BYTES;
+          if (line.length > MAX_LINE_BYTES) {
+            this.#deliver({ kind: "malformed", reason: "line too long" });
+          } else {
+            this.#line(decoder.decode(line));
+          }
         }
-        if (buffer.length > MAX_LINE_LENGTH) {
+        if (pending.length + chunk.length - start > MAX_LINE_BYTES) {
           this.#deliver({ kind: "malformed", reason: "line too long" });
           this.kill();
-          return; // Cancels stdout.
+          return;
         }
+        pending = concat(pending, chunk.subarray(start));
       }
     } catch {
-      // stdout failed: the exit event follows.
+      // stdout failed or was cancelled: the exit event follows.
     }
   }
 
   #line(text: string): void {
     const line = text.endsWith("\r") ? text.slice(0, -1) : text;
     if (line.trim() === "") return;
-    if (line.length > MAX_LINE_LENGTH) {
-      this.#deliver({ kind: "malformed", reason: "line too long" });
-      return;
-    }
     const message = parseEngineMessage(line);
     this.#deliver(
       message === undefined
@@ -213,10 +366,21 @@ class EngineProcess {
     try {
       await this.#writer.write(encoder.encode(JSON.stringify(message) + "\n"));
     } catch {
-      // Broken pipe: the process is gone and its exit event follows.
+      // Broken pipe or closed: the process is gone or going.
     }
   }
 
+  /** Drops both pipes at once (no waiting for pending writes). */
+  #release(): void {
+    this.#writer.abort().catch(() => {});
+    this.#reader.cancel().catch(() => {});
+  }
+
+  /**
+   * Kills the process and drops its pipes, so a launcher's grandchild (see
+   * the spec: launchers should `exec`) sees end of stdin and cannot hold up
+   * {@link closed}.
+   */
   kill(): void {
     if (this.#exited || this.#killed) return;
     this.#killed = true;
@@ -225,14 +389,15 @@ class EngineProcess {
     } catch {
       // Already exited.
     }
+    this.#release();
   }
 
   /** Asks the process to exit (`quit`, then end of stdin); kills it after `graceMs`. */
   async quit(graceMs: number): Promise<void> {
     if (!this.#exited && !this.#killed) {
+      const timer = setTimeout(() => this.kill(), graceMs);
       await this.send({ type: "quit" });
       await this.#writer.close().catch(() => {});
-      const timer = setTimeout(() => this.kill(), graceMs);
       await this.closed;
       clearTimeout(timer);
     }
@@ -244,6 +409,8 @@ const clip = (text: string) =>
   text.length > 80 ? `${text.slice(0, 80)}...` : text;
 
 export interface ExternalAdapterOptions {
+  /** The hosted Games, whose rules check what Engines send. */
+  readonly games: GameRegistry;
   /** Longest wait for `ready` after `hello`, ms. Default 10000. */
   readonly handshakeTimeoutMs?: number;
   /**
@@ -273,6 +440,11 @@ export interface ExternalAdapter extends EngineAdapter {
    * the next search. Throws a {@link SearchError} like a search would.
    */
   connect(entry: ExternalEngineEntry, signal?: AbortSignal): Promise<string>;
+  /**
+   * Resolves once background work (stopping searches, finishing handshakes
+   * of aborted searches) is done. For tests.
+   */
+  settled(): Promise<void>;
   /** Stops every process (idle ones get `quit`, busy ones are killed). */
   close(): Promise<void>;
 }
@@ -280,19 +452,24 @@ export interface ExternalAdapter extends EngineAdapter {
 /**
  * Runs external Engines (see the module doc). Per search: take an idle
  * process of the Engine or start one (`hello` -> `ready`, checked against the
- * Engine's Game), send `analyze`, yield each `analysis` until `done`. Errors:
- * a process that will not start or exits is `worker-error`; a line outside
- * the protocol or a message out of turn is `unreadable-reply` (the process is
- * killed); an `error` message is `engine-error` (the process stays usable);
- * no `ready` within `handshakeTimeoutMs` is `timeout`. When the search is
- * aborted or abandoned the adapter ends at once and, in the background, sends
- * `stop` and waits up to `stopTimeoutMs` for `done` before killing the
- * process. Restart policy: a broken process is replaced by a fresh one on the
- * next search; after `maxFailures` failures in a row the Engine refuses
- * searches for `cooldownMs`, then tries again.
+ * Engine's Game), send `analyze`, yield each `analysis` (rebuilt by
+ * {@link readAnalysis}) until `done`. Errors: a process that will not start
+ * or exits is `worker-error`; a line outside the protocol or a message out of
+ * turn is `unreadable-reply` (the process is killed), so is an Analysis
+ * {@link readAnalysis} rejects (the search is stopped); an `error` message is
+ * `engine-error` (the process stays usable); no `ready` within
+ * `handshakeTimeoutMs` is `timeout`. When the search is aborted or abandoned
+ * the adapter ends at once and, in the background, sends `stop` and waits up
+ * to `stopTimeoutMs` for `done` before killing the process; a handshake in
+ * progress completes in the background and the process joins the idle pool,
+ * so a slow-starting Engine is not restarted on every short search.
+ * Processes run with a cleared environment ({@link INHERITED_ENV} plus the
+ * Engine's `env`). Restart policy: a broken process is replaced by a fresh
+ * one on the next search; after `maxFailures` failures in a row the Engine
+ * refuses searches for `cooldownMs`, then tries again.
  */
 export function externalAdapter(
-  options: ExternalAdapterOptions = {},
+  options: ExternalAdapterOptions,
 ): ExternalAdapter {
   const settings: PoolSettings = {
     handshakeTimeoutMs: options.handshakeTimeoutMs ?? 10_000,
@@ -310,7 +487,16 @@ export function externalAdapter(
     }
     const key = JSON.stringify([entry.gameId, entry.id]);
     let pool = pools.get(key);
-    if (!pool) pools.set(key, pool = new EnginePool(entry, settings));
+    if (!pool) {
+      const rules = options.games.get(entry.gameId);
+      if (!rules) {
+        throw new SearchError(
+          "engine-error",
+          `no Game ${JSON.stringify(entry.gameId)}`,
+        );
+      }
+      pools.set(key, pool = new EnginePool(entry, rules, settings));
+    }
     return pool;
   };
   return {
@@ -331,10 +517,33 @@ export function externalAdapter(
       pool.release(process);
       return pool.name!;
     },
+    async settled() {
+      await Promise.all([...pools.values()].map((pool) => pool.settled()));
+    },
     async close() {
       closed = true;
       await Promise.all([...pools.values()].map((pool) => pool.close()));
     },
+  };
+}
+
+/**
+ * The SIGINT/SIGTERM handler `main.ts` installs: closes the external Engines
+ * (so none outlive the server as orphans), then exits. Runs once.
+ */
+export function shutdownHandler(
+  close: () => Promise<void>,
+  exit: (code: number) => void = Deno.exit,
+): () => Promise<void> {
+  let started = false;
+  return async () => {
+    if (started) return;
+    started = true;
+    try {
+      await close();
+    } finally {
+      exit(0);
+    }
   };
 }
 
@@ -352,8 +561,8 @@ class EnginePool {
   readonly #idle: EngineProcess[] = [];
   /** Every process not yet exited, idle or busy. */
   readonly #live = new Set<EngineProcess>();
-  /** Background `stop` drains, awaited on close. */
-  readonly #draining = new Set<Promise<void>>();
+  /** Background work (`stop` drains, handshakes), awaited on close. */
+  readonly #background = new Set<Promise<void>>();
   #failures = 0;
   #coolUntil = 0;
   #closed = false;
@@ -362,6 +571,7 @@ class EnginePool {
 
   constructor(
     readonly entry: ExternalEngineEntry,
+    readonly rules: AnyGameRules,
     readonly settings: PoolSettings,
   ) {}
 
@@ -375,6 +585,14 @@ class EnginePool {
     signal: AbortSignal,
   ): AsyncGenerator<Analysis<string>> {
     if (signal.aborted) return;
+    let decoded: unknown;
+    try {
+      decoded = this.rules.notation.decodePosition(position);
+    } catch (error) {
+      throw new SearchError("engine-error", `undecodable Position`, {
+        cause: error,
+      });
+    }
     const process = await this.acquire(signal);
     if (!process) return;
     const id = ++process.lastId;
@@ -390,7 +608,8 @@ class EnginePool {
         }
         const message = event.message;
         if (message.type === "analysis" && message.id === id) {
-          yield pickAnalysis(message.analysis);
+          // A rejected Analysis throws; the search is stopped in `finally`.
+          yield readAnalysis(message.analysis, this.rules, decoded);
         } else if (message.type === "done" && message.id === id) {
           open = false;
           this.#succeeded();
@@ -419,7 +638,8 @@ class EnginePool {
 
   /**
    * An idle usable process, or a newly started and handshaken one;
-   * `undefined` if `signal` aborts meanwhile.
+   * `undefined` if `signal` aborts first (a handshake under way then
+   * completes in the background and the process joins the idle pool).
    */
   async acquire(signal?: AbortSignal): Promise<EngineProcess | undefined> {
     if (this.#closed) {
@@ -439,6 +659,7 @@ class EnginePool {
       if (process.usable) return process;
       this.#discard(process); // Exited or spoke while idle.
     }
+    if (signal?.aborted) return undefined;
     let process: EngineProcess;
     try {
       // Asking first: spawning without permission could prompt on a terminal.
@@ -460,26 +681,36 @@ class EnginePool {
     }
     this.#live.add(process);
     process.closed.then(() => this.#live.delete(process));
+    const ready = this.#handshake(process).then(
+      (name) => {
+        this.name = name;
+        return process;
+      },
+      (error) => {
+        process.kill();
+        this.#failed();
+        throw error;
+      },
+    );
+    if (!signal) return await ready;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<undefined>((resolve) => {
+      onAbort = () => resolve(undefined);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
-      const name = await this.#handshake(process, signal);
-      if (name === undefined) {
-        process.kill(); // Aborted; not the Engine's fault.
-        return undefined;
+      const winner = await Promise.race([ready, aborted]);
+      if (winner === undefined) {
+        this.#track(ready.then((p) => this.release(p), () => {}));
       }
-      this.name = name;
-      return process;
-    } catch (error) {
-      process.kill();
-      this.#failed();
-      throw error;
+      return winner;
+    } finally {
+      signal.removeEventListener("abort", onAbort!);
     }
   }
 
-  /** `hello` -> `ready`; the announced name, or `undefined` if aborted. */
-  async #handshake(
-    process: EngineProcess,
-    signal?: AbortSignal,
-  ): Promise<string | undefined> {
+  /** `hello` -> `ready` within `handshakeTimeoutMs`; the announced name. */
+  async #handshake(process: EngineProcess): Promise<string> {
     const { gameId } = this.entry;
     const timeout = new AbortController();
     const timer = setTimeout(
@@ -488,11 +719,8 @@ class EnginePool {
     );
     try {
       await process.send({ type: "hello", protocol: PROTOCOL_VERSION, gameId });
-      const event = await process.next(
-        signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
-      );
+      const event = await process.next(timeout.signal);
       if (event === undefined) {
-        if (signal?.aborted) return undefined;
         throw new SearchError(
           "timeout",
           `${this.#label}: no ready within ${this.settings.handshakeTimeoutMs} ms`,
@@ -610,8 +838,8 @@ class EnginePool {
   }
 
   #track(task: Promise<void>): void {
-    this.#draining.add(task);
-    task.finally(() => this.#draining.delete(task));
+    this.#background.add(task);
+    task.finally(() => this.#background.delete(task));
   }
 
   #succeeded(): void {
@@ -625,6 +853,10 @@ class EnginePool {
     }
   }
 
+  async settled(): Promise<void> {
+    while (this.#background.size > 0) await Promise.all(this.#background);
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     const idle = this.#idle.splice(0);
@@ -634,31 +866,7 @@ class EnginePool {
     await Promise.all(
       idle.map((process) => process.quit(this.settings.stopTimeoutMs)),
     );
-    while (this.#draining.size > 0) await Promise.all(this.#draining);
+    await this.settled();
     await Promise.all([...this.#live].map((process) => process.closed));
   }
-}
-
-/**
- * Keeps only the fields an Analysis has (`depth`, `lines` of `moves` and
- * `score`, `score`, `seat`), so nothing else an external Engine sends reaches
- * clients. Shapes are not checked here: the runner rejects a malformed
- * Analysis (`unreadable-reply`), so a non-object passes through unchanged.
- */
-export function pickAnalysis(value: unknown): Analysis<string> {
-  if (typeof value !== "object" || value === null) {
-    return value as Analysis<string>;
-  }
-  const { depth, lines, score, seat } = value as Record<string, unknown>;
-  const pickLine = (line: unknown) => {
-    if (typeof line !== "object" || line === null) return line;
-    const { moves, score } = line as Record<string, unknown>;
-    return { moves, score };
-  };
-  return {
-    depth,
-    lines: Array.isArray(lines) ? lines.map(pickLine) : lines,
-    ...(score !== undefined && { score }),
-    ...(seat !== undefined && { seat }),
-  } as Analysis<string>;
 }

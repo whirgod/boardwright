@@ -1,12 +1,15 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { fileURLToPath } from "node:url";
 import { externalAdapter } from "./external-engine.ts";
+import { type AnyGameRules, GameRegistry } from "./games.ts";
+import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import {
   parseExternalEngineConfig,
   readExternalEngineConfig,
   registerExternalEngines,
 } from "./external-engine-config.ts";
 
+const GAMES = new GameRegistry([ticTacToe as unknown as AnyGameRules]);
 const SCRATCH = fileURLToPath(new URL("../../../.test-tmp/", import.meta.url));
 const TEST_ENGINE = fileURLToPath(
   new URL("./test-engines/external.ts", import.meta.url),
@@ -17,7 +20,7 @@ Deno.test("parseExternalEngineConfig resolves paths against the config's directo
     engines: [
       { gameId: "g", id: "a", command: "./bin/a", args: ["--x"] },
       { gameId: "g", id: "b", name: "B", command: "stockfish", cwd: "work" },
-      { gameId: "g", id: "c", command: "/opt/c", cwd: "/tmp" },
+      { gameId: "g", id: "c", command: "/opt/c", cwd: "/tmp", env: { K: "v" } },
     ],
   }, "/srv/conf");
   assertEquals(configs, [
@@ -36,7 +39,14 @@ Deno.test("parseExternalEngineConfig resolves paths against the config's directo
       args: [],
       cwd: "/srv/conf/work",
     },
-    { gameId: "g", id: "c", command: "/opt/c", args: [], cwd: "/tmp" },
+    {
+      gameId: "g",
+      id: "c",
+      command: "/opt/c",
+      args: [],
+      cwd: "/tmp",
+      env: { K: "v" },
+    },
   ]);
 });
 
@@ -52,6 +62,7 @@ Deno.test("parseExternalEngineConfig lists every problem", () => {
         7,
         { id: "", command: "x", name: 1 },
         { gameId: "g", id: "i", command: "x", args: [1], cwd: "" },
+        { gameId: "g", id: "j", command: "x", env: { A: 1 } },
       ],
     }, "/"), Error);
   assertEquals(
@@ -64,6 +75,7 @@ Deno.test("parseExternalEngineConfig lists every problem", () => {
       "- engines[1].name: expected a non-empty string",
       "- engines[2].cwd: expected a non-empty string",
       "- engines[2].args: expected an array of strings",
+      "- engines[3].env: expected an object of strings",
     ].join("\n"),
   );
 });
@@ -113,7 +125,7 @@ const config = (id: string, mode: string, extra = {}) => ({
 });
 
 Deno.test("registerExternalEngines names Engines from the config or their handshake", async () => {
-  const adapter = externalAdapter({ stderr: "null" });
+  const adapter = externalAdapter({ stderr: "null", games: GAMES });
   try {
     const entries = await registerExternalEngines(
       [config("a", "ok"), config("b", "ok", { name: "Bee" })],
@@ -135,7 +147,7 @@ Deno.test("registerExternalEngines names Engines from the config or their handsh
 });
 
 Deno.test("registerExternalEngines rejects with every problem", async () => {
-  const adapter = externalAdapter({ stderr: "null" });
+  const adapter = externalAdapter({ stderr: "null", games: GAMES });
   try {
     const error = await assertRejects(() =>
       registerExternalEngines(

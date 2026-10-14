@@ -6,7 +6,7 @@ import {
   routingAdapter,
   workerAdapter,
 } from "./engine-runner.ts";
-import { externalAdapter } from "./external-engine.ts";
+import { externalAdapter, shutdownHandler } from "./external-engine.ts";
 import {
   readExternalEngineConfig,
   registerExternalEngines,
@@ -34,7 +34,18 @@ const store = dataDir === ":memory:"
 // of it). Each command also needs `--allow-run=<command>`. Startup fails if
 // one cannot run or fails its handshake.
 const externalConfig = Deno.env.get("BOARDWRIGHT_EXTERNAL_ENGINES");
-const external = externalAdapter();
+const external = externalAdapter({
+  games: new GameRegistry(hostedCatalog.map((c) => c.game)),
+});
+// Stop external Engines with the server, so none is left running as an orphan.
+const shutdown = shutdownHandler(() => external.close());
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  try {
+    Deno.addSignalListener(signal, shutdown);
+  } catch {
+    // Not supported on this platform (SIGTERM on Windows).
+  }
+}
 const externalEngines = await registerExternalEngines(
   await readExternalEngineConfig(
     externalConfig ?? `${import.meta.dirname}/../../../external-engines.json`,

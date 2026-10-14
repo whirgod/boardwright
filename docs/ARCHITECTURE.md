@@ -189,19 +189,25 @@ core  <-  games/*  <-  engines/*
   Engine code cannot use net, env, write, subprocesses or any other file; attempts fail as
   `engine-error`. Needs `"unstable": ["worker-options"]` in the root `deno.json`. Not capped:
   CPU/memory inside the worker (the deadline terminates it).
-- `external-engine.ts` — `externalAdapter` (ADR 0008, [protocol](external-engine-protocol.md)):
-  per external Engine a pool of processes (`Deno.Command`, no shell), each handshaken once
-  (`hello` -> `ready`, Game id checked) and reused for one search after another (`analyze` ->
-  `analysis`* -> `done`); at most `maxIdle` (2) kept idle. Ending a search early sends `stop` in
-  the background and kills the process if no `done` follows within `stopTimeoutMs` (1 s).
-  Failures: cannot start / exited `worker-error`, a line outside the protocol (or > 1 MiB)
-  `unreadable-reply` (process killed), `error` `engine-error` (process kept), no `ready` within
-  `handshakeTimeoutMs` (10 s) `timeout`. Restart policy: broken processes are replaced on the
-  next search; `maxFailures` (3) in a row cool the Engine down for `cooldownMs` (30 s). Analyses
-  are cut to the Analysis fields (`pickAnalysis`); the runner checks their shape. `connect`
-  (startup) and `close` (kills every process). The spawn checks `--allow-run` first, so it never prompts.
+- `external-engine.ts` — `externalAdapter({ games, ... })` (ADR 0008, [protocol](external-engine-protocol.md)):
+  per external Engine a pool of processes (`Deno.Command`, no shell, cleared environment:
+  `INHERITED_ENV` = `PATH`/`HOME`/`LANG` plus the Engine's `env`), each handshaken once
+  (`hello` -> `ready`, Game id checked, name cleaned and capped) and reused for one search after
+  another (`analyze` -> `analysis`* -> `done`); at most `maxIdle` (2) kept idle. Every Analysis is
+  rebuilt by `readAnalysis` with the Game's rules (Moves decoded, legal in sequence, re-encoded;
+  Scores rebuilt; `score`/`seat` only while a Chance event is pending) or the search fails
+  `unreadable-reply`. Ending a search early sends `stop` in the background and kills the process
+  if no `done` follows within `stopTimeoutMs` (1 s); a handshake whose search was aborted
+  completes in the background and the process joins the idle pool. Failures: cannot start /
+  exited `worker-error`, a line outside the protocol (or > 1 MiB) `unreadable-reply` (process
+  killed), `error` `engine-error` (process kept), no `ready` within `handshakeTimeoutMs` (10 s)
+  `timeout`. `kill()` also drops both pipes, so a launcher's grandchild cannot hold up `close()`.
+  Restart policy: broken processes are replaced on the next search; `maxFailures` (3) in a row
+  cool the Engine down for `cooldownMs` (30 s). `connect` (startup), `settled` (tests), `close`;
+  `shutdownHandler` (SIGINT/SIGTERM in `main.ts`) closes them before exit. The spawn checks
+  `--allow-run` first, so it never prompts.
 - `external-engine-config.ts` — the config file (`{ "engines": [{ gameId, id, name?, command,
-  args?, cwd? }] }`, paths relative to the file) and `registerExternalEngines`: each Engine's
+  args?, cwd?, env? }] }`, paths relative to the file) and `registerExternalEngines`: each Engine's
   Game is hosted, `--allow-run` covers its command, and it completes the handshake; all problems
   are reported together and stop startup.
 - `catalog.ts` — `verifyCatalog`: the hosted catalog (`hosted-catalog.ts`: Games with their

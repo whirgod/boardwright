@@ -37,6 +37,11 @@ export interface ExternalEngineCommand {
   readonly args?: readonly string[];
   /** Working directory (absolute). Default: the server's. */
   readonly cwd?: string;
+  /**
+   * Environment variables of the process, besides the few it inherits
+   * (`INHERITED_ENV` in `external-engine.ts`); the rest are cleared.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** The Engines this server offers, per Game. */

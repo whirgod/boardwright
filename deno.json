@@ -49,6 +49,6 @@
       "command": "deno task --cwd apps/server start:example-engine",
       "dependencies": ["build:web"]
     },
-    "test": "deno test --allow-read=apps,engines,games,packages,examples,.test-tmp --allow-write=.test-tmp --allow-net=127.0.0.1 --allow-run=examples/random-engine/random-engine.ts,apps/server/src/test-engines/external.ts --coverage --clean && deno coverage --exclude='/main\\.ts$'"
+    "test": "deno test --allow-read=apps,engines,games,packages,examples,.test-tmp --allow-write=.test-tmp --allow-net=127.0.0.1 --allow-env=PATH,HOME,LANG --allow-run=examples/random-engine/random-engine.ts,apps/server/src/test-engines/external.ts,apps/server/src/test-engines/external-launcher.sh,apps/server/src/test-engines/env-engine.sh --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
 }

@@ -10,7 +10,10 @@
  * `limits.maxTimeMs` allows and stream an Analysis per completed depth.
  *
  * Run by the server as a configured external Engine, e.g. with
- * `examples/random-engine/external-engines.json`.
+ * `examples/random-engine/external-engines.json`. Running this file directly
+ * (shebang, `env -S`) works on Linux and macOS; elsewhere configure
+ * `"command": "deno", "args": ["run", "--no-prompt", "./random-engine.ts"]`
+ * (see the spec on the broader `--allow-run=deno` that needs).
  */
 import {
   type Analysis,

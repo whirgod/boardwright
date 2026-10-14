@@ -9,11 +9,12 @@
  * (never answers `hello`); `refuse` (`error` instead of `ready`);
  * `wrong-game`; `wrong-protocol`; `junk-hello` (a non-JSON line instead of
  * `ready`); `early-analysis` (an `analysis` instead of `ready`); `junk` /
- * `unknown-type` / `wrong-id` / `long-line` / `unterminated` /`bad-analysis` (in reply to
+ * `unknown-type` / `wrong-id` / `long-line` / `unterminated` / `bad-analysis` (in reply to
  * `analyze`); `error` (`error` for every other search); `exit-mid-search`
  * (one Analysis, then exits); `stream` (an Analysis every 10 ms until
  * `stop`, then `done`); `deaf` (streams like `stream` but ignores `stop`);
- * `extra-fields` (fields outside the Analysis shape).
+ * `send <json>` (answers with that Analysis); `name <text>` (announces that
+ * name). Exits at the end of stdin.
  */
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 
@@ -47,6 +48,9 @@ for await (
   }
 }
 
+// stdin closed: the server is gone (intervals would keep a `deno` process alive).
+Deno.exit(0);
+
 function handle(message: Record<string, unknown>) {
   const { id } = message;
   switch (message.type) {
@@ -65,7 +69,7 @@ function handle(message: Record<string, unknown>) {
         type: "ready",
         protocol: mode === "wrong-protocol" ? 2 : 1,
         gameId: mode === "wrong-game" ? "chess" : message.gameId,
-        name: "External test",
+        name: mode === "name" ? Deno.args[1] : "External test",
       });
     case "analyze": {
       searches++;
@@ -111,15 +115,9 @@ function handle(message: Record<string, unknown>) {
         case "deaf":
           streaming = setInterval(() => send(reply), 10);
           return;
-        case "extra-fields":
-          send({
-            ...reply,
-            analysis: {
-              ...reply.analysis,
-              secret: 1,
-              lines: reply.analysis.lines.map((l) => ({ ...l, note: "x" })),
-            },
-          });
+        case "send":
+          // Sends the Analysis given as the second argument (JSON).
+          send({ type: "analysis", id, analysis: JSON.parse(Deno.args[1]!) });
           return send({ type: "done", id });
       }
       send(reply);

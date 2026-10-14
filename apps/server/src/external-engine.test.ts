@@ -6,7 +6,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import { fileURLToPath } from "node:url";
-import type { Analysis } from "@boardwright/core";
+import { type Analysis, chancePending } from "@boardwright/core";
 import { backgammon } from "@boardwright/game-backgammon";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
 import { assertEngineContract } from "@boardwright/testing";
@@ -27,9 +27,11 @@ import {
   type ExternalAdapter,
   externalAdapter,
   type ExternalAdapterOptions,
-  MAX_LINE_LENGTH,
+  MAX_LINE_BYTES,
+  MAX_NAME_LENGTH,
   parseEngineMessage,
-  pickAnalysis,
+  readAnalysis,
+  shutdownHandler,
 } from "./external-engine.ts";
 import {
   readExternalEngineConfig,
@@ -46,7 +48,16 @@ const RANDOM_ENGINE = `${EXAMPLE_DIR}random-engine.ts`;
 const TEST_ENGINE = fileURLToPath(
   new URL("./test-engines/external.ts", import.meta.url),
 );
+const LAUNCHER = fileURLToPath(
+  new URL("./test-engines/external-launcher.sh", import.meta.url),
+);
+const ENV_ENGINE = fileURLToPath(
+  new URL("./test-engines/env-engine.sh", import.meta.url),
+);
 const START = ".........:x";
+const ttt = ticTacToe as unknown as AnyGameRules;
+const bg = backgammon as unknown as AnyGameRules;
+const GAMES = new GameRegistry([ttt, bg]);
 
 const random = (gameId = "tic-tac-toe"): ExternalEngineEntry => ({
   id: "random",
@@ -55,20 +66,20 @@ const random = (gameId = "tic-tac-toe"): ExternalEngineEntry => ({
   external: { command: RANDOM_ENGINE },
 });
 /** The test Engine (`test-engines/external.ts`) in `mode`. */
-const testEngine = (mode: string): ExternalEngineEntry => ({
-  id: mode,
+const testEngine = (mode: string, ...more: string[]): ExternalEngineEntry => ({
+  id: [mode, ...more].join(" "),
   name: mode,
   gameId: "tic-tac-toe",
-  external: { command: TEST_ENGINE, args: [mode] },
+  external: { command: TEST_ENGINE, args: [mode, ...more] },
 });
 
 /** Runs `fn` with an external adapter (stderr muted) and a runner on it, then closes. */
 async function withRunner(
   fn: (runner: EngineRunner, adapter: ExternalAdapter) => Promise<void>,
-  options: ExternalAdapterOptions = {},
+  options: Partial<ExternalAdapterOptions> = {},
   runnerOptions: EngineRunnerOptions = {},
 ): Promise<void> {
-  const adapter = externalAdapter({ stderr: "null", ...options });
+  const adapter = externalAdapter({ stderr: "null", games: GAMES, ...options });
   const runner = new EngineRunner({ adapter, ...runnerOptions });
   try {
     await fn(runner, adapter);
@@ -88,11 +99,12 @@ async function search(
   engine: ExternalEngineEntry,
   limits = {},
   signal?: AbortSignal,
+  position = START,
 ): Promise<Result> {
   const seen: Analysis<string>[] = [];
   try {
     const analyses = runner.analyze(
-      { engine, position: START, limits },
+      { engine, position, limits },
       signal ? { signal } : {},
     );
     for await (const analysis of analyses) seen.push(analysis);
@@ -111,11 +123,28 @@ const searchCount = (result: Result) => {
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Starts a search and resolves with its iterator once the first Analysis arrived. */
+async function firstAnalysis(
+  runner: EngineRunner,
+  engine: ExternalEngineEntry,
+  limits = {},
+) {
+  const it = runner.analyze({ engine, position: START, limits })
+    [Symbol.asyncIterator]();
+  const first = await it.next();
+  assert(!first.done, "no first Analysis");
+  return { it, first: first.value };
+}
+
+/** Generous slack for slow CI runners (2 cores, cold caches). */
+const SLACK = { slackMs: 3000, stepTimeoutMs: 30_000 };
+
 Deno.test("the example random Engine passes the Engine contract (tic-tac-toe)", async () => {
   await withRunner(async (runner) => {
     await assertEngineContract(
       runnerEngine(runner, random(), ticTacToe),
       ticTacToe,
+      SLACK,
     );
   });
 });
@@ -125,13 +154,13 @@ Deno.test("the example random Engine passes the Engine contract (backgammon, wit
     await assertEngineContract(
       runnerEngine(runner, random("backgammon"), backgammon),
       backgammon,
-      { positions: 4 },
+      { positions: 4, ...SLACK },
     );
   });
 });
 
 Deno.test("a full Match between two external Engines, registered from the example config", async () => {
-  const adapter = externalAdapter({ stderr: "null" });
+  const adapter = externalAdapter({ stderr: "null", games: GAMES });
   const runner = new EngineRunner({
     adapter: routingAdapter({ module: testWorkerAdapter(), external: adapter }),
   });
@@ -152,7 +181,7 @@ Deno.test("a full Match between two external Engines, registered from the exampl
       ],
     );
     const master = new GameMaster({
-      games: new GameRegistry([ticTacToe as unknown as AnyGameRules]),
+      games: new GameRegistry([ttt]),
       store: new InMemoryMatchStore(),
       engines: new EngineRegistry(entries),
     });
@@ -212,7 +241,7 @@ const PROTOCOL_ERRORS: [string, SearchFailure, RegExp][] = [
   ["wrong-id", "unreadable-reply", /unexpected analysis message/],
   ["long-line", "unreadable-reply", /line too long/],
   ["unterminated", "unreadable-reply", /line too long/],
-  ["bad-analysis", "unreadable-reply", /malformed Analysis/],
+  ["bad-analysis", "unreadable-reply", /malformed Analysis: depth/],
 ];
 
 for (const [mode, code, message] of PROTOCOL_ERRORS) {
@@ -260,7 +289,7 @@ Deno.test("a crash mid-search fails with 'worker-error' after what was streamed;
 });
 
 Deno.test("an aborted search sends stop; the process finishes it and is reused", async () => {
-  await withRunner(async (runner) => {
+  await withRunner(async (runner, adapter) => {
     const engine = testEngine("stream");
     const controller = new AbortController();
     const seen: Analysis<string>[] = [];
@@ -275,37 +304,94 @@ Deno.test("an aborted search sends stop; the process finishes it and is reused",
       }
     }, SearchError);
     assertEquals(error.code, "aborted");
-    await pause(200); // The process answers `stop` with `done`.
+    await adapter.settled(); // The process answered `stop` with `done`.
     // Breaking out of the loop stops a search the same way.
     for await (
       const _ of runner.analyze({ engine, position: START, limits: {} })
     ) break;
-    await pause(200);
-    const reused = runner.analyze({ engine, position: START, limits: {} });
-    for await (const analysis of reused) {
-      assertEquals(analysis.lines[0]!.score, { kind: "value", value: 3 });
-      break;
-    }
+    await adapter.settled();
+    const { it, first } = await firstAnalysis(runner, engine);
+    assertEquals(first.lines[0]!.score, { kind: "value", value: 3 });
+    await it.return?.();
+    await adapter.settled();
   });
 });
 
 Deno.test("a search past its deadline times out; a process ignoring stop is killed and replaced", async () => {
   await withRunner(
-    async (runner) => {
+    async (runner, adapter) => {
       const engine = testEngine("deaf");
-      const result = await search(runner, engine, { maxTimeMs: 50 });
+      await adapter.connect(engine); // Start-up outside the deadline.
+      const result = await search(runner, engine, { maxTimeMs: 300 });
       assertEquals(result.code, "timeout");
       assert(result.seen.length > 0);
-      await pause(300); // stopTimeoutMs: the process is killed.
-      const again = runner.analyze({ engine, position: START, limits: {} });
-      for await (const analysis of again) {
-        assertEquals(analysis.lines[0]!.score, { kind: "value", value: 1 });
-        break;
-      }
+      await adapter.settled(); // No `done` within stopTimeoutMs: killed.
+      const { it, first } = await firstAnalysis(runner, engine);
+      assertEquals(first.lines[0]!.score, { kind: "value", value: 1 });
+      await it.return?.();
+      await adapter.settled();
     },
     { stopTimeoutMs: 100 },
-    { graceMs: 50 },
+    { graceMs: 300 },
   );
+});
+
+Deno.test("an aborted handshake completes in the background; the process is used next", async () => {
+  await withRunner(async (runner, adapter) => {
+    const engine = testEngine("ok");
+    const controller = new AbortController();
+    const pending = search(runner, engine, {}, controller.signal);
+    await pause(0); // The search takes its slot and starts the process.
+    controller.abort();
+    assertEquals((await pending).code, "aborted");
+    await adapter.settled();
+    // The process the aborted search started: this is its first search.
+    assertEquals(searchCount(await search(runner, engine)), 1);
+    assertEquals(searchCount(await search(runner, engine)), 2);
+  });
+});
+
+Deno.test("a launcher that does not exec cannot hold up close()", async () => {
+  const adapter = externalAdapter({ stderr: "null", games: GAMES });
+  const runner = new EngineRunner({ adapter });
+  const engine: ExternalEngineEntry = {
+    ...testEngine("deaf"),
+    external: { command: LAUNCHER, args: ["deaf"] },
+  };
+  const { it } = await firstAnalysis(runner, engine);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const closed = await Promise.race([
+    adapter.close().then(() => true),
+    new Promise<false>((r) => timer = setTimeout(() => r(false), 10_000)),
+  ]);
+  clearTimeout(timer);
+  assert(closed, "close() did not finish");
+  let rest: unknown;
+  try {
+    while (!(await it.next()).done);
+  } catch (error) {
+    rest = error;
+  }
+  assert(rest instanceof SearchError && rest.code === "worker-error");
+});
+
+Deno.test("Engine processes get a cleared environment plus their configured env", async () => {
+  await withRunner(async (_, adapter) => {
+    const error = await assertRejects(
+      () =>
+        adapter.connect({
+          ...testEngine("env"),
+          external: { command: ENV_ENGINE, env: { ENGINE_KEY: "1" } },
+        }),
+      SearchError,
+    );
+    const names = error.message.split("handshake: ")[1]!.trim().split(" ");
+    assert(names.includes("ENGINE_KEY"), names.join(" "));
+    assert(names.includes("PATH"), names.join(" "));
+    // Only the inherited allowlist, the Engine's own and what sh sets itself.
+    const allowed = ["PATH", "HOME", "LANG", "ENGINE_KEY", "PWD", "SHLVL", "_"];
+    assertEquals(names.filter((n) => !allowed.includes(n)), []);
+  });
 });
 
 Deno.test("restart policy: after maxFailures failures in a row the Engine cools down, then retries", async () => {
@@ -333,14 +419,106 @@ Deno.test("a successful search resets the failure count", async () => {
   }, { maxFailures: 1 });
 });
 
-Deno.test("fields outside the Analysis shape are dropped", async () => {
+Deno.test("Analyses are rebuilt: extra fields go, Moves are re-encoded", async () => {
   await withRunner(async (runner) => {
-    const result = await search(runner, testEngine("extra-fields"));
+    const sent = {
+      depth: 1,
+      x: 1,
+      lines: [{
+        moves: ["a1", "b2"],
+        note: "x",
+        score: { kind: "value", value: 1, leak: "y" },
+      }],
+    };
+    const result = await search(
+      runner,
+      testEngine("send", JSON.stringify(sent)),
+    );
     assertEquals(result.seen, [{
       depth: 1,
-      lines: [{ moves: ["a1"], score: { kind: "value", value: 1 } }],
+      lines: [{ moves: ["a1", "b2"], score: { kind: "value", value: 1 } }],
     }]);
   });
+});
+
+const BAD_LINES: [string, Record<string, unknown>, RegExp][] = [
+  ["an illegal Move", { moves: ["a1", "a1"] }, /illegal Move a1/],
+  ["an undecodable Move", { moves: ["zz9"] }, /undecodable Move zz9/],
+  ["a markup Move", { moves: ["<img src=x>"] }, /undecodable Move <img/],
+  ["a bad Score", {
+    moves: ["a1"],
+    score: { kind: "value", value: "1" },
+  }, /Line score/],
+];
+
+for (const [what, line, message] of BAD_LINES) {
+  Deno.test(`an Analysis with ${what} fails with 'unreadable-reply'`, async () => {
+    await withRunner(async (runner) => {
+      const analysis = {
+        depth: 1,
+        lines: [{ score: { kind: "value", value: 0 }, ...line }],
+      };
+      const result = await search(
+        runner,
+        testEngine("send", JSON.stringify(analysis)),
+      );
+      assertEquals(result.code, "unreadable-reply");
+      assertMatch(result.message!, message);
+    });
+  });
+}
+
+Deno.test("readAnalysis checks Lines, Scores and the pending-chance shape", () => {
+  const p = ttt.notation.decodePosition(START);
+  const v = { kind: "value", value: 0 };
+  const bad = (value: unknown, rules = ttt, position: unknown = p) =>
+    assertThrows(
+      () => readAnalysis(value, rules, position),
+      SearchError,
+      "malformed Analysis",
+    );
+  const line = (moves: unknown, score: unknown = v) => ({
+    depth: 1,
+    lines: [{ moves, score }],
+  });
+  for (
+    const value of [
+      7,
+      [],
+      { depth: -1, lines: [] },
+      { depth: 1.5, lines: [] },
+      { depth: 1, lines: {} },
+      { depth: 1, lines: [null] },
+      line([]),
+      line([1]),
+      line(["a1"], { kind: "win-in", plies: -1 }),
+      line(["a1"], { kind: "draw" }),
+      line(["a1"], null),
+      { depth: 1, lines: [], score: v, seat: "x" }, // No Chance event pending.
+    ]
+  ) bad(value);
+  // Moves after the Game ended.
+  bad(line(["a1", "a2", "b1", "b2", "c1", "c2"]));
+  assertEquals(
+    readAnalysis(line(["a1"], { kind: "win-in", plies: 3, z: 1 }), ttt, p),
+    {
+      depth: 1,
+      lines: [{ moves: ["a1"], score: { kind: "win-in", plies: 3 } }],
+    },
+  );
+  // Backgammon at the start: the opening roll is pending.
+  const roll = bg.initialPosition();
+  assert(chancePending(bg, roll));
+  const seat = bg.seats[0]!;
+  const expected = { kind: "loss-in", plies: 2 };
+  assertEquals(
+    readAnalysis({ depth: 1, lines: [], score: expected, seat }, bg, roll),
+    { depth: 1, lines: [], score: { kind: "loss-in", plies: 2 }, seat },
+  );
+  bad({ depth: 1, lines: [], score: v, seat: { evil: 1 } }, bg, roll);
+  bad({ depth: 1, lines: [], score: v, seat: "nobody" }, bg, roll);
+  bad({ depth: 1, lines: [], score: { kind: "value" }, seat }, bg, roll);
+  bad(line(["24/23"]), bg, roll);
 });
 
 Deno.test("connect handshakes once and keeps the process for the first search", async () => {
@@ -358,21 +536,24 @@ Deno.test("connect handshakes once and keeps the process for the first search", 
 });
 
 Deno.test("close() kills busy processes and refuses later searches", async () => {
-  const adapter = externalAdapter({ stderr: "null" });
+  const adapter = externalAdapter({ stderr: "null", games: GAMES });
   const runner = new EngineRunner({ adapter });
-  const busy = search(runner, testEngine("stream"));
-  await pause(300);
+  const { it } = await firstAnalysis(runner, testEngine("stream"));
   await adapter.close();
-  const result = await busy;
-  assertEquals(result.code, "worker-error");
-  assert(result.seen.length > 0);
+  let rest: unknown;
+  try {
+    while (!(await it.next()).done); // Analyses already sent may still come.
+  } catch (error) {
+    rest = error;
+  }
+  assert(rest instanceof SearchError && rest.code === "worker-error");
   const later = await search(runner, testEngine("ok"));
   assertEquals(later.code, "worker-error");
   assertMatch(later.message!, /shut down/);
 });
 
 Deno.test("the external adapter refuses module Engines; the worker adapter external ones", async () => {
-  const adapter = externalAdapter();
+  const adapter = externalAdapter({ games: GAMES });
   const moduleEntry = {
     id: "m",
     name: "M",
@@ -388,6 +569,28 @@ Deno.test("the external adapter refuses module Engines; the worker adapter exter
     SearchError,
     "not an external Engine",
   );
+  assertThrows(
+    () =>
+      adapter.analyze(
+        {
+          engine: { ...testEngine("ok"), gameId: "go" },
+          position: START,
+          limits: {},
+        },
+        new AbortController().signal,
+      ),
+    SearchError,
+    'no Game "go"',
+  );
+  const undecodable = await search(
+    new EngineRunner({ adapter }),
+    testEngine("ok"),
+    {},
+    undefined,
+    "nope",
+  );
+  assertEquals(undecodable.code, "engine-error");
+  assertMatch(undecodable.message!, /undecodable Position/);
   await adapter.close();
   const runner = new EngineRunner({ adapter: workerAdapter() });
   const result = await search(runner, testEngine("ok"));
@@ -440,6 +643,7 @@ Deno.test("parseEngineMessage accepts protocol messages only", () => {
     "null",
     "[1]",
     '{"type":"ready","protocol":1,"gameId":"g","name":""}',
+    '{"type":"ready","protocol":1,"gameId":"g","name":" \\u0007\\n "}',
     '{"type":"ready","protocol":"1","gameId":"g","name":"N"}',
     '{"type":"analysis","id":1}',
     '{"type":"analysis","id":1.5,"analysis":{}}',
@@ -449,28 +653,39 @@ Deno.test("parseEngineMessage accepts protocol messages only", () => {
     '{"type":"bestmove","id":1}',
   ];
   for (const line of invalid) assertEquals(parseEngineMessage(line), undefined);
-  assert(MAX_LINE_LENGTH >= 1 << 20);
+  assertEquals(MAX_LINE_BYTES, 1 << 20);
+  const long = parseEngineMessage(JSON.stringify({
+    type: "ready",
+    protocol: 1,
+    gameId: "g",
+    name: "Bad\u0000\nName " + "x".repeat(500),
+  }));
+  assert(long?.type === "ready");
+  assertEquals(long.name.length, MAX_NAME_LENGTH);
+  assert(long.name.startsWith("BadName x"), long.name);
 });
 
-Deno.test("pickAnalysis keeps the Analysis fields and passes odd shapes on", () => {
-  assertEquals(pickAnalysis(7), 7 as unknown as Analysis<string>);
-  assertEquals(
-    pickAnalysis({
-      depth: 1,
-      lines: "x",
-      score: { kind: "value", value: 1 },
-      seat: "x",
-      z: 1,
-    }),
-    {
-      depth: 1,
-      lines: "x",
-      score: { kind: "value", value: 1 },
-      seat: "x",
-    } as unknown as Analysis<string>,
+Deno.test("the announced name is cleaned before clients see it", async () => {
+  await withRunner(async (_, adapter) => {
+    assertEquals(
+      await adapter.connect(testEngine("name", "\u001b[31mRed\tEngine")),
+      "[31mRedEngine",
+    );
+  });
+});
+
+Deno.test("shutdownHandler closes once, then exits", async () => {
+  const calls: string[] = [];
+  const handler = shutdownHandler(
+    () => {
+      calls.push("close");
+      return Promise.resolve();
+    },
+    (code) => {
+      calls.push(`exit ${code}`);
+    },
   );
-  assertEquals(
-    pickAnalysis({ depth: 1, lines: [null] }),
-    { depth: 1, lines: [null] } as unknown as Analysis<string>,
-  );
+  await handler();
+  await handler();
+  assertEquals(calls, ["close", "exit 0"]);
 });

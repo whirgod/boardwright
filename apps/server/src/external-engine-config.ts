@@ -19,6 +19,8 @@ export interface ExternalEngineConfig {
   readonly args: readonly string[];
   /** Absolute working directory. */
   readonly cwd: string;
+  /** Extra environment variables of the process (the rest are cleared). */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -42,7 +44,7 @@ export function parseExternalEngineConfig(
   engines.forEach((value, i) => {
     const where = `engines[${i}]`;
     if (!isRecord(value)) return problems.push(`${where}: not an object`);
-    const { gameId, id, name, command, args, cwd } = value;
+    const { gameId, id, name, command, args, cwd, env } = value;
     const before = problems.length;
     const text = (field: string, v: unknown, optional = false) => {
       if (optional && v === undefined) return;
@@ -61,6 +63,13 @@ export function parseExternalEngineConfig(
     ) {
       problems.push(`${where}.args: expected an array of strings`);
     }
+    if (
+      env !== undefined &&
+      !(isRecord(env) &&
+        Object.values(env).every((v) => typeof v === "string"))
+    ) {
+      problems.push(`${where}.env: expected an object of strings`);
+    }
     if (problems.length > before) return;
     const path = (p: string) => isAbsolute(p) ? p : resolve(baseDir, p);
     configs.push({
@@ -72,6 +81,7 @@ export function parseExternalEngineConfig(
         : command as string,
       args: (args ?? []) as string[],
       cwd: cwd === undefined ? baseDir : path(cwd as string),
+      ...(env !== undefined && { env: env as Record<string, string> }),
     });
   });
   if (problems.length > 0) {
@@ -145,6 +155,7 @@ export async function registerExternalEngines(
         command: config.command,
         args: config.args,
         cwd: config.cwd,
+        ...(config.env && { env: config.env }),
       },
     };
     try {
