@@ -52,3 +52,9 @@ rolled by the Game master, a Move is the full play of one roll.
     `b2,0,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w2 0/0 - -`.
 - Chance results: a roll `<high><low>` such as `62` or `33`; the opening roll `<white>-<black>`,
   e.g. `3-6` (black moves first with 63).
+
+## Helpers
+
+- `stepOrders(position)`: every order of single-die Steps that plays each legal Move, with the
+  Move as `legalMoves` lists it (with 31, `6/5 8/5` plays `8/5 6/5`, `24/23 23/20` plays
+  `24/21 21/20`). For entering a Move Step by Step, as the web UI's board does.

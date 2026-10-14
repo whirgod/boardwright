@@ -187,8 +187,8 @@ core  <-  games/*  <-  engines/*
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
   `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
-  checkers and chess (minimax Engines), and backgammon (a Game with chance; no Engine yet, so
-  human Players only).
+  checkers and chess (minimax Engines), and backgammon (a Game with chance; expectiminimax
+  Engine `engines/backgammon-expecti`).
 - `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
   `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
@@ -289,10 +289,15 @@ Resignations stay REST.
   reach, `kind: "preview"`, `index` = step; it stops at the first Move that does not decode or
   apply); Moves that do not decode are skipped, and a Position that does not decode
   makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
-  `board.tsx` draws any scene as SVG. Implemented for tic-tac-toe, nine men's morris, checkers and
-  chess; Games without one fall back to Notation text and legal-Move buttons. Chess input: a Move
-  is `from` then `to` (castling is the king's two-square Move); promotion is a third click, an
-  effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
+  `board.tsx` draws any scene as SVG. A renderer whose input does not follow `moveTargets`' click
+  order provides `nextTargets` for the destination highlights. Implemented for tic-tac-toe, nine
+  men's morris, checkers, chess and backgammon; Games without one fall back to Notation text and
+  legal-Move buttons. Backgammon input: each Step (one die) is a checker then its destination
+  (`bar` and the `off` tray are targets), in any playable order (the Game's `stepOrders`); the
+  Move is played after its last Step; the dice start over, or play `pass`. A Move's arrow shows
+  its first checker's journey (other Steps are `effects`). Its last Move is not highlighted (the
+  replay needs the Chance events). Chess input: a Move is `from` then `to` (castling is the
+  king's two-square Move); promotion is a third click, an effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
   pieces of the Seat to move. The Move list still shows Notation text (UCI), not SAN; SAN
   (`formatSan`) is not wired into the Move list display yet.
 

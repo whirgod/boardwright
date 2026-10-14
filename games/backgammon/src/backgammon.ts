@@ -270,6 +270,59 @@ function plays(position: BackgammonPosition): Play[] {
   return cached;
 }
 
+/** A legal Move with one order of single-die Steps that plays it. */
+export interface StepOrder {
+  /** The Move as `legalMoves` lists it. */
+  readonly move: BackgammonMove;
+  /** Steps in playing order, one die each; may differ from `move.steps`. */
+  readonly steps: readonly Step[];
+}
+
+/**
+ * Every way to play each legal Move one die at a time, for entering Moves
+ * Step by Step (e.g. in a UI): with 31 from the initial Position,
+ * `8/5 6/5` is also played as `6/5 8/5`, and `24/21 21/20` also as
+ * `24/23 23/20`. Every Step is legal when played (bar first, open points,
+ * bearing-off rules), and every order ends in a legal Move. Empty unless a
+ * Seat is to move; `pass` is played by no Steps.
+ */
+export function stepOrders(position: BackgammonPosition): StepOrder[] {
+  const legal = plays(position);
+  const first = legal[0];
+  if (first === undefined) return [];
+  const { turn, dice } = position;
+  const byKey = new Map(legal.map((p) => [p.key, p.move]));
+  const length = first.move.steps.length;
+  const [high, low] = dice!;
+  const orders = new Map<string, StepOrder>();
+  const visit = (board: Board, steps: Step[], left: readonly number[]) => {
+    if (steps.length === length) {
+      const move = byKey.get(boardKey(board));
+      if (move) orders.set(encodeMove({ steps }), { move, steps });
+      return;
+    }
+    const tried = new Set<number>();
+    for (const [i, die] of left.entries()) {
+      if (tried.has(die)) continue;
+      tried.add(die);
+      const rest = left.filter((_, j) => j !== i);
+      for (let from = BAR; from >= 1; from--) {
+        const to = target(board, from, die);
+        if (to === undefined) continue;
+        const next = copyBoard(board);
+        apply(next, from, to);
+        visit(next, [...steps, { from, to }], rest);
+      }
+    }
+  };
+  visit(
+    boardOf(position, turn!),
+    [],
+    high === low ? [high, high, high, high] : [high, low],
+  );
+  return [...orders.values()];
+}
+
 /** The Position after `seat` played to `board`; the Opponent rolls next. */
 function positionAfter(
   position: BackgammonPosition,
