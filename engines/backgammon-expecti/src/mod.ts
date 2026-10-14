@@ -36,6 +36,10 @@
  * millisecond; depth 2 (every roll, the Opponent's best reply) a few hundred;
  * depth 3 about half a minute in the opening. So {@link DEFAULT_MAX_DEPTH}
  * caps searches that set no `maxDepth`, keeping Engine Matches responsive.
+ * The cap applies even when `maxTimeMs` is set (the server always sets it):
+ * `maxTimeMs` alone never deepens past depth 2. A deeper search needs an
+ * explicit `maxDepth`, and is still cut off by `maxTimeMs` (the last
+ * completed depth is the answer).
  *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker.
  */

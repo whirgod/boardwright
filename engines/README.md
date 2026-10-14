@@ -100,4 +100,6 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without
-  `maxDepth` stop at depth 2 (a few hundred ms; depth 3 takes about half a minute).
+  `maxDepth` stop at depth 2 (a few hundred ms; depth 3 takes about half a minute), even with a
+  `maxTimeMs` (which the server always sets): `maxTimeMs` alone never deepens. Deeper searches
+  need an explicit `maxDepth`, still bounded by `maxTimeMs`.

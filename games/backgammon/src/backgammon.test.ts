@@ -521,7 +521,8 @@ Deno.test("stepOrders: every order plays its Move in random Matches", () => {
         p = g.resolveChance(p, pickChance(events, rand()));
         continue;
       }
-      for (const { move, steps } of stepOrders(p)) {
+      const orders = stepOrders(p);
+      for (const { move, steps } of orders) {
         const text = n.encodeMove({ steps });
         assertEquals(
           n.encodeMove(n.decodeMove(text, p)),
@@ -530,6 +531,12 @@ Deno.test("stepOrders: every order plays its Move in random Matches", () => {
         );
       }
       const legal = g.legalMoves(p);
+      // Complete too: every legal Move can be entered in some order.
+      assertEquals(
+        new Set(orders.map((o) => n.encodeMove(o.move))).size,
+        legal.length,
+        n.encodePosition(p),
+      );
       p = g.play(p, legal[Math.floor(rand() * legal.length)]!);
     }
   }

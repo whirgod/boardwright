@@ -296,8 +296,8 @@ Resignations stay REST.
   (`bar` and the `off` tray are targets), in any playable order (the Game's `stepOrders`); the
   Move is played after its last Step; the dice start over, or play `pass`. A Move's arrow shows
   its first checker's journey (other Steps are `effects`). Its last Move is not highlighted (the
-  replay needs the Chance events). Chess input: a Move is `from` then `to` (castling is the king's two-square Move); promotion is a third click, an
-  effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
+  replay needs the Chance events). Chess input: a Move is `from` then `to` (castling is the
+  king's two-square Move); promotion is a third click, an effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
   pieces of the Seat to move. The Move list still shows Notation text (UCI), not SAN; SAN
   (`formatSan`) is not wired into the Move list display yet.
 

@@ -118,6 +118,19 @@ Deno.test("input: a checker moved on is clicked again, either die first", () => 
   }
 });
 
+Deno.test("input: a Step onto a blot hits it; the checker may move on", () => {
+  // A black blot on black's 7-point (white's 18-point).
+  const points = START.replace("b3,0,b5", "b2,b1,b5");
+  const p = at("65", "white", points);
+  const intent = clickAll(p, ["p24", "p18", "p18", "p13"]);
+  assert(intent.kind === "move");
+  assertEquals(encode(intent.move), "24/18 18/13");
+  assertEquals(backgammon.play(p, intent.move).bar.black, 1);
+  // The 5 would land on black's made 6-point (white's 19): only the hit.
+  const legal = backgammon.legalMoves(p);
+  assertEquals(nextTargets(p, legal, ["p24"]), ["p18"]);
+});
+
 Deno.test("input: a checker on the bar enters first", () => {
   const p = at("31", "white", START.replace("w2", "w1"), "1/0");
   const legal = backgammon.legalMoves(p);

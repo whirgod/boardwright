@@ -14,6 +14,7 @@ import {
   type BackgammonSeat,
   BAR,
   OFF,
+  type StepOrder,
   stepOrders,
 } from "@boardwright/game-backgammon";
 import type {
@@ -274,6 +275,18 @@ interface Entry {
 }
 
 /**
+ * The Game's `stepOrders`, cached for the last Position: every render and
+ * click of the same Position (decoded afresh each time) needs them, and a
+ * spread-out double has thousands.
+ */
+let cached: { key: string; orders: readonly StepOrder[] } | undefined;
+function ordersOf(position: BackgammonPosition): readonly StepOrder[] {
+  const key = backgammon.notation.encodePosition(position);
+  if (cached?.key !== key) cached = { key, orders: stepOrders(position) };
+  return cached.orders;
+}
+
+/**
  * Every way to click each of `legalMoves`: one entry per order of
  * single-die Steps that plays it (the Game's `stepOrders`).
  */
@@ -285,7 +298,7 @@ function entries(
   if (seat === null) return [];
   const { encodeMove } = backgammon.notation;
   const allowed = new Map(legalMoves.map((m) => [encodeMove(m), m]));
-  return stepOrders(position).flatMap(({ move, steps }) => {
+  return ordersOf(position).flatMap(({ move, steps }) => {
     const legal = allowed.get(encodeMove(move));
     return legal === undefined ? [] : [{
       move: legal,

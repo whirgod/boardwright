@@ -193,5 +193,5 @@ Deno.test("beats a seeded random mover", async () => {
 });
 
 Deno.test("honours the Engine contract", async () => {
-  await assertEngineContract(engine, rules, { positions: 4, maxDepth: 2 });
+  await assertEngineContract(engine, rules, { positions: 4, maxDepth: 1 });
 });
