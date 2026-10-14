@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
+import { checkers } from "@boardwright/game-checkers";
 import type { BoardRenderer, MoveTargets } from "./board.ts";
 import { bindRenderer, type BoardRequest, gameView } from "./mod.ts";
 
@@ -289,4 +290,52 @@ Deno.test("click: tic-tac-toe plays the clicked cell when it is legal", () => {
   assertEquals(ttt.click({ ...req, legalMoves: [] }, "b2"), {
     kind: "ignore",
   });
+});
+
+Deno.test("gameView: checkers captures reach the last-Move highlight, not the click order", () => {
+  const view = gameView("checkers")!;
+  const entries = ["9-13", "21-17", "5-9", "17-14"].map(mv);
+  const before = checkers.notation.encodePosition(
+    entries.reduce(
+      (p, e) => checkers.play(p, checkers.notation.decodeMove(e.move, p)),
+      checkers.initialPosition(),
+    ),
+  );
+  const legalMoves = ["9x18", "10x17"];
+  const request = { position: before, entries, legalMoves, selection: [] };
+  assertEquals(
+    view.board(request).highlights.map((h) => h.kind),
+    ["last-move", "last-move"],
+  );
+  // The capture 9x18 jumps square 14: an effect of the last Move.
+  const { highlights } = view.board({
+    ...request,
+    entries: [...entries, mv("9x18")],
+  });
+  assertEquals(highlights, [
+    { target: "9", kind: "last-move" },
+    { target: "18", kind: "last-move" },
+    { target: "14", kind: "last-move-effect" },
+  ]);
+  // Clicks follow the path only: the jumped square is not a click target.
+  const picked = view.board({ ...request, selection: ["9"] }).highlights;
+  assertEquals(
+    picked.filter((h) => h.kind === "destination"),
+    [{ target: "18", kind: "destination" }],
+  );
+  assertEquals(view.click({ ...request, selection: ["9"] }, "18"), {
+    kind: "move",
+    move: "9x18",
+  });
+});
+
+Deno.test("gameView: a Chance entry for a Game without chance gives no highlight", () => {
+  const view = gameView("checkers")!;
+  const { highlights } = view.board({
+    position: checkers.notation.encodePosition(checkers.initialPosition()),
+    entries: [{ kind: "chance", chance: "6-1" }, mv("9-13")],
+    legalMoves: [],
+    selection: [],
+  });
+  assertEquals(highlights, []);
 });

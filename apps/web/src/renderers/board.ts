@@ -135,6 +135,13 @@ export interface BoardRenderer<Position, Move> {
     target: TargetId,
   ): MoveIntent<Move>;
   /**
+   * Optional: the part of a non-empty `selection` to show (and announce) as
+   * selected, for renderers whose selection also holds finished Steps (e.g.
+   * backgammon, where only a trailing picked checker is pending). Default:
+   * the whole selection.
+   */
+  picked?(selection: Selection): Selection;
+  /**
    * Optional: the targets a click may continue a non-empty `selection` with
    * (highlighted as destinations), for renderers whose `input` does not
    * follow `moveTargets`' click order (e.g. backgammon, whose Steps may be

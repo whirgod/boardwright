@@ -170,6 +170,11 @@ export function applySteps(
   return { ...position, points, bar, off };
 }
 
+/** Only a trailing picked checker is pending; entered Steps show on the board. */
+export function picked(selection: Selection): Selection {
+  return selection.length % 2 === 1 ? selection.slice(-1) : [];
+}
+
 function scene(original: BackgammonPosition, selection: Selection = []) {
   const position = applySteps(original, selection);
   const board: Shape[] = [{
@@ -456,4 +461,4 @@ function moveTargets(
 export const backgammonRenderer: BoardRenderer<
   BackgammonPosition,
   BackgammonMove
-> = { scene, moveTargets, input, nextTargets };
+> = { scene, moveTargets, input, nextTargets, picked };

@@ -4,6 +4,7 @@ import { checkers } from "@boardwright/game-checkers";
 import { chess } from "@boardwright/game-chess";
 import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
+import type { MoveListEntry } from "../api.ts";
 import type {
   Arrow,
   BoardRenderer,
@@ -21,10 +22,9 @@ import { ticTacToeRenderer } from "./tic-tac-toe.ts";
 
 export type * from "./board.ts";
 
-/** One entry of a Match's Move list in Notation: a Move or a Chance event. */
-export type BoardEntry =
-  | { readonly kind: "move"; readonly move: string }
-  | { readonly kind: "chance"; readonly chance: string };
+// The API's Move list entry type; it imports only `core`, so the renderers
+// layer may use it.
+type BoardEntry = MoveListEntry;
 
 /** What the UI knows about a Match, all in the Game's Notation (as the API sends it). */
 export interface BoardRequest {
@@ -176,7 +176,7 @@ export function bindRenderer<Position, Move>(
       const legalMoves = decodeMoves(request.legalMoves, position);
       const highlights = lastMove(request.entries);
       const { selection } = request;
-      for (const target of selection) {
+      for (const target of renderer.picked?.(selection) ?? selection) {
         highlights.push({ target, kind: "selected" });
       }
       if (selection.length > 0 && renderer.nextTargets) {

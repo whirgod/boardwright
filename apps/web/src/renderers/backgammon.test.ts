@@ -12,9 +12,11 @@ import {
   DICE_TARGET,
   input,
   nextTargets,
+  picked,
   pipCount,
   targetOf,
 } from "./backgammon.ts";
+import type { MoveListEntry } from "../api.ts";
 import { gameView } from "./mod.ts";
 
 const START = "b2,0,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w2";
@@ -380,4 +382,68 @@ Deno.test("gameView: backgammon highlights the last Move across Chance events", 
     { target: "p7", kind: "last-move" },
     { target: "p8", kind: "last-move-effect" },
   ]);
+});
+
+Deno.test("gameView: backgammon review at an earlier ply and bad Chance events", () => {
+  const view = gameView("backgammon")!;
+  const position = backgammon.notation.encodePosition(
+    backgammon.initialPosition(),
+  );
+  const request = { position, legalMoves: [], selection: [] };
+  const last = (entries: readonly MoveListEntry[]) =>
+    view.board({ ...request, entries }).highlights;
+  const entries: MoveListEntry[] = [
+    { kind: "chance", chance: "6-1" },
+    { kind: "move", move: "13/7 8/7" },
+    { kind: "chance", chance: "52" },
+    { kind: "move", move: "24/22 13/8" },
+  ];
+  // Reviewing at ply 2 highlights the first Move, not the later one.
+  assertEquals(last(entries.slice(0, 2)).map((h) => h.target), [
+    "p13",
+    "p7",
+    "p8",
+  ]);
+  assertEquals(last(entries.slice(0, 3)).length, 3);
+  // A Chance event that does not decode: no highlight, no throw.
+  assertEquals(last([{ kind: "chance", chance: "zz" }, entries[1]!]), []);
+});
+
+Deno.test("picked: only a trailing picked checker is pending", () => {
+  assertEquals(picked([]), []);
+  assertEquals(picked(["p8"]), ["p8"]);
+  assertEquals(picked(["p8", "p5"]), []);
+  assertEquals(picked(["p8", "p5", "p6"]), ["p6"]);
+  const view = gameView("backgammon")!;
+  const { highlights } = view.board({
+    position: backgammon.notation.encodePosition(at("31")),
+    entries: [],
+    legalMoves: [],
+    selection: ["p8", "p5", "p6"],
+  });
+  assertEquals(
+    highlights.filter((h) => h.kind === "selected").map((h) => h.target),
+    ["p6"],
+  );
+});
+
+Deno.test("applySteps: black entering from the bar, bearing off and hitting", () => {
+  const blot = "b1,w1,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w1";
+  const entered = applySteps(at("31", "black", blot, "0/1"), ["bar", "p24"]);
+  assertEquals(
+    [entered.bar.black, entered.points[23], entered.bar.white],
+    [0, -1, 1],
+  );
+  const hit = applySteps(
+    at(
+      "31",
+      "black",
+      "w1,b2,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w1",
+    ),
+    ["p2", "p1"],
+  );
+  assertEquals([hit.points[0], hit.points[1], hit.bar.white], [-1, -1, 1]);
+  const home = "b2,b2,b2,b2,b2,b5,0,0,0,0,0,w5,0,0,0,0,w3,0,w5,0,0,0,0,w2";
+  const off = applySteps(at("61", "black", home), ["p6", "off"]);
+  assertEquals([off.off.black, off.points[5]], [1, -4]);
 });
