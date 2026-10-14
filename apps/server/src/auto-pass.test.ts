@@ -371,7 +371,7 @@ Deno.test("Engine seats: a stuck forced pass is retried by the driver's re-check
       assertEquals(list(match), ["[1]"]);
       assertEquals(searched, []); // no Engine search for the pass
       state.failing = false; // the store recovers; nobody polls the Match
-      await until(async () => searched.length > 0);
+      await until(() => Promise.resolve(searched.length > 0));
       await driver.idle();
     });
     assertEquals(searched[0], "0:0:b:3");
