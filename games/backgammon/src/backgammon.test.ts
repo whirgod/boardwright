@@ -1,5 +1,10 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { chancePending, hasChance, pickChance } from "@boardwright/core";
+import {
+  chancePending,
+  forcedPass,
+  hasChance,
+  pickChance,
+} from "@boardwright/core";
 import {
   assertChanceGameRulesContract,
   seededRandom,
@@ -230,6 +235,9 @@ Deno.test("no legal play: the only Move is pass and the turn passes", () => {
     dice: [4, 2],
   });
   assertEquals(moves(p), ["pass"]);
+  // The Game declares it a pass, so the Game master plays it (ADR 0005).
+  assertEquals(g.isPass!(parseMove("pass")), true);
+  assertEquals(forcedPass(g, p), parseMove("pass"));
   const next = play(p, "pass");
   assertEquals(next.turn, "black");
   assertEquals(next.dice, null);
@@ -238,6 +246,8 @@ Deno.test("no legal play: the only Move is pass and the turn passes", () => {
   // pass is illegal when something can move.
   const open = roll(g.initialPosition(), "3-1");
   assertThrows(() => play(open, "pass"), Error, "illegal");
+  assertEquals(forcedPass(g, open), undefined); // a choice, not a pass
+  assertEquals(forcedPass(g, g.initialPosition()), undefined); // chance pending
 });
 
 Deno.test("bearing off: exact, higher die from the highest point only", () => {

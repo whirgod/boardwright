@@ -617,6 +617,7 @@ export const backgammon: ChanceGameRules<
     }
     return { ...position, dice: roll.dice };
   },
+  isPass: (move) => move.steps.length === 0,
   notation: {
     encodePosition,
     decodePosition,

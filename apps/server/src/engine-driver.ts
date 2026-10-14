@@ -26,6 +26,13 @@ export interface EngineDriverOptions {
    * event. Bounds memory for Matches that are abandoned without an Outcome.
    */
   readonly maxMatches?: number;
+  /**
+   * While an Engine Seat's forced pass is not played yet, how often (ms,
+   * default 30000, the Game master's roll cooldown) the driver asks the Game
+   * master to try again (`getMatch` is its recovery trigger), so an unpolled
+   * Engine-vs-Engine Match cannot stay stuck on a pass that failed to store.
+   */
+  readonly passRecheckMs?: number;
 }
 
 /** The part of a MatchEvent an Engine turn needs. */
@@ -63,6 +70,7 @@ export class EngineDriver {
   readonly #abort = new AbortController();
   readonly #unsubscribe: () => void;
   readonly #maxMatches: number;
+  readonly #passRecheckMs: number;
   /**
    * Running Matches seen so far, least recently active first (Map order);
    * dropped when they end, and the oldest dropped beyond `maxMatches`.
@@ -82,6 +90,7 @@ export class EngineDriver {
       throw new RangeError(`maxMatches must be a positive integer, got ${max}`);
     }
     this.#maxMatches = max;
+    this.#passRecheckMs = options.passRecheckMs ?? 30_000;
     this.#unsubscribe = master.onMatchChanged((event) => this.#onEvent(event));
   }
 
@@ -192,7 +201,39 @@ export class EngineDriver {
       }
     }
     const player = known.engines[seat];
-    if (player) await this.#play(event, known.gameId, seat, player);
+    // The Game master plays a forced pass itself; no Engine search for it.
+    if (!player) return;
+    if (this.#master.forcedPass(known.gameId, event.position)) {
+      void this.#watchPass(event);
+    } else {
+      await this.#play(event, known.gameId, seat, player);
+    }
+  }
+
+  /**
+   * After a forced pass was left to the Game master: until the Match moves
+   * on, ask for it every `passRecheckMs` (reading a Match with a stuck
+   * pass makes the Game master retry it once its cooldown is over). Not
+   * counted by {@link idle}; stops on close.
+   */
+  async #watchPass(turn: Turn): Promise<void> {
+    while (!this.#abort.signal.aborted) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, this.#passRecheckMs);
+        this.#abort.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          resolve(undefined);
+        }, { once: true });
+      });
+      if (this.#abort.signal.aborted) return;
+      try {
+        const match = await this.#master.getMatch(turn.matchId);
+        if (match.version !== turn.version || match.outcome !== null) return;
+      } catch (error) {
+        console.error(`Could not check Match ${turn.matchId}:`, error);
+        return;
+      }
+    }
   }
 
   /** Cache `seating` as the most recently active Match, evicting the oldest beyond the bound. */

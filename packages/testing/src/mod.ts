@@ -265,6 +265,33 @@ function runContract<Position, Move, Chance>(
           legal.map((m) => n.encodeMove(m)),
           "legalMoves is not stable",
         );
+        if (typeof rules.isPass === "function") {
+          for (const move of legal) {
+            const text = n.encodeMove(move);
+            let marked: unknown;
+            try {
+              marked = rules.isPass(move);
+            } catch (e) {
+              fail(`isPass threw on ${text} in ${encoded}: ${e}`);
+            }
+            assertEquals(
+              typeof marked,
+              "boolean",
+              `isPass is not total/boolean on ${text} in ${encoded}`,
+            );
+            if (marked) {
+              assertEquals(
+                legal.length,
+                1,
+                `pass ${text} is not the only legal Move in ${encoded}`,
+              );
+              assert(
+                n.encodePosition(rules.play(position, move)) !== encoded,
+                `pass ${text} leaves ${encoded} unchanged (must hand the turn on)`,
+              );
+            }
+          }
+        }
         const pending = chance !== undefined && seat === undefined &&
           outcome === undefined;
         if (chance) {

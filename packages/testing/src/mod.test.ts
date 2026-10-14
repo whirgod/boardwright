@@ -241,3 +241,29 @@ Deno.test("sampled probing still catches lenient play with a capped pool", () =>
     throw err;
   }
 });
+
+Deno.test("isPass: total, boolean, and a pass is the only legal Move", () => {
+  // `t1` marked as a pass although `t2` is legal too in most Positions.
+  expectFailure({ isPass: (m) => m === "t1" }, "is not the only legal Move");
+  expectFailure({
+    isPass: () => {
+      throw new Error("boom");
+    },
+  }, "isPass threw");
+  expectFailure({ isPass: (() => undefined) as never }, "not total/boolean");
+  // A declared pass that never occurs is fine.
+  assertGameRulesContract({ ...nim, isPass: () => false });
+});
+
+Deno.test("isPass: a pass must hand the turn on", () => {
+  // Pile of 1: take-1 is the only legal Move and is marked a pass, but
+  // this variant's `play` leaves the Position unchanged for it.
+  const stuck: Rules = {
+    ...nim,
+    initialPosition: () => ({ n: 1, turn: "a" }),
+    isPass: (m) => m === "t1",
+    play: (p, m) => (m === "t1" ? { ...p } : nim.play(p, m)),
+  };
+  const err = assertThrows(() => assertGameRulesContract(stuck));
+  assertEquals((err as Error).message.includes("hand the turn on"), true);
+});

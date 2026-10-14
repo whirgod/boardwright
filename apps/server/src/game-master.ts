@@ -1,5 +1,6 @@
 import {
   chancePending,
+  forcedPass,
   type GameId,
   hasChance,
   type Outcome,
@@ -108,7 +109,7 @@ export interface CreatedMatch {
  * - `{ engineSeat }`: the server playing for the Engine in that Seat; a Seat
  *   whose Player is not an Engine is refused with `not-engine-seat`.
  * - `{ gameMaster: true }`: the Game master itself, imposing a change on the
- *   Match (a Forfeit or a Chance event).
+ *   Match (a Forfeit, a Chance event or a forced pass).
  */
 export type Actor = PlayerActor | GameMasterActor;
 export type PlayerActor =
@@ -149,6 +150,11 @@ export type PlayerChange =
  *   own right after every change that leaves one pending (and at creation)
  *   and recovers failed rolls itself (see `GameMaster.apply`); refused with
  *   `conflict` when nothing is pending.
+ * - `pass`: play the Seat to move's only legal Move because it is the empty
+ *   play (the Game declares it with `isPass`; ADR 0005 amendment). It is a
+ *   `move` in the Move list and a `move` event; only the Actor differs. Done
+ *   automatically right after the change that leaves a forced pass (like
+ *   rolls); refused with `conflict` when the Seat to move has a choice.
  */
 export type ImposedChange =
   | {
@@ -156,7 +162,8 @@ export type ImposedChange =
     readonly seat: Seat;
     readonly reason: ForfeitReason;
   }
-  | { readonly kind: "chance" };
+  | { readonly kind: "chance" }
+  | { readonly kind: "pass" };
 
 export type MatchChange = PlayerChange | ImposedChange;
 
@@ -485,7 +492,17 @@ export class GameMaster {
    * are refused with `chance-pending` (fetch the Match and retry). The n-th
    * Chance event of a Match is drawn from its secret seed (`drawChance`).
    *
-   * A roll that fails (e.g. a store error) never fails the change before it.
+   * A forced pass (see {@link ImposedChange}) chains the same way: after a
+   * roll that leaves the Seat to move with only a pass (or after a Move), the
+   * Game master plays it right away, then rolls again: roll, pass, roll. It
+   * is a plain Move for the Seat, so a Player may legitimately play the
+   * `pass` first (same Move, only the Actor differs); the Game master's own
+   * attempt then finds nothing to do (`expectedVersion`/no forced pass). A
+   * Move refused because a pass is still pending does not trigger recovery
+   * (unlike `chance-pending`); a stuck pass is retried by `getMatch` (and
+   * the EngineDriver's re-checks) once the cooldown is over.
+   *
+   * A roll or pass that fails (e.g. a store error) never fails the change before it.
    * It is retried after each delay of `rollRetryDelaysMs`, inside the
    * Match's queue; if all fail, the roll is tried again on the next trigger
    * after the cooldown:
@@ -560,8 +577,10 @@ export class GameMaster {
   }
 
   /**
-   * Resolve Chance events while one is pending in the Match (`match`, its
-   * latest view, or loaded), each as its own imposed change. Runs inside
+   * Make the Game master's own changes while one is due in the Match
+   * (`match`, its latest view, or loaded): a pending Chance event's roll or a
+   * forced pass, each as its own imposed change, so a roll, a pass and the
+   * next roll chain. Runs inside
    * the Match's queue. A failed roll is retried after each delay of
    * `rollRetryDelaysMs`, then given up until the next trigger (a refused
    * Move/Forfeit or a `getMatch`) after `rollCooldownMs`. `recovery` marks
@@ -577,15 +596,17 @@ export class GameMaster {
     let last = match;
     let current = match;
     let failures = 0;
+    let next: "chance" | "pass" | undefined;
     for (;;) {
       try {
         current ??= await this.#current(id);
         last = current;
-        if (current.outcome !== null || current.toMove !== null) {
+        next = this.#automatic(current);
+        if (next === undefined) {
           this.#rollCooldowns.delete(id);
           return last;
         }
-        current = await this.#applyOne(id, GAME_MASTER, { kind: "chance" }, {
+        current = await this.#applyOne(id, GAME_MASTER, { kind: next }, {
           expectedVersion: current.version,
         });
         last = current;
@@ -593,7 +614,9 @@ export class GameMaster {
       } catch (error) {
         const delay = this.#rollRetryDelaysMs[failures++];
         console.error(
-          `Could not resolve a Chance event in Match ${id} (attempt ${failures}${
+          `Could not apply the ${
+            next ?? "automatic change"
+          } in Match ${id} (attempt ${failures}${
             delay === undefined ? ", giving up until the next trigger" : ""
           }):`,
           error,
@@ -613,6 +636,34 @@ export class GameMaster {
     }
   }
 
+  /**
+   * The change the Game master makes on its own in `match`: the pending
+   * Chance event's roll, or the Seat to move's forced pass; `undefined` when
+   * the Match waits for a Player (or is over).
+   */
+  #automatic(match: MatchView): "chance" | "pass" | undefined {
+    if (match.outcome !== null) return undefined;
+    if (match.toMove === null) return "chance";
+    return this.forcedPass(match.gameId, match.position) ? "pass" : undefined;
+  }
+
+  /**
+   * Whether the Seat to move in `position` (Notation) of `gameId` has only a
+   * pass to play, which the Game master plays itself (see `ImposedChange`).
+   * Players and the EngineDriver need not (and must not) act then. `false`
+   * for unknown Games and unreadable Positions.
+   */
+  forcedPass(gameId: GameId, position: string): boolean {
+    const game = this.#games.get(gameId);
+    if (!game || typeof game.isPass !== "function") return false;
+    try {
+      return forcedPass(game, game.notation.decodePosition(position)) !==
+        undefined;
+    } catch {
+      return false;
+    }
+  }
+
   #coolingDown(id: MatchId): boolean {
     const until = this.#rollCooldowns.get(id);
     if (until === undefined) return false;
@@ -626,7 +677,7 @@ export class GameMaster {
    * queued for it, queue one (not awaited).
    */
   #healPending(match: MatchView): void {
-    if (match.outcome !== null || match.toMove !== null) return;
+    if (this.#automatic(match) === undefined) return;
     if (this.#healing.has(match.id) || this.#coolingDown(match.id)) return;
     this.#healing.add(match.id);
     void this.#serialize(match.id, () => this.#roll(match.id, undefined, true))
@@ -646,7 +697,8 @@ export class GameMaster {
         `The Match is at version ${record.version}, not ${expectedVersion}`,
       );
     }
-    const imposed = change.kind === "forfeit" || change.kind === "chance";
+    const imposed = change.kind === "forfeit" || change.kind === "chance" ||
+      change.kind === "pass";
     if (imposed !== "gameMaster" in actor) {
       // The overloads rule this out; reaching it is a server bug.
       throw new TypeError(
@@ -862,6 +914,22 @@ function judge(
         },
         position,
         event: { kind: "forfeit", seat },
+      };
+    }
+    case "pass": {
+      const forced = forcedPass(game, position);
+      if (forced === undefined) {
+        throw new MatchError("conflict", "No forced pass is pending");
+      }
+      const seat = game.toMove(position)!;
+      const next = game.play(position, forced);
+      const move = game.notation.encodeMove(forced);
+      const outcome = game.outcome(next);
+      return {
+        moves: [...record.moves, { kind: "move", move }],
+        ...(outcome ? { outcome: byTheRules(outcome) } : {}),
+        position: next,
+        event: { kind: "move", seat, move },
       };
     }
     case "chance": {
