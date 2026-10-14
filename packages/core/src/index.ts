@@ -70,6 +70,14 @@ export interface GameRules<Position, Move> {
   play(position: Position, move: Move): Position;
   outcome(position: Position): RulesOutcome | undefined;
   readonly notation: Notation<Position, Move>;
+  /**
+   * Optional: whether `move` is the empty play (a `pass`: the Seat to move
+   * has no legal play, such as backgammon's after a roll that cannot be
+   * played). The Game master applies a pass automatically when it is the
+   * Seat's only legal Move ({@link forcedPass}, ADR 0005 amendment). Omit it
+   * in Games where a pass is a real choice or does not exist.
+   */
+  isPass?(move: Move): boolean;
 }
 
 /** Text encoding used on the wire and in stored Match records. */
@@ -149,6 +157,21 @@ export function chancePending<Position, Move>(
 ): boolean {
   return hasChance(rules) && rules.toMove(position) === undefined &&
     rules.outcome(position) === undefined;
+}
+
+/**
+ * The Move the Game master plays for the Seat to move because it is a forced
+ * pass: the Game declares passes (`isPass`) and the Seat's only legal Move is
+ * one. `undefined` otherwise (no Seat to move, a choice, or a non-empty Move).
+ */
+export function forcedPass<Position, Move>(
+  rules: GameRules<Position, Move>,
+  position: Position,
+): Move | undefined {
+  if (typeof rules.isPass !== "function") return undefined;
+  if (rules.toMove(position) === undefined) return undefined;
+  const moves = rules.legalMoves(position);
+  return moves.length === 1 && rules.isPass(moves[0]!) ? moves[0] : undefined;
 }
 
 /**

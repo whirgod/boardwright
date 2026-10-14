@@ -64,7 +64,8 @@ core  <-  games/*  <-  engines/*
   other Analyses have neither. A Line ends at the next Chance event. `pickChance(results, u)` in
   core is the one selection rule (used by the Game master and the kits). `engines/minimax` refuses
   Games with chance (type and run time); `engines/expectiminimax` searches them (and refuses
-  Games without chance).
+  Games without chance). A Game may mark its empty play with the optional `GameRules.isPass`; the
+  Game master plays a Seat's only legal Move automatically when it is such a pass (`forcedPass`).
 - **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
   (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
   `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine

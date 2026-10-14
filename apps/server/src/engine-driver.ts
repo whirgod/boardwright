@@ -192,7 +192,10 @@ export class EngineDriver {
       }
     }
     const player = known.engines[seat];
-    if (player) await this.#play(event, known.gameId, seat, player);
+    // The Game master plays a forced pass itself; no Engine search for it.
+    if (
+      player && !this.#master.forcedPass(known.gameId, event.position)
+    ) await this.#play(event, known.gameId, seat, player);
   }
 
   /** Cache `seating` as the most recently active Match, evicting the oldest beyond the bound. */
