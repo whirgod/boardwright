@@ -24,13 +24,16 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Resignation (#31); morris/checkers renderers (#11); sandboxed Engine workers (#29, ADR 0006)
 - [x] Chance events (ADR 0005): contract, kits, referee rolls, typed Move list (#15, part A)
 - [x] Chess Engine + renderer (#16)
+- [x] EngineDriver cache bounds, MatchStore liveness, chance roll cooldown (#46, #59)
+- [x] Live Match stream and Analysis stream over WebSocket (#9)
+- [x] Game backgammon (#15, part B)
+- [x] Persistence in SQLite, Match listing (#13, ADR 0007)
+- [x] Expectiminimax Engine library + shared search harness (#48)
+- [x] Web UI review mode and Engine analysis overlay; play view follows the Match stream (#12)
 
 ## Next
 
 Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
 
-4. **Live + more Games** — Match/Analysis streams (#9), persistence (#13) after EngineDriver
-   cache bounds and store liveness (#46), backgammon rules (#15, part B), chance roll cooldown (#59).
-5. **Later** — expectiminimax Engine library (#48), backgammon Engine + renderer (#17), review
-   mode and analysis overlay (#12), external Engine protocol (#18), UI polish (#55), SAN in the
-   Move list (#60).
+5. **Later** — backgammon Engine + renderer (#17), external Engine protocol (#18), auto-play a
+   forced pass (#65), UI polish (#55), SAN in the Move list (#60).
