@@ -101,6 +101,10 @@ Deno.test("describePly: names the shown Position", () => {
   );
   assertEquals(describePly(entries, 2), "After 8/5 6/5 (2 of 2)");
   assertEquals(describePly([], 0), "Initial Position (0 of 0)");
+  assertEquals(
+    describePly([{ kind: "move", move: "e2e4" }], 1, ["e4"]),
+    "After e4 (1 of 1)",
+  );
 });
 
 Deno.test("keyAction: arrows step, Home/End jump", () => {

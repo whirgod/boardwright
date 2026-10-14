@@ -24,6 +24,7 @@ import {
   matchStatus,
   playerLabel,
 } from "../match-state.ts";
+import { entryLabels } from "../move-labels.ts";
 import { MoveList, ReviewBar } from "../move-list.tsx";
 import { seatLabel } from "../outcome.ts";
 import { type BoardModel, gameView, type Selection } from "../renderers/mod.ts";
@@ -126,6 +127,10 @@ export function MatchPage(
   const moves = match?.moves;
   const replayed = useMemo(
     () => gameId === undefined || !moves ? undefined : replay(gameId, moves),
+    [gameId, moves],
+  );
+  const labels = useMemo(
+    () => gameId === undefined || !moves ? [] : entryLabels(gameId, moves),
     [gameId, moves],
   );
   const length = moves?.length ?? 0;
@@ -291,7 +296,12 @@ export function MatchPage(
                     : undefined}
                 />
               ))}
-          <ReviewBar entries={match.moves} ply={ply} onGo={go} />
+          <ReviewBar
+            entries={match.moves}
+            labels={labels}
+            ply={ply}
+            onGo={go}
+          />
         </div>
         <aside>
           <h2>Seats</h2>
@@ -354,6 +364,7 @@ export function MatchPage(
           <h2>Move list</h2>
           <MoveList
             entries={match.moves}
+            labels={labels}
             ply={ply}
             onGo={(target) => go({ kind: "go", ply: target })}
           />
