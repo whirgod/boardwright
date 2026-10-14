@@ -136,12 +136,14 @@ export function navigate(
 export function describePly(
   entries: readonly MoveListEntry[],
   ply: number,
+  /** Text of each entry (see `entryLabels`); default: Notation. */
+  labels?: readonly string[],
 ): string {
   const of = `(${ply} of ${entries.length})`;
   const entry = entries[ply - 1];
   if (ply === 0 || entry === undefined) return `Initial Position ${of}`;
   return entry.kind === "move"
-    ? `After ${entry.move} ${of}`
+    ? `After ${labels?.[ply - 1] ?? entry.move} ${of}`
     : `After the Chance event ${entry.chance} ${of}`;
 }
 

@@ -5,8 +5,10 @@ import { moveListRows } from "./match-state.ts";
 import { describePly, type ReviewAction } from "./review.ts";
 
 export function ReviewBar(
-  { entries, ply, onGo }: {
+  { entries, labels, ply, onGo }: {
     entries: readonly MoveListEntry[];
+    /** Text of each entry (see `entryLabels`). */
+    labels: readonly string[];
     ply: number;
     onGo: (action: ReviewAction) => void;
   },
@@ -54,7 +56,7 @@ export function ReviewBar(
         </button>
       </div>
       <p class="muted" aria-live="polite">
-        {describePly(entries, ply)}
+        {describePly(entries, ply, labels)}
         {!atEnd && " — reviewing"}
       </p>
     </div>
@@ -62,8 +64,10 @@ export function ReviewBar(
 }
 
 export function MoveList(
-  { entries, ply, onGo }: {
+  { entries, labels, ply, onGo }: {
     entries: readonly MoveListEntry[];
+    /** Text of each entry (see `entryLabels`). */
+    labels: readonly string[];
     ply: number;
     /** Show the Position after that many entries. */
     onGo: (ply: number) => void;
@@ -77,7 +81,8 @@ export function MoveList(
           {row.entries.map((entry, i) => {
             const after = row.first + i + 1;
             const chance = entry.kind === "chance";
-            const text = chance ? `(${entry.chance})` : entry.move;
+            const label = labels[row.first + i] ?? "";
+            const text = chance ? `(${label})` : label;
             return (
               <button
                 key={i}
