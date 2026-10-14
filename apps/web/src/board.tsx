@@ -1,5 +1,6 @@
 // Draws any Game's BoardModel as SVG. Game-specific drawing lives in the
 // DOM-free renderers (./renderers), never here.
+import { boardClass, targetLabel, targetStates } from "./board-view.ts";
 import type { BoardModel, Shape, Target, TargetId } from "./renderers/mod.ts";
 
 function ShapeView({ shape }: { shape: Shape }) {
@@ -53,9 +54,10 @@ export function Board(
 ) {
   const { scene, highlights, arrows } = model;
   const targets = new Map(scene.targets.map((t) => [t.id, t]));
+  const states = targetStates(highlights);
   return (
     <svg
-      class={onTarget ? "board interactive" : "board"}
+      class={boardClass(scene, onTarget !== undefined)}
       viewBox={`0 0 ${scene.width} ${scene.height}`}
       role="group"
       aria-label="Board"
@@ -138,10 +140,11 @@ export function Board(
           y={t.y}
           width={t.width}
           height={t.height}
-          aria-label={t.label}
+          aria-label={targetLabel(t.label, states.get(t.id))}
           {...(onTarget
             ? {
               role: "button",
+              "aria-pressed": states.get(t.id)?.includes("selected") ?? false,
               tabIndex: 0,
               onClick: () => onTarget(t.id),
               onKeyDown: (e: KeyboardEvent) => {

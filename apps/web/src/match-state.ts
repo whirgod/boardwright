@@ -59,8 +59,7 @@ export function boardRequest(
   const current = shown === undefined || shown.ply >= match.moves.length;
   return {
     position: current ? match.position : shown.position,
-    // Renderers replay Moves only; Games with chance need their own handling.
-    moves: movesOnly(current ? match.moves : match.moves.slice(0, shown.ply)),
+    entries: current ? match.moves : match.moves.slice(0, shown.ply),
     legalMoves: current && status.kind === "your-move" ? match.legalMoves : [],
     selection: current ? selection : [],
     ...(overlay

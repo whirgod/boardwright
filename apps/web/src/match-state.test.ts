@@ -69,7 +69,7 @@ Deno.test("boardRequest: legal Moves only on your Move", () => {
   const mine = { ...MATCH, toMove: "x" };
   assertEquals(boardRequest(mine, matchStatus(mine, { x: "t" }), ["a"]), {
     position: MATCH.position,
-    moves: ["a1"],
+    entries: [mv("a1")],
     legalMoves: MATCH.legalMoves,
     selection: ["a"],
   });
@@ -86,7 +86,7 @@ Deno.test("boardRequest: an earlier Position is read-only and highlights its own
     boardRequest(mine, status, ["a"], { ply: 1, position: "x........:o" }),
     {
       position: "x........:o",
-      moves: ["a1"],
+      entries: [mv("a1")],
       legalMoves: [],
       selection: [],
     },
@@ -203,7 +203,7 @@ Deno.test("moveListRows: a Chance event goes with the Move after it", () => {
   );
 });
 
-Deno.test("a Game with chance: status while rolling, board and invites count Moves only", () => {
+Deno.test("a Game with chance: status while rolling, the board gets the Chance events, invites count Moves only", () => {
   const rolling: MatchView = {
     ...MATCH,
     seats: { a: { kind: "human" }, b: { kind: "human" } },
@@ -217,8 +217,8 @@ Deno.test("a Game with chance: status while rolling, board and invites count Mov
     toMove: "b",
   };
   assertEquals(
-    boardRequest(rolled, matchStatus(rolled, {}), []).moves,
-    ["f"],
+    boardRequest(rolled, matchStatus(rolled, {}), []).entries,
+    [roll("2"), mv("f"), roll("1")],
   );
   const both = { tokens: { a: "ta", b: "tb" }, handedOver: [] };
   // The opening roll is no Move: Seats can still be handed over.

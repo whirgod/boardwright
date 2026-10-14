@@ -35,7 +35,25 @@ Deno.test("scene: a king gets a mark and a label", () => {
 
 Deno.test("moveTargets: the path is every visited square", () => {
   const pos = checkers.initialPosition();
-  assertEquals(r.moveTargets([22, 15, 8], pos), { path: ["22", "15", "8"] });
+  assertEquals(r.moveTargets([22, 18], pos), { path: ["22", "18"] });
+});
+
+Deno.test("moveTargets: jumped squares are captures, kept out of the click order", () => {
+  const pos = checkers.initialPosition();
+  // 22x15 jumps square 18; 15x8 jumps square 11 (as in the Move 22 15 8).
+  assertEquals(r.moveTargets([22, 15, 8], pos), {
+    path: ["22", "15", "8"],
+    captures: ["18", "11"],
+  });
+  assertEquals(r.moveTargets([8, 15], pos), {
+    path: ["8", "15"],
+    captures: ["11"],
+  });
+  // Backward (king) jump to a higher square, and along the other diagonal.
+  assertEquals(r.moveTargets([1, 10], pos), {
+    path: ["1", "10"],
+    captures: ["6"],
+  });
 });
 
 Deno.test("input: a step is piece then destination", () => {

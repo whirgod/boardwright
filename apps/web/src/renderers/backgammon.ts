@@ -127,7 +127,51 @@ export function caption(position: BackgammonPosition): string {
   }`;
 }
 
-function scene(position: BackgammonPosition) {
+/**
+ * `position` with the Steps entered so far played: `selection` holds them as
+ * `from, to` pairs (a trailing picked checker is no Step yet). A Step that
+ * does not apply (a stale selection) is skipped. Hitting a lone opposing
+ * checker puts it on the bar.
+ */
+export function applySteps(
+  position: BackgammonPosition,
+  selection: Selection,
+): BackgammonPosition {
+  const seat = position.turn;
+  if (seat === null) return position;
+  const sign = seat === "white" ? 1 : -1;
+  const other = seat === "white" ? "black" : "white";
+  const points = [...position.points];
+  const bar = { ...position.bar };
+  const off = { ...position.off };
+  const index = (id: TargetId) => {
+    const n = /^p(\d+)$/.exec(id)?.[1];
+    return n === undefined ? -1 : Number(n) - 1;
+  };
+  for (let i = 0; i + 1 < selection.length; i += 2) {
+    const [from, to] = [selection[i]!, selection[i + 1]!];
+    const [f, t] = [index(from), index(to)];
+    const fromBar = from === BAR_TARGET;
+    const toOff = to === OFF_TARGET;
+    if (fromBar ? bar[seat] <= 0 : (points[f] ?? 0) * sign <= 0) continue;
+    if (!toOff && (t < 0 || t >= 24)) continue;
+    if (fromBar) bar[seat]--;
+    else points[f]! -= sign;
+    if (toOff) {
+      off[seat]++;
+    } else {
+      if (points[t] === -sign) {
+        points[t] = 0;
+        bar[other]++;
+      }
+      points[t]! += sign;
+    }
+  }
+  return { ...position, points, bar, off };
+}
+
+function scene(original: BackgammonPosition, selection: Selection = []) {
+  const position = applySteps(original, selection);
   const board: Shape[] = [{
     kind: "rect",
     x: 0,
@@ -262,7 +306,7 @@ function scene(position: BackgammonPosition) {
   board.push({
     kind: "text",
     at: { x: MARGIN, y: BOARD_HEIGHT + 34 },
-    text: caption(position),
+    text: caption(original),
     className: "caption",
   });
   return { width: BOARD_WIDTH, height: HEIGHT, board, pieces, targets };

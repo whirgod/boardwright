@@ -107,7 +107,7 @@ Deno.test("view: destinations highlight the picker once a promotion is selected"
   const pos = decode("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
   const request = (selection: string[]) => ({
     position: chess.notation.encodePosition(pos),
-    moves: [],
+    entries: [],
     legalMoves: chess.legalMoves(pos).map(uci),
     selection,
   });
@@ -128,7 +128,7 @@ Deno.test("view: the last Move highlights its squares", () => {
   const after = chess.play(chess.initialPosition(), { from: 12, to: 28 });
   const { highlights } = view.board({
     position: chess.notation.encodePosition(after),
-    moves: ["e2e4"],
+    entries: [{ kind: "move", move: "e2e4" }],
     legalMoves: [],
     selection: [],
   });
