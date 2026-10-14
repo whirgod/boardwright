@@ -76,6 +76,13 @@ export interface GameRules<Position, Move> {
    * played). The Game master applies a pass automatically when it is the
    * Seat's only legal Move ({@link forcedPass}, ADR 0005 amendment). Omit it
    * in Games where a pass is a real choice or does not exist.
+   *
+   * Obligations (checked by the contract kits): pure and total over the
+   * Game's Moves (never throws, returns a boolean); a Move marked as a pass
+   * is legal only when it is the Seat's only legal Move; and playing it must
+   * hand the turn on (change the Position), because the Game master plays
+   * passes in a loop and a pass that changes nothing would append Moves
+   * forever.
    */
   isPass?(move: Move): boolean;
 }

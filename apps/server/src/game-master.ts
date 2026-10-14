@@ -492,7 +492,17 @@ export class GameMaster {
    * are refused with `chance-pending` (fetch the Match and retry). The n-th
    * Chance event of a Match is drawn from its secret seed (`drawChance`).
    *
-   * A roll that fails (e.g. a store error) never fails the change before it.
+   * A forced pass (see {@link ImposedChange}) chains the same way: after a
+   * roll that leaves the Seat to move with only a pass (or after a Move), the
+   * Game master plays it right away, then rolls again: roll, pass, roll. It
+   * is a plain Move for the Seat, so a Player may legitimately play the
+   * `pass` first (same Move, only the Actor differs); the Game master's own
+   * attempt then finds nothing to do (`expectedVersion`/no forced pass). A
+   * Move refused because a pass is still pending does not trigger recovery
+   * (unlike `chance-pending`); a stuck pass is retried by `getMatch` (and
+   * the EngineDriver's re-checks) once the cooldown is over.
+   *
+   * A roll or pass that fails (e.g. a store error) never fails the change before it.
    * It is retried after each delay of `rollRetryDelaysMs`, inside the
    * Match's queue; if all fail, the roll is tried again on the next trigger
    * after the cooldown:
@@ -567,8 +577,10 @@ export class GameMaster {
   }
 
   /**
-   * Resolve Chance events while one is pending in the Match (`match`, its
-   * latest view, or loaded), each as its own imposed change. Runs inside
+   * Make the Game master's own changes while one is due in the Match
+   * (`match`, its latest view, or loaded): a pending Chance event's roll or a
+   * forced pass, each as its own imposed change, so a roll, a pass and the
+   * next roll chain. Runs inside
    * the Match's queue. A failed roll is retried after each delay of
    * `rollRetryDelaysMs`, then given up until the next trigger (a refused
    * Move/Forfeit or a `getMatch`) after `rollCooldownMs`. `recovery` marks
@@ -584,11 +596,12 @@ export class GameMaster {
     let last = match;
     let current = match;
     let failures = 0;
+    let next: "chance" | "pass" | undefined;
     for (;;) {
       try {
         current ??= await this.#current(id);
         last = current;
-        const next = this.#automatic(current);
+        next = this.#automatic(current);
         if (next === undefined) {
           this.#rollCooldowns.delete(id);
           return last;
@@ -601,7 +614,9 @@ export class GameMaster {
       } catch (error) {
         const delay = this.#rollRetryDelaysMs[failures++];
         console.error(
-          `Could not resolve a Chance event in Match ${id} (attempt ${failures}${
+          `Could not apply the ${
+            next ?? "automatic change"
+          } in Match ${id} (attempt ${failures}${
             delay === undefined ? ", giving up until the next trigger" : ""
           }):`,
           error,

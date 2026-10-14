@@ -50,6 +50,16 @@ const noHint: ChanceGameRules<Pos, PassMove, DiceRaceRoll> = {
   id: "no-hint",
 };
 
+/** A pass that ends the Match: the Seat to move wins by passing. */
+const endPass: ChanceGameRules<Pos, PassMove, DiceRaceRoll> = {
+  ...passRace,
+  id: "end-pass",
+  play: (p, move) =>
+    move === "pass"
+      ? { ...p, [p.turn]: 6, turn: p.turn === "a" ? "b" : "a", roll: null }
+      : diceRace.play(p, move),
+};
+
 const HUMANS = { a: { kind: "human" }, b: { kind: "human" } } as const;
 
 /** A seed whose first draws roll `rolls` (dice-race: 1 below 0.5, 2 below 0.75, else 3). */
@@ -67,15 +77,22 @@ async function seedFor(rolls: readonly number[]): Promise<string> {
 
 function setup(
   seed: string,
-  options: { store?: MatchStore; engines?: EngineRegistry } = {},
+  options: {
+    store?: MatchStore;
+    engines?: EngineRegistry;
+    retryDelaysMs?: readonly number[];
+    cooldownMs?: number;
+    now?: () => Date;
+  } = {},
 ) {
   const master = new GameMaster({
-    games: new GameRegistry([passRace, noHint] as AnyGameRules[]),
+    games: new GameRegistry([passRace, noHint, endPass] as AnyGameRules[]),
     store: options.store ?? new InMemoryMatchStore(),
     ...options.engines && { engines: options.engines },
     newSeed: () => seed,
-    rollRetryDelaysMs: [],
-    rollCooldownMs: 0,
+    rollRetryDelaysMs: options.retryDelaysMs ?? [],
+    rollCooldownMs: options.cooldownMs ?? 0,
+    ...options.now && { now: options.now },
   });
   const events: MatchEvent[] = [];
   master.onMatchChanged((e) => {
@@ -200,8 +217,211 @@ Deno.test("Engines are not asked to play a forced pass", async () => {
     const view = await master.getMatch(match.id);
     // a's pass was the Game master's; b searched once and played `f`.
     assertEquals(list(view).slice(0, 4), ["[1]", "pass", "[3]", "f"]);
+    assertEquals(searched[0], "0:0:b:3"); // never "0:0:a:1", the pass
     assert(searched.every((p) => !p.endsWith(":1")), searched.join(" "));
-    assert(searched.length > 0);
+  } finally {
+    await driver.close();
+  }
+});
+
+/** A store whose Move-list updates ending in a Move fail while `state.failing`. */
+function flaky(inner = new InMemoryMatchStore()) {
+  const state = { failing: true, attempts: 0 };
+  const store: MatchStore = {
+    create: (r) => inner.create(r),
+    list: (q) => inner.list(q),
+    get: (id) => inner.get(id),
+    update: (r) => {
+      if (state.failing && r.moves.at(-1)?.kind === "move") {
+        state.attempts++;
+        return Promise.reject(new Error("store down"));
+      }
+      return inner.update(r);
+    },
+  };
+  return { store, state };
+}
+
+async function quietly<T>(fn: () => Promise<T>): Promise<T> {
+  const logged = console.error;
+  console.error = () => {};
+  try {
+    return await fn();
+  } finally {
+    console.error = logged;
+  }
+}
+
+async function until(done: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 200 && !(await done()); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+Deno.test("a pass that ends the Match sets the Outcome and no roll follows", async () => {
+  const { master, events } = setup(await seedFor([1]));
+  const { match } = await master.createMatch("end-pass", HUMANS);
+  assertEquals(list(match), ["[1]", "pass"]);
+  assertEquals(match.toMove, null);
+  assertEquals(match.outcome, { kind: "rules", winner: "a", reason: "finish" });
+  const last = events.at(-1)!;
+  assertEquals(last.kind, "move");
+  assertEquals(last.outcome, match.outcome);
+});
+
+Deno.test("a failing pass is retried, then waits out the cooldown", async () => {
+  const seed = await seedFor([1, 2]);
+  // Fails once, then the retry succeeds.
+  const once = new InMemoryMatchStore();
+  let failures = 0;
+  const failOnce: MatchStore = {
+    create: (r) => once.create(r),
+    list: (q) => once.list(q),
+    get: (id) => once.get(id),
+    update: (r) =>
+      r.moves.at(-1)?.kind === "move" && failures++ === 0
+        ? Promise.reject(new Error("blip"))
+        : once.update(r),
+  };
+  const retried = await quietly(async () => {
+    const { master } = setup(seed, { store: failOnce, retryDelaysMs: [1] });
+    return (await master.createMatch("pass-race", HUMANS)).match;
+  });
+  assertEquals(list(retried), ["[1]", "pass", "[2]"]);
+
+  // Always fails: one cycle, then quiet during the cooldown, one more after.
+  const down = flaky();
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  const { master } = setup(seed, {
+    store: down.store,
+    retryDelaysMs: [],
+    cooldownMs: 1000,
+    now: () => new Date(clock),
+  });
+  await quietly(async () => {
+    const { match } = await master.createMatch("pass-race", HUMANS);
+    assertEquals(list(match), ["[1]"]);
+    assertEquals(down.state.attempts, 1);
+    for (let i = 0; i < 3; i++) await master.getMatch(match.id);
+    await until(() => Promise.resolve(false)); // let queued heals run
+    assertEquals(down.state.attempts, 1); // within the cooldown
+    clock += 1001;
+    await master.getMatch(match.id);
+    await until(() => Promise.resolve(down.state.attempts > 1));
+    assertEquals(down.state.attempts, 2);
+  });
+});
+
+Deno.test("a Player may play the pass while the Game master's is queued", async () => {
+  const seed = await seedFor([1, 2]);
+  const { store, state } = flaky();
+  const first = setup(seed, { store });
+  const { match, tokens } = await quietly(() =>
+    first.master.createMatch("pass-race", HUMANS)
+  );
+  assertEquals(list(match), ["[1]"]); // stuck at the forced pass
+  state.failing = false;
+  const { master } = setup(seed, { store });
+  const healing = master.getMatch(match.id); // queues the Game master's pass
+  const view = await master.apply(match.id, { token: tokens.a! }, {
+    kind: "move",
+    move: "pass",
+  });
+  await healing;
+  await until(async () => (await master.getMatch(match.id)).version >= 4);
+  const final = await master.getMatch(match.id);
+  // One pass only, then the roll: the queued attempt found nothing to do.
+  assertEquals(list(final), ["[1]", "pass", "[2]"]);
+  assertEquals(view.moves.length >= 2, true);
+});
+
+Deno.test("Engine seats: a stuck forced pass is retried by the driver's re-checks", async () => {
+  const seed = await seedFor([1, 3]);
+  const { store, state } = flaky();
+  const engines = new EngineRegistry([{
+    id: "forward",
+    name: "Forward",
+    gameId: "pass-race",
+    module: "unused:",
+  }]);
+  const { master } = setup(seed, { store, engines });
+  const searched: string[] = [];
+  const runner = new EngineRunner({
+    adapter: {
+      async *analyze(request: AnalysisRequest) {
+        searched.push(request.position);
+        yield {
+          depth: 1,
+          lines: [{ moves: ["f"], score: { kind: "value", value: 0 } }],
+        };
+      },
+    },
+  });
+  const driver = new EngineDriver(master, { runner, passRecheckMs: 5 });
+  const engine: Player = { kind: "engine", engineId: "forward", limits: {} };
+  try {
+    let id = "";
+    await quietly(async () => {
+      const { match } = await master.createMatch("pass-race", {
+        a: engine,
+        b: engine,
+      });
+      id = match.id;
+      await driver.idle();
+      assertEquals(list(match), ["[1]"]);
+      assertEquals(searched, []); // no Engine search for the pass
+      state.failing = false; // the store recovers; nobody polls the Match
+      await until(async () => searched.length > 0);
+      await driver.idle();
+    });
+    assertEquals(searched[0], "0:0:b:3");
+    const view = await master.getMatch(id);
+    assertEquals(list(view).slice(0, 4), ["[1]", "pass", "[3]", "f"]);
+  } finally {
+    await driver.close();
+  }
+});
+
+Deno.test("resumeAll with a forced pass pending leaves it to the Game master", async () => {
+  const seed = await seedFor([1, 3]);
+  const { store, state } = flaky();
+  const engines = new EngineRegistry([{
+    id: "forward",
+    name: "Forward",
+    gameId: "pass-race",
+    module: "unused:",
+  }]);
+  const engine: Player = { kind: "engine", engineId: "forward", limits: {} };
+  const id = await quietly(async () => {
+    const { master } = setup(seed, { store, engines });
+    return (await master.createMatch("pass-race", { a: engine, b: engine }))
+      .match.id;
+  });
+  state.failing = false;
+  const { master } = setup(seed, { store, engines });
+  const searched: string[] = [];
+  const runner = new EngineRunner({
+    adapter: {
+      async *analyze(request: AnalysisRequest) {
+        searched.push(request.position);
+        yield {
+          depth: 1,
+          lines: [{ moves: ["f"], score: { kind: "value", value: 0 } }],
+        };
+      },
+    },
+  });
+  const driver = new EngineDriver(master, { runner, passRecheckMs: 5 });
+  try {
+    await driver.resumeAll();
+    await until(async () => (await master.getMatch(id)).moves.length >= 4);
+    await driver.idle();
+    assertEquals(searched[0], "0:0:b:3"); // never the pass Position
+    assertEquals(list(await master.getMatch(id)).slice(0, 3), [
+      "[1]",
+      "pass",
+      "[3]",
+    ]);
   } finally {
     await driver.close();
   }
