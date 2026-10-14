@@ -30,10 +30,11 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Persistence in SQLite, Match listing (#13, ADR 0007)
 - [x] Expectiminimax Engine library + shared search harness (#48)
 - [x] Web UI review mode and Engine analysis overlay; play view follows the Match stream (#12)
+- [x] Backgammon Engine (expectiminimax) + board renderer (#17)
+- [x] Game master auto-plays a forced pass (#65)
+- [x] External Engine protocol: out-of-process Engines over stdio (#18, ADR 0008)
+- [x] Web UI: SAN in the Move list (#60); polish, accessible board state (#55)
 
 ## Next
 
-Each step links its GitHub issues; waves run in order, tasks within a wave in parallel.
-
-5. **Later** — backgammon Engine + renderer (#17), external Engine protocol (#18), auto-play a
-   forced pass (#65), UI polish (#55), SAN in the Move list (#60).
+All planned roadmap items are done. New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
