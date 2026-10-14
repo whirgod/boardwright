@@ -8,3 +8,4 @@ coverage/
 .claude/worktrees/
 .test-tmp/
 /data/
+/external-engines.json

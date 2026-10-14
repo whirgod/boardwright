@@ -1,5 +1,5 @@
 import type { GameId } from "@boardwright/core";
-import { EngineRegistry } from "./engines.ts";
+import { type EngineEntry, EngineRegistry } from "./engines.ts";
 import type { AnyGameRules } from "./games.ts";
 
 /** An Engine of a hosted Game: what `EngineRegistry` needs, minus the Game id. */
@@ -25,13 +25,16 @@ export interface VerifiedCatalog {
  * Verifies the catalog and builds the registries the server runs on: every
  * Engine module must load and export `rules` and `engine` (what the worker
  * expects), and both must name the Game id the catalog registers them under.
+ * `extraEngines` (external Engines, checked by
+ * `registerExternalEngines`) join the registry; their Games must be hosted.
  * Rejects with all problems listed, so a bad catalog stops startup.
  */
 export async function verifyCatalog(
   catalog: readonly CatalogGame[],
+  extraEngines: readonly EngineEntry[] = [],
 ): Promise<VerifiedCatalog> {
   const problems: string[] = [];
-  const entries = [];
+  const entries: EngineEntry[] = [];
   for (const { game, engines } of catalog) {
     for (const entry of engines) {
       const label = `Engine ${JSON.stringify(entry.id)} of Game ${
@@ -41,6 +44,17 @@ export async function verifyCatalog(
       if (problem) problems.push(`${label}: ${problem}`);
       entries.push({ ...entry, gameId: game.id });
     }
+  }
+  const hosted = new Set(catalog.map((c) => c.game.id));
+  for (const entry of extraEngines) {
+    if (!hosted.has(entry.gameId)) {
+      problems.push(
+        `Engine ${JSON.stringify(entry.id)}: no such Game ${
+          JSON.stringify(entry.gameId)
+        }`,
+      );
+    }
+    entries.push(entry);
   }
   if (problems.length > 0) {
     throw new Error(`Invalid catalog:\n- ${problems.join("\n- ")}`);

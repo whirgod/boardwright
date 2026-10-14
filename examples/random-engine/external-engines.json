@@ -1,0 +1,14 @@
+{
+  "engines": [
+    {
+      "gameId": "tic-tac-toe",
+      "id": "random",
+      "command": "./random-engine.ts"
+    },
+    {
+      "gameId": "backgammon",
+      "id": "random",
+      "command": "./random-engine.ts"
+    }
+  ]
+}
