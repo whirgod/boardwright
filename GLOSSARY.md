@@ -68,6 +68,10 @@ _Avoid_: Format, serialization
 An AI that can choose Moves and analyze Positions for one Game.
 _Avoid_: Bot, AI, solver
 
+**External Engine**:
+An Engine that runs as its own process, in any language, and talks to the server through the external Engine protocol (JSON lines over stdio).
+_Avoid_: Plugin, remote engine, UCI engine
+
 **Engine library**:
 A Game-agnostic search algorithm (e.g. minimax) that becomes an Engine once given a Game's rules and an evaluation.
 _Avoid_: Engine (for the library itself), framework

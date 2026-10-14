@@ -181,3 +181,23 @@ Deno.test("hosted backgammon: the Engine plays in its sandboxed worker", async (
     await driver.close();
   }
 });
+
+Deno.test("verifyCatalog adds extra (external) Engines of hosted Games only", async () => {
+  const external = (gameId: string) => ({
+    id: "x",
+    name: "X",
+    gameId,
+    external: { command: "/unused" },
+  });
+  const { engines } = await verifyCatalog([{ game: ttt, engines: [] }], [
+    external("tic-tac-toe"),
+  ]);
+  assertEquals(engines.get("tic-tac-toe", "x")?.external, {
+    command: "/unused",
+  });
+  await assertRejects(
+    () => verifyCatalog([{ game: ttt, engines: [] }], [external("go")]),
+    Error,
+    'Engine "x": no such Game "go"',
+  );
+});

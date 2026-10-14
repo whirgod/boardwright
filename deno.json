@@ -44,6 +44,11 @@
       "dependencies": ["build:web"]
     },
     "start:server": "deno task --cwd apps/server start",
-    "test": "deno test --allow-read=apps,engines,games,packages,.test-tmp --allow-write=.test-tmp --allow-net=127.0.0.1 --coverage --clean && deno coverage --exclude='/main\\.ts$'"
+    "start:example-engine": {
+      "description": "Like start, with the example external Engine (examples/random-engine) registered",
+      "command": "deno task --cwd apps/server start:example-engine",
+      "dependencies": ["build:web"]
+    },
+    "test": "deno test --allow-read=apps,engines,games,packages,examples,.test-tmp --allow-write=.test-tmp --allow-net=127.0.0.1 --allow-env=PATH,HOME,LANG --allow-run=examples/random-engine/random-engine.ts,apps/server/src/test-engines/external.ts,apps/server/src/test-engines/external-launcher.sh,apps/server/src/test-engines/env-engine.sh --coverage --clean && deno coverage --exclude='/main\\.ts$'"
   }
 }

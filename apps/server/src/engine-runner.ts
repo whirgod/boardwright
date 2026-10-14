@@ -7,8 +7,10 @@
  * {@link SearchError} with a public code.
  *
  * How an Engine actually runs is an {@link EngineAdapter} behind it: in
- * production a fresh Web Worker per search ({@link workerAdapter}).
- * Out-of-process Engines (#18) change this module, not its callers.
+ * production a fresh Web Worker per search for module Engines
+ * ({@link workerAdapter}) and a process speaking the external Engine
+ * protocol for external ones (`externalAdapter` in `external-engine.ts`),
+ * combined by {@link routingAdapter}.
  */
 import type { Analysis, Score, SearchLimits } from "@boardwright/core";
 import type { EngineEntry } from "./engines.ts";
@@ -367,12 +369,35 @@ export interface WorkerAdapterOptions {
   readonly readDirs?: readonly URL[];
 }
 
-/** The plain-data request an adapter hands to the Engine's host. */
+/**
+ * The plain-data request an adapter hands to the Engine's host. Throws an
+ * `engine-error` for an external Engine (it has no module).
+ */
 export function hostRequest(request: AnalysisRequest): HostRequest {
+  const { module } = request.engine;
+  if (module === undefined) {
+    throw new SearchError(
+      "engine-error",
+      `Engine ${JSON.stringify(request.engine.id)} is not a module Engine`,
+    );
+  }
+  return { module, position: request.position, limits: request.limits };
+}
+
+/**
+ * Sends each search to the adapter for its Engine's kind: module Engines to
+ * `module` (e.g. {@link workerAdapter}), external Engines to `external`
+ * (`externalAdapter` in `external-engine.ts`).
+ */
+export function routingAdapter(adapters: {
+  readonly module: EngineAdapter;
+  readonly external: EngineAdapter;
+}): EngineAdapter {
   return {
-    module: request.engine.module,
-    position: request.position,
-    limits: request.limits,
+    analyze: (request, signal) =>
+      (request.engine.external === undefined
+        ? adapters.module
+        : adapters.external).analyze(request, signal),
   };
 }
 
@@ -392,6 +417,7 @@ export function workerAdapter(
   return {
     async *analyze(request, signal) {
       if (signal.aborted) return;
+      const message = hostRequest(request);
       const worker = new Worker(WORKER_URL, {
         type: "module",
         deno: { permissions: { read: readPaths } },
@@ -418,7 +444,7 @@ export function workerAdapter(
       };
       signal.addEventListener("abort", onAbort);
       try {
-        worker.postMessage(hostRequest(request));
+        worker.postMessage(message);
         for (;;) {
           while (inbox.length === 0) {
             await new Promise<void>((resolve) => wake = resolve);

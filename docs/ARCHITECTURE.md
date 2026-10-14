@@ -19,6 +19,8 @@ engines/<algo>    Game-agnostic Engine libraries: engines/minimax (alpha-beta se
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
                   engines/tic-tac-toe-minimax (also engines/chess-minimax). It exports
                   `rules` and `engine`, so the server can load it by URL inside a Worker.
+examples/random-engine  An external Engine (ADR 0008): a random mover speaking the external Engine
+                  protocol over stdio, with an example config; not a workspace member
 ```
 
 Each member has a `deno.json` with `name`/`version`/`exports`. Package names: `@boardwright/<dir>` (e.g. `@boardwright/core`, `@boardwright/game-chess`,
@@ -72,9 +74,10 @@ core  <-  games/*  <-  engines/*
   must stand alone and throw `RangeError` for any host (the Engine libraries share
   `validateLimits` from `engines/search`); only three numeric predicates overlap.
   The kit's `badLimits` list is the shared source of truth for the Engine side.
-- **In-process first, out-of-process later** _(open question)_: Engines start as TypeScript
-  workspace members loaded in-process (run in Web Workers to keep the server responsive). A
-  stdio/HTTP engine protocol (UCI-like) may be added so Engines in other languages can plug in.
+- **Workspace Engines and external Engines**: Engines are TypeScript workspace members run in
+  sandboxed Web Workers (ADR 0006), or **external Engines** in any language: processes speaking
+  the external Engine protocol, JSON lines over stdio (ADR 0008,
+  [spec](external-engine-protocol.md)), registered in a JSON config at startup.
 
 ## Server internals (`apps/server/src`)
 
@@ -135,7 +138,8 @@ core  <-  games/*  <-  engines/*
 - `players.ts` — `Player`, a union discriminated by `kind`: `human` and
   `{ kind: "engine", engineId, limits }` (limits: `maxDepth`, `maxTimeMs` <= 60 s, `lines`;
   optional, default none). Engine Seats have no seat token.
-- `engines.ts` — `EngineRegistry`: Engines per Game (`id`, `name`, `module` URL).
+- `engines.ts` — `EngineRegistry`: Engines per Game. An `EngineEntry` (`id`, `name`, `gameId`)
+  is a module Engine (`module` URL) or an external Engine (`external`: `command`, `args`, `cwd`).
 - `engine-driver.ts` — `EngineDriver` subscribes to `onMatchChanged`; `resumeAll()` (called once by
   `main.ts`) plays the Engine turns left waiting by a restart, which no event announces. It remembers each running
   Match's Engine Seats from its `created` event (loading a Match once if it was created before the
@@ -168,10 +172,11 @@ core  <-  games/*  <-  engines/*
   So Engine Seats never starve behind clients; a Match search waits at most for other Match
   searches and for running searches' deadlines. Waiting while queued is abortable but not
   time-limited (bounded by the queue cap). How an Engine runs is an `EngineAdapter` (seam):
-  `workerAdapter` in production; `inProcessAdapter` (`engine-runner.testing.ts`, tests only: a
+  in production `routingAdapter` sends module Engines to `workerAdapter` and external Engines to
+  `externalAdapter`; `inProcessAdapter` (`engine-runner.testing.ts`, tests only: a
   CPU-bound Engine there would block the thread and the deadline). Production adapters must
-  isolate the Engine from the server's thread. Out-of-process Engines
-  (#18, a further adapter) change only this module.
+  isolate the Engine from the server's thread. `runnerEngine` (also test-only) wraps the runner
+  as a typed `Engine`, so `assertEngineContract` can check any adapter end to end.
 - `engine-worker.ts` / `engine-host.ts` — the worker adapter starts one Web Worker per search and
   always terminates it afterwards (end, error, timeout, abort or break). Messages carry only
   Notation strings and limits: `{ module, position, limits }` -> any number of
@@ -184,14 +189,37 @@ core  <-  games/*  <-  engines/*
   Engine code cannot use net, env, write, subprocesses or any other file; attempts fail as
   `engine-error`. Needs `"unstable": ["worker-options"]` in the root `deno.json`. Not capped:
   CPU/memory inside the worker (the deadline terminates it).
+- `external-engine.ts` — `externalAdapter({ games, ... })` (ADR 0008, [protocol](external-engine-protocol.md)):
+  per external Engine a pool of processes (`Deno.Command`, no shell, cleared environment:
+  `INHERITED_ENV` = `PATH`/`HOME`/`LANG` plus the Engine's `env`), each handshaken once
+  (`hello` -> `ready`, Game id checked, name cleaned and capped) and reused for one search after
+  another (`analyze` -> `analysis`* -> `done`); at most `maxIdle` (2) kept idle. Every Analysis is
+  rebuilt by `readAnalysis` with the Game's rules (Moves decoded, legal in sequence, re-encoded;
+  Scores rebuilt; `score`/`seat` exactly while a Chance event is pending) or the search fails
+  `unreadable-reply`. Ending a search early sends `stop` in the background and kills the process
+  if no `done` follows within `stopTimeoutMs` (1 s); a handshake whose search was aborted
+  completes in the background and the process joins the idle pool. Failures: cannot start /
+  exited `worker-error`, a line outside the protocol (or > 1 MiB) `unreadable-reply` (process
+  killed), `error` `engine-error` (process kept), no `ready` within `handshakeTimeoutMs` (10 s)
+  `timeout`. `kill()` also drops both pipes, so a launcher's grandchild cannot hold up `close()`.
+  Restart policy: broken processes are replaced on the next search; `maxFailures` (3) in a row
+  cool the Engine down for `cooldownMs` (30 s). `connect` (startup), `settled` (tests), `close`;
+  `shutdownHandler` (SIGINT/SIGTERM in `main.ts`) closes them before exit. The spawn checks
+  `--allow-run` first, so it never prompts.
+- `external-engine-config.ts` — the config file (`{ "engines": [{ gameId, id, name?, command,
+  args?, cwd?, env? }] }`, paths relative to the file) and `registerExternalEngines`: each Engine's
+  Game is hosted, `--allow-run` covers its command, and it completes the handshake; all problems
+  are reported together and stop startup.
 - `catalog.ts` — `verifyCatalog`: the hosted catalog (`hosted-catalog.ts`: Games with their
   Engines, registered once) is checked at startup: Engine modules load, export `rules` and
-  `engine`, and both match the Game id; a bad catalog stops the server. Hook for the ADR 0005
+  `engine`, and both match the Game id; a bad catalog stops the server. Extra Engines (the
+  registered external ones) join the registry if their Game is hosted. Hook for the ADR 0005
   library <-> Game kind check once `ChanceGameRules` exists. Hosts tic-tac-toe, nine men's morris,
   checkers and chess (minimax Engines), and backgammon (a Game with chance; expectiminimax
   Engine `engines/backgammon-expecti`).
-- `main.ts` wires it: `GameMaster` with the verified catalog, the one `EngineRunner` and an
-  `EngineDriver` using it,
+- `main.ts` wires it: registers external Engines from `BOARDWRIGHT_EXTERNAL_ENGINES` (default
+  `external-engines.json` in the repo, optional), `GameMaster` with the verified catalog (plus
+  external Engines), the one `EngineRunner` (routing adapter) and an `EngineDriver` using it,
   `buildApp({ master, webRoot })` serving the built web UI from `apps/web/dist`.
 - `match-store.ts` — `MatchStore` interface (`create`/`get`/`update`/`list`) + `InMemoryMatchStore`;
   `sqlite-match-store.ts` — `SqliteMatchStore`, the persistent store (ADR 0007; `main.ts` opens

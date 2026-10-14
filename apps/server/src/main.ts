@@ -1,7 +1,16 @@
 import { buildApp } from "./app.ts";
 import { verifyCatalog } from "./catalog.ts";
 import { EngineDriver } from "./engine-driver.ts";
-import { EngineRunner } from "./engine-runner.ts";
+import {
+  EngineRunner,
+  routingAdapter,
+  workerAdapter,
+} from "./engine-runner.ts";
+import { externalAdapter, shutdownHandler } from "./external-engine.ts";
+import {
+  readExternalEngineConfig,
+  registerExternalEngines,
+} from "./external-engine-config.ts";
 import { GameMaster } from "./game-master.ts";
 import { GameRegistry } from "./games.ts";
 import { hostedCatalog } from "./hosted-catalog.ts";
@@ -20,8 +29,34 @@ const store = dataDir === ":memory:"
   ? new InMemoryMatchStore()
   : openMatchStore(dataDir);
 
+// External Engines (ADR 0008) from a JSON config: `BOARDWRIGHT_EXTERNAL_ENGINES`,
+// default `external-engines.json` in the repo (optional; the tasks grant read
+// of it). Each command also needs `--allow-run=<command>`. Startup fails if
+// one cannot run or fails its handshake.
+const externalConfig = Deno.env.get("BOARDWRIGHT_EXTERNAL_ENGINES");
+const external = externalAdapter({
+  games: new GameRegistry(hostedCatalog.map((c) => c.game)),
+});
+// Stop external Engines with the server, so none is left running as an orphan.
+const shutdown = shutdownHandler(() => external.close());
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  try {
+    Deno.addSignalListener(signal, shutdown);
+  } catch {
+    // Not supported on this platform (SIGTERM on Windows).
+  }
+}
+const externalEngines = await registerExternalEngines(
+  await readExternalEngineConfig(
+    externalConfig ?? `${import.meta.dirname}/../../../external-engines.json`,
+    { optional: externalConfig === undefined },
+  ),
+  external,
+  new Set(hostedCatalog.map((c) => c.game.id)),
+);
+
 // Fails startup if a Game or Engine module of the catalog is unusable.
-const catalog = await verifyCatalog(hostedCatalog);
+const catalog = await verifyCatalog(hostedCatalog, externalEngines);
 
 const master = new GameMaster({
   games: new GameRegistry(catalog.games),
@@ -30,7 +65,9 @@ const master = new GameMaster({
 });
 // The one runner every search goes through (Matches and the Analysis stream),
 // so its concurrency cap and queueing policy hold server-wide.
-const runner = new EngineRunner();
+const runner = new EngineRunner({
+  adapter: routingAdapter({ module: workerAdapter(), external }),
+});
 const driver = new EngineDriver(master, { runner });
 // Engine turns left waiting by the last run (no event will announce them).
 await driver.resumeAll();

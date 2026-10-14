@@ -39,6 +39,7 @@ engines/search    shared search harness (iterative deepening, limits, multi-PV, 
 engines/<algo>    Engine library, Game-agnostic       (@boardwright/engine-<algo>: minimax,
                   expectiminimax for Games with chance); algorithm only, plumbing in engines/search
 engines/<game>-<name>  one Engine per Game (library + evaluation)  (@boardwright/engine-<game>-<name>)
+examples/random-engine  example external Engine (stdio JSON-lines protocol, ADR 0008) + config
 ```
 
 Dependencies flow `core <- games <- engines <- server`; never import the server from a Game or Engine.
@@ -55,6 +56,9 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
   http://127.0.0.1:3000 (`dev:web` / `dev:server` run one side only)
 - `deno task start` — build the web UI (`build:web`), then run the server; Matches persist in
   `data/matches.db` (ADR 0007; `BOARDWRIGHT_DATA_DIR` overrides, needs a matching grant)
+- `deno task start:example-engine` — same, with the example external Engine registered
+  (`docs/external-engine-protocol.md`: config file, `--allow-run` per command; the `.ts`
+  shebang commands are Linux/macOS only)
 - `scripts/claude-usage.sh [--gate N]` — Claude plan usage snapshot (see `docs/WORKFLOW.md`)
 - `deno add jsr:<pkg>` / `npm:<pkg>` in the member that needs it; prefer JSR packages
 
@@ -71,6 +75,8 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
   `apps/web/src/renderers/` (see `docs/ARCHITECTURE.md`).
 - Grant minimal permissions in tasks (`--allow-net`; tests only `--allow-net=127.0.0.1`, scoped `--allow-env=...`/`--allow-read=...`; Engine Workers need the read grant), never `-A`.
 - Games are pure and deterministic. The server is the only authority over Match state (ADR 0002).
+- External Engines (ADR 0008) run only commands listed in their config and granted by a
+  scoped `--allow-run=<command>`; test ones live in `apps/server/src/test-engines/` (executable, shebang).
 - Engine workers are sandboxed (ADR 0006): read of `packages/ games/ engines/` only; root `deno.json`
   enables `unstable: ["worker-options"]`. Test Engines load via `testWorkerAdapter()`.
 - Use `GLOSSARY.md` terms (Match, not "game instance"; Position, not "board state"; Seat, not "color").
