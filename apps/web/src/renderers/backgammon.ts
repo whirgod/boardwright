@@ -365,22 +365,35 @@ export function input(
 }
 
 /**
- * The points a Move touches, in order (a checker moved on is not repeated:
- * `24/18 18/13` is `p1, p7, p12` for white); `pass` touches the dice.
+ * `path` is the first checker's journey (`24/18 18/13` is `p24, p18, p13`
+ * for white), so an arrow (first to last target) shows one real checker
+ * move; `effects` are the points the other Steps touch. `pass` touches the
+ * dice.
  */
 function moveTargets(
   move: BackgammonMove,
   position: BackgammonPosition,
 ): MoveTargets {
   const seat = position.turn ?? "white";
-  if (move.steps.length === 0) return { path: [DICE_TARGET] };
-  const path: TargetId[] = [];
-  for (const { from, to } of move.steps) {
+  const [first, ...rest] = move.steps;
+  if (first === undefined) return { path: [DICE_TARGET] };
+  const path = [targetOf(seat, first.from), targetOf(seat, first.to)];
+  // Follow the first checker through later Steps that move it on.
+  let at = first.to;
+  const others = [...rest];
+  for (let i = others.findIndex((s) => s.from === at); i >= 0;) {
+    at = others[i]!.to;
+    path.push(targetOf(seat, at));
+    others.splice(i, 1);
+    i = at === OFF ? -1 : others.findIndex((s) => s.from === at);
+  }
+  const effects: TargetId[] = [];
+  for (const { from, to } of others) {
     for (const t of [targetOf(seat, from), targetOf(seat, to)]) {
-      if (path.at(-1) !== t) path.push(t);
+      if (!effects.includes(t) && !path.includes(t)) effects.push(t);
     }
   }
-  return { path };
+  return effects.length > 0 ? { path, effects } : { path };
 }
 
 export const backgammonRenderer: BoardRenderer<

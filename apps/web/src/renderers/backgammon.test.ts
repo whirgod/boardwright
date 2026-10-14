@@ -230,16 +230,27 @@ Deno.test("nextTargets: movable checkers, then their destinations", () => {
   assertEquals(nextTargets(p, legal, ["p6", "p5", "p8"]), ["p5"]);
 });
 
-Deno.test("moveTargets: touched points in order, a chain once", () => {
+Deno.test("moveTargets: the first checker's journey, then the other points", () => {
   const p = at("31");
   const move = backgammon.notation.decodeMove("24/21 21/20", p);
   assertEquals(r.moveTargets(move, p), { path: ["p24", "p21", "p20"] });
+  const split = backgammon.notation.decodeMove("13/10 6/5", p);
+  assertEquals(r.moveTargets(split, p), {
+    path: ["p13", "p10"],
+    effects: ["p6", "p5"],
+  });
+  const p66 = at("66");
+  const four = backgammon.notation.decodeMove("24/18 24/18 13/7 13/7", p66);
+  assertEquals(r.moveTargets(four, p66), {
+    path: ["p24", "p18"],
+    effects: ["p13", "p7"],
+  });
   const off = decode(
     "w2,w2,w2,w2,w2,w5,0,0,0,0,0,b5,0,0,0,0,b3,0,b5,0,0,0,0,b2 0/0 white 61",
   );
   assertEquals(
     r.moveTargets(backgammon.notation.decodeMove("6/off 6/5", off), off),
-    { path: ["p6", "off", "p6", "p5"] },
+    { path: ["p6", "off"], effects: ["p5"] },
   );
 });
 
@@ -265,4 +276,22 @@ Deno.test("gameView: backgammon highlights the destinations of a pick", () => {
       move: "8/5 6/5",
     },
   );
+});
+
+Deno.test("gameView: an Analysis Line's Move is an arrow of its first checker", () => {
+  const view = gameView("backgammon")!;
+  const p = at("31");
+  const { arrows } = view.board({
+    position: backgammon.notation.encodePosition(p),
+    moves: [],
+    legalMoves: [],
+    selection: [],
+    arrows: ["13/10 6/5", null, "24/21 21/20"],
+    preview: ["8/5 6/5"],
+  });
+  assertEquals(arrows, [
+    { from: "p13", to: "p10", kind: "line", index: 0 },
+    { from: "p24", to: "p20", kind: "line", index: 2 },
+    { from: "p8", to: "p5", kind: "preview", index: 0 },
+  ]);
 });
