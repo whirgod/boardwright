@@ -278,26 +278,29 @@ Resignations stay REST.
 - **Board-renderer seam** (`renderers/`): a Game's `BoardRenderer<Position, Move>` receives the
   Game's typed Position (decoded with its own Notation, never re-parsed) and returns a DOM-free
   `BoardScene` (board shapes, piece shapes, clickable targets such as squares or points, in board
-  coordinates). `moveTargets(move)` returns `{ path, effects? }`: `path` is where the piece goes
+  coordinates; `scene(position, selection?)` may show the Steps picked so far). `moveTargets(move)`
+  returns `{ path, effects?, captures? }`: `path` is where the piece goes
   (`[cell]`, `[from, to]`, `[from, land1, land2]`) and drives arrows and the last-Move highlight;
   `effects` are further targets the Move picks, such as a piece removed after a mill; clicking
-  `[...path, ...effects]` composes the Move. `input(position, legalMoves, selection, target)`
+  `[...path, ...effects]` composes the Move; `captures` (squares jumped over) only join the last-Move
+  highlight, never the click order. `input(position, legalMoves, selection, target)`
   turns clicks into a Move intent (`move`, `select` for multi-click Moves, `ignore`).
   `bindRenderer(rules, renderer)` wraps it behind Notation strings as a `GameView`, which adds
-  highlights (last Move by replaying the Move list, selection, destinations) and arrows:
+  highlights (last Move by replaying the Move list, Chance events included, `request.entries`; selection, destinations) and arrows:
   `request.arrows` (one Move each from the Position, `kind: "line"`, `index` = rank) and
   `request.preview` (a Line drawn Move by Move, each decoded in the Position the earlier ones
   reach, `kind: "preview"`, `index` = step; it stops at the first Move that does not decode or
   apply); Moves that do not decode are skipped, and a Position that does not decode
   makes the page fall back to Notation text (pages also sit behind an error boundary). One generic
-  `board.tsx` draws any scene as SVG. A renderer whose input does not follow `moveTargets`' click
+  `board.tsx` draws any scene as SVG (targets carry their selected/destination/last-Move state in
+  their `aria-label`; boards much wider than tall may use the whole column). A renderer whose input does not follow `moveTargets`' click
   order provides `nextTargets` for the destination highlights. Implemented for tic-tac-toe, nine
   men's morris, checkers, chess and backgammon; Games without one fall back to Notation text and
   legal-Move buttons. Backgammon input: each Step (one die) is a checker then its destination
   (`bar` and the `off` tray are targets), in any playable order (the Game's `stepOrders`); the
   Move is played after its last Step; the dice start over, or play `pass`. A Move's arrow shows
-  its first checker's journey (other Steps are `effects`). Its last Move is not highlighted (the
-  replay needs the Chance events). Chess input: a Move is `from` then `to` (castling is the
+  its first checker's journey (other Steps are `effects`). The Steps entered so far
+  are drawn on the board. Chess input: a Move is `from` then `to` (castling is the
   king's two-square Move); promotion is a third click, an effect on one of four picker targets (`=q`, `=r`, `=b`, `=n`) drawn below the board in the
   pieces of the Seat to move. The Move list shows chess Moves in SAN (`formatSan`),
   via a per-Game formatter registry in `move-labels.ts`; other Games show Notation.

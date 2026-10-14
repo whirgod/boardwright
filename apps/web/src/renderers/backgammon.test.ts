@@ -6,14 +6,17 @@ import {
   OFF,
 } from "@boardwright/game-backgammon";
 import {
+  applySteps,
   backgammonRenderer as r,
   caption,
   DICE_TARGET,
   input,
   nextTargets,
+  picked,
   pipCount,
   targetOf,
 } from "./backgammon.ts";
+import type { MoveListEntry } from "../api.ts";
 import { gameView } from "./mod.ts";
 
 const START = "b2,0,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w2";
@@ -272,7 +275,7 @@ Deno.test("gameView: backgammon highlights the destinations of a pick", () => {
   const p = at("31");
   const request = {
     position: backgammon.notation.encodePosition(p),
-    moves: [],
+    entries: [],
     legalMoves: backgammon.legalMoves(p).map(encode),
     selection: ["p6"],
   };
@@ -296,7 +299,7 @@ Deno.test("gameView: an Analysis Line's Move is an arrow of its first checker", 
   const p = at("31");
   const { arrows } = view.board({
     position: backgammon.notation.encodePosition(p),
-    moves: [],
+    entries: [],
     legalMoves: [],
     selection: [],
     arrows: ["13/10 6/5", null, "24/21 21/20"],
@@ -307,4 +310,140 @@ Deno.test("gameView: an Analysis Line's Move is an arrow of its first checker", 
     { from: "p24", to: "p20", kind: "line", index: 2 },
     { from: "p8", to: "p5", kind: "preview", index: 0 },
   ]);
+});
+
+Deno.test("applySteps: the Steps entered so far are played on the shown Position", () => {
+  const p = at("31");
+  assertEquals(applySteps(p, []), p);
+  const moved = applySteps(p, ["p8", "p5", "p6"]);
+  // A trailing picked checker is not a Step yet.
+  assertEquals([moved.points[7], moved.points[4], moved.points[5]], [2, 1, 5]);
+  assertEquals(p.points[7], 3, "the original Position is untouched");
+  const both = applySteps(p, ["p8", "p5", "p6", "p5"]);
+  assertEquals([both.points[5], both.points[4]], [4, 2]);
+  // Black's checkers move towards lower points in white's numbering.
+  const black = at("31", "black");
+  const down = applySteps(black, ["p12", "p9"]);
+  assertEquals([down.points[11], down.points[8]], [-4, -1]);
+});
+
+Deno.test("applySteps: hits, entering from the bar and bearing off", () => {
+  const blot = "b1,0,0,0,b1,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w2";
+  const hit = applySteps(at("31", "white", blot), ["p6", "p5"]);
+  assertEquals([hit.points[4], hit.points[5], hit.bar.black], [1, 4, 1]);
+  const entering = applySteps(
+    at("31", "white", START.replace(/w2$/, "w1"), "1/0"),
+    ["bar", "p22"],
+  );
+  assertEquals([entering.bar.white, entering.points[21]], [0, 1]);
+  const home = "w2,w2,w2,w2,w2,w5,0,0,0,0,0,b5,0,0,0,0,b3,0,b5,0,0,0,0,b2";
+  const off = applySteps(at("61", "white", home), ["p6", "off"]);
+  assertEquals([off.off.white, off.points[5]], [1, 4]);
+  // Stale or impossible Steps are skipped.
+  const p = at("31");
+  assertEquals(applySteps(p, ["p2", "p1"]), p);
+  assertEquals(applySteps(p, ["bar", "p2"]), p);
+  assertEquals(applySteps(p, ["p6", "p30"]), p);
+  assertEquals(applySteps({ ...p, turn: null }, ["p6", "p5"]).points, p.points);
+});
+
+Deno.test("scene: shows the Steps already entered, the caption keeps the Position", () => {
+  const p = at("31");
+  const scene = r.scene(p, ["p8", "p5"]);
+  assertEquals(
+    scene.targets.find((t) => t.id === "p5")!.label,
+    "point 5: 1 white",
+  );
+  assertEquals(
+    scene.targets.find((t) => t.id === "p8")!.label,
+    "point 8: 2 white",
+  );
+  const caption = (s: typeof scene) =>
+    s.board.find((x) => x.className === "caption");
+  assertEquals(caption(scene), caption(r.scene(p)));
+});
+
+Deno.test("gameView: backgammon highlights the last Move across Chance events", () => {
+  const view = gameView("backgammon")!;
+  const p = backgammon.notation.encodePosition(backgammon.initialPosition());
+  const entries = [
+    { kind: "chance", chance: "6-1" },
+    { kind: "move", move: "13/7 8/7" },
+    { kind: "chance", chance: "52" },
+  ] as const;
+  const { highlights } = view.board({
+    position: p,
+    entries,
+    legalMoves: [],
+    selection: [],
+  });
+  assertEquals(highlights, [
+    { target: "p13", kind: "last-move" },
+    { target: "p7", kind: "last-move" },
+    { target: "p8", kind: "last-move-effect" },
+  ]);
+});
+
+Deno.test("gameView: backgammon review at an earlier ply and bad Chance events", () => {
+  const view = gameView("backgammon")!;
+  const position = backgammon.notation.encodePosition(
+    backgammon.initialPosition(),
+  );
+  const request = { position, legalMoves: [], selection: [] };
+  const last = (entries: readonly MoveListEntry[]) =>
+    view.board({ ...request, entries }).highlights;
+  const entries: MoveListEntry[] = [
+    { kind: "chance", chance: "6-1" },
+    { kind: "move", move: "13/7 8/7" },
+    { kind: "chance", chance: "52" },
+    { kind: "move", move: "24/22 13/8" },
+  ];
+  // Reviewing at ply 2 highlights the first Move, not the later one.
+  assertEquals(last(entries.slice(0, 2)).map((h) => h.target), [
+    "p13",
+    "p7",
+    "p8",
+  ]);
+  assertEquals(last(entries.slice(0, 3)).length, 3);
+  // A Chance event that does not decode: no highlight, no throw.
+  assertEquals(last([{ kind: "chance", chance: "zz" }, entries[1]!]), []);
+});
+
+Deno.test("picked: only a trailing picked checker is pending", () => {
+  assertEquals(picked([]), []);
+  assertEquals(picked(["p8"]), ["p8"]);
+  assertEquals(picked(["p8", "p5"]), []);
+  assertEquals(picked(["p8", "p5", "p6"]), ["p6"]);
+  const view = gameView("backgammon")!;
+  const { highlights } = view.board({
+    position: backgammon.notation.encodePosition(at("31")),
+    entries: [],
+    legalMoves: [],
+    selection: ["p8", "p5", "p6"],
+  });
+  assertEquals(
+    highlights.filter((h) => h.kind === "selected").map((h) => h.target),
+    ["p6"],
+  );
+});
+
+Deno.test("applySteps: black entering from the bar, bearing off and hitting", () => {
+  const blot = "b1,w1,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w1";
+  const entered = applySteps(at("31", "black", blot, "0/1"), ["bar", "p24"]);
+  assertEquals(
+    [entered.bar.black, entered.points[23], entered.bar.white],
+    [0, -1, 1],
+  );
+  const hit = applySteps(
+    at(
+      "31",
+      "black",
+      "w1,b2,0,0,0,w5,0,w3,0,0,0,b5,w5,0,0,0,b3,0,b5,0,0,0,0,w1",
+    ),
+    ["p2", "p1"],
+  );
+  assertEquals([hit.points[0], hit.points[1], hit.bar.white], [-1, -1, 1]);
+  const home = "b2,b2,b2,b2,b2,b5,0,0,0,0,0,w5,0,0,0,0,w3,0,w5,0,0,0,0,w2";
+  const off = applySteps(at("61", "black", home), ["p6", "off"]);
+  assertEquals([off.off.black, off.points[5]], [1, -4]);
 });

@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import type { GameRules } from "@boardwright/core";
+import { checkers } from "@boardwright/game-checkers";
 import type { BoardRenderer, MoveTargets } from "./board.ts";
 import { bindRenderer, type BoardRequest, gameView } from "./mod.ts";
 
@@ -7,6 +8,7 @@ import { bindRenderer, type BoardRequest, gameView } from "./mod.ts";
 // compound Move "b-a+c" that also removes the piece on c (like a mill in nine
 // men's morris). Positions are the Move list joined with "|", so tests can see
 // what the renderer received.
+const mv = (move: string) => ({ kind: "move", move }) as const;
 const MOVES = ["a-b", "a-c", "b-c", "b-a+c"];
 interface SlideMove {
   from: string;
@@ -85,7 +87,7 @@ const slideRenderer: BoardRenderer<string[], SlideMove> = {
 const view = bindRenderer(slide, slideRenderer);
 const request = (over: Partial<BoardRequest> = {}): BoardRequest => ({
   position: "a-b",
-  moves: [],
+  entries: [],
   legalMoves: MOVES,
   selection: [],
   ...over,
@@ -111,7 +113,7 @@ Deno.test("board: undecodable Positions throw", () => {
 });
 
 Deno.test("board: highlights the last Move, found by replaying the Move list", () => {
-  const model = view.board(request({ moves: ["a-c", "b-c"] }));
+  const model = view.board(request({ entries: [mv("a-c"), mv("b-c")] }));
   assertEquals(model.highlights, [
     { target: "b", kind: "last-move" },
     { target: "c", kind: "last-move" },
@@ -119,7 +121,7 @@ Deno.test("board: highlights the last Move, found by replaying the Move list", (
 });
 
 Deno.test("board: a Move list that does not replay highlights nothing", () => {
-  const model = view.board(request({ moves: ["zz", "a-b"] }));
+  const model = view.board(request({ entries: [mv("zz"), mv("a-b")] }));
   assertEquals(model.highlights, []);
 });
 
@@ -181,7 +183,7 @@ Deno.test("board: a preview stops at the first Move that does not decode", () =>
 Deno.test("board: chess previews decode each Move in its own Position", () => {
   const board = gameView("chess")!.board({
     position: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    moves: [],
+    entries: [],
     legalMoves: [],
     selection: [],
     preview: ["e2e4", "e7e5", "g1f3"],
@@ -197,7 +199,7 @@ Deno.test("board: tic-tac-toe placements become single-target arrows", () => {
   const ttt = gameView("tic-tac-toe")!;
   const model = ttt.board({
     position: "x........:o",
-    moves: ["a1"],
+    entries: [mv("a1")],
     legalMoves: [],
     selection: [],
     arrows: ["b2"],
@@ -250,11 +252,14 @@ Deno.test("compound Move: path drives arrows and highlights, effects are clicked
     { from: "b", to: "a", kind: "line", index: 0 },
   ]);
   // As the last Move, the removed point is marked as an effect.
-  assertEquals(view.board(request({ moves: ["a-b", "b-a+c"] })).highlights, [
-    { target: "b", kind: "last-move" },
-    { target: "a", kind: "last-move" },
-    { target: "c", kind: "last-move-effect" },
-  ]);
+  assertEquals(
+    view.board(request({ entries: [mv("a-b"), mv("b-a+c")] })).highlights,
+    [
+      { target: "b", kind: "last-move" },
+      { target: "a", kind: "last-move" },
+      { target: "c", kind: "last-move-effect" },
+    ],
+  );
 });
 
 Deno.test("board and click skip Moves that do not decode instead of throwing", () => {
@@ -276,7 +281,7 @@ Deno.test("click: tic-tac-toe plays the clicked cell when it is legal", () => {
   const ttt = gameView("tic-tac-toe")!;
   const req = {
     position: "x........:o",
-    moves: ["a1"],
+    entries: [mv("a1")],
     legalMoves: ["b1", "c1", "a2", "b2", "c2", "a3", "b3", "c3"],
     selection: [],
   };
@@ -285,4 +290,52 @@ Deno.test("click: tic-tac-toe plays the clicked cell when it is legal", () => {
   assertEquals(ttt.click({ ...req, legalMoves: [] }, "b2"), {
     kind: "ignore",
   });
+});
+
+Deno.test("gameView: checkers captures reach the last-Move highlight, not the click order", () => {
+  const view = gameView("checkers")!;
+  const entries = ["9-13", "21-17", "5-9", "17-14"].map(mv);
+  const before = checkers.notation.encodePosition(
+    entries.reduce(
+      (p, e) => checkers.play(p, checkers.notation.decodeMove(e.move, p)),
+      checkers.initialPosition(),
+    ),
+  );
+  const legalMoves = ["9x18", "10x17"];
+  const request = { position: before, entries, legalMoves, selection: [] };
+  assertEquals(
+    view.board(request).highlights.map((h) => h.kind),
+    ["last-move", "last-move"],
+  );
+  // The capture 9x18 jumps square 14: an effect of the last Move.
+  const { highlights } = view.board({
+    ...request,
+    entries: [...entries, mv("9x18")],
+  });
+  assertEquals(highlights, [
+    { target: "9", kind: "last-move" },
+    { target: "18", kind: "last-move" },
+    { target: "14", kind: "last-move-effect" },
+  ]);
+  // Clicks follow the path only: the jumped square is not a click target.
+  const picked = view.board({ ...request, selection: ["9"] }).highlights;
+  assertEquals(
+    picked.filter((h) => h.kind === "destination"),
+    [{ target: "18", kind: "destination" }],
+  );
+  assertEquals(view.click({ ...request, selection: ["9"] }, "18"), {
+    kind: "move",
+    move: "9x18",
+  });
+});
+
+Deno.test("gameView: a Chance entry for a Game without chance gives no highlight", () => {
+  const view = gameView("checkers")!;
+  const { highlights } = view.board({
+    position: checkers.notation.encodePosition(checkers.initialPosition()),
+    entries: [{ kind: "chance", chance: "6-1" }, mv("9-13")],
+    legalMoves: [],
+    selection: [],
+  });
+  assertEquals(highlights, []);
 });

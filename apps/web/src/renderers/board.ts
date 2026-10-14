@@ -104,6 +104,12 @@ export type Selection = readonly TargetId[];
 export interface MoveTargets {
   readonly path: readonly TargetId[];
   readonly effects?: readonly TargetId[];
+  /**
+   * Targets the Move changes without the user picking them (e.g. the squares
+   * of captured checkers). Shown like `effects` in the last-Move highlight,
+   * but never part of the click order.
+   */
+  readonly captures?: readonly TargetId[];
 }
 
 /** What a click on the board means. */
@@ -114,7 +120,11 @@ export type MoveIntent<Move> =
 
 /** Draws one Game. Receives typed Positions and Moves, decoded with the Game's Notation. */
 export interface BoardRenderer<Position, Move> {
-  scene(position: Position): BoardScene;
+  /**
+   * Draws `position`. `selection` is what the user has picked so far
+   * (see `input`); a renderer may show the partly composed Move with it.
+   */
+  scene(position: Position, selection?: Selection): BoardScene;
   /** The targets a Move touches (see `MoveTargets`). */
   moveTargets(move: Move, position: Position): MoveTargets;
   /** Interprets a click on `target`, given the Moves the Seat to move may play. */
@@ -124,6 +134,13 @@ export interface BoardRenderer<Position, Move> {
     selection: Selection,
     target: TargetId,
   ): MoveIntent<Move>;
+  /**
+   * Optional: the part of a non-empty `selection` to show (and announce) as
+   * selected, for renderers whose selection also holds finished Steps (e.g.
+   * backgammon, where only a trailing picked checker is pending). Default:
+   * the whole selection.
+   */
+  picked?(selection: Selection): Selection;
   /**
    * Optional: the targets a click may continue a non-empty `selection` with
    * (highlighted as destinations), for renderers whose `input` does not

@@ -36,7 +36,7 @@ function check<P, M>(
     const legalMoves = legal.map(notation.encodeMove);
     const request = (selection: Selection) => ({
       position: text,
-      moves: [],
+      entries: [],
       legalMoves,
       selection,
     });

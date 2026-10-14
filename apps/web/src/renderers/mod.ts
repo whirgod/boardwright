@@ -1,9 +1,10 @@
-import type { GameId, GameRules } from "@boardwright/core";
+import { type GameId, type GameRules, hasChance } from "@boardwright/core";
 import { backgammon } from "@boardwright/game-backgammon";
 import { checkers } from "@boardwright/game-checkers";
 import { chess } from "@boardwright/game-chess";
 import { nineMensMorris } from "@boardwright/game-nine-mens-morris";
 import { ticTacToe } from "@boardwright/game-tic-tac-toe";
+import type { MoveListEntry } from "../api.ts";
 import type {
   Arrow,
   BoardRenderer,
@@ -21,11 +22,18 @@ import { ticTacToeRenderer } from "./tic-tac-toe.ts";
 
 export type * from "./board.ts";
 
+// The API's Move list entry type; it imports only `core`, so the renderers
+// layer may use it.
+type BoardEntry = MoveListEntry;
+
 /** What the UI knows about a Match, all in the Game's Notation (as the API sends it). */
 export interface BoardRequest {
   readonly position: string;
-  /** Move list from the initial Position; its last Move is highlighted. */
-  readonly moves: readonly string[];
+  /**
+   * Move list from the initial Position, with its Chance events; its last
+   * Move is highlighted.
+   */
+  readonly entries: readonly BoardEntry[];
   /** Moves the Seat to move may play; empty when this client may not move. */
   readonly legalMoves: readonly string[];
   readonly selection: Selection;
@@ -123,18 +131,35 @@ export function bindRenderer<Position, Move>(
   };
 
   /** The last Move's highlights, found by replaying the Move list; none if it does not replay. */
-  const lastMove = (moves: readonly string[]): Highlight[] => {
-    if (moves.length === 0) return [];
+  const lastMove = (entries: readonly BoardEntry[]): Highlight[] => {
+    const at = entries.findLastIndex((e) => e.kind === "move");
+    const lastEntry = entries[at];
+    if (lastEntry?.kind !== "move") return [];
     try {
       let position = rules.initialPosition();
-      for (const text of moves.slice(0, -1)) {
-        position = rules.play(position, notation.decodeMove(text, position));
+      for (const entry of entries.slice(0, at)) {
+        if (entry.kind === "move") {
+          position = rules.play(
+            position,
+            notation.decodeMove(entry.move, position),
+          );
+        } else if (hasChance(rules)) {
+          position = rules.resolveChance(
+            position,
+            rules.notation.decodeChance(entry.chance, position),
+          );
+        } else {
+          return [];
+        }
       }
-      const last = notation.decodeMove(moves[moves.length - 1]!, position);
-      const { path, effects = [] } = renderer.moveTargets(last, position);
+      const last = notation.decodeMove(lastEntry.move, position);
+      const { path, effects = [], captures = [] } = renderer.moveTargets(
+        last,
+        position,
+      );
       return [
         ...path.map((target) => ({ target, kind: "last-move" as const })),
-        ...effects.map((target) => ({
+        ...[...effects, ...captures].map((target) => ({
           target,
           kind: "last-move-effect" as const,
         })),
@@ -149,9 +174,9 @@ export function bindRenderer<Position, Move>(
     board(request) {
       const position = notation.decodePosition(request.position);
       const legalMoves = decodeMoves(request.legalMoves, position);
-      const highlights = lastMove(request.moves);
+      const highlights = lastMove(request.entries);
       const { selection } = request;
-      for (const target of selection) {
+      for (const target of renderer.picked?.(selection) ?? selection) {
         highlights.push({ target, kind: "selected" });
       }
       if (selection.length > 0 && renderer.nextTargets) {
@@ -180,7 +205,11 @@ export function bindRenderer<Position, Move>(
         if (arrow) arrows.push(arrow);
       }
       arrows.push(...previewArrows(request.preview ?? [], position));
-      return { scene: renderer.scene(position), highlights, arrows };
+      return {
+        scene: renderer.scene(position, request.selection),
+        highlights,
+        arrows,
+      };
     },
     click(request, target) {
       let position: Position;

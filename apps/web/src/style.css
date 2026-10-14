@@ -120,6 +120,10 @@ svg.board {
   display: block;
 }
 
+svg.board.wide {
+  max-width: none;
+}
+
 svg.board .board {
   fill: var(--board);
 }

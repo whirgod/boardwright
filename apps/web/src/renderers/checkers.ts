@@ -21,10 +21,27 @@ export function squareName(square: number): string {
   return "abcdefgh"[col]! + String(8 - row);
 }
 
-/** Every visited square is on the path, so a multi-jump is clicked square by square. */
-const moveTargets = (move: CheckersMove): MoveTargets => ({
-  path: move.map(String),
-});
+/** Square 1..32 at `row`, `col` (the inverse of `cell`). */
+const squareAt = (row: number, col: number) =>
+  row * 4 + Math.floor(col / 2) + 1;
+
+/**
+ * Every visited square is on the path, so a multi-jump is clicked square by
+ * square. The squares jumped over are `captures`: highlighted, never clicked.
+ */
+export function moveTargets(move: CheckersMove): MoveTargets {
+  const captures: string[] = [];
+  move.forEach((square, i) => {
+    const next = move[i + 1];
+    if (next === undefined) return;
+    const [a, b] = [cell(square), cell(next)];
+    if (Math.abs(a.row - b.row) === 2) {
+      captures.push(String(squareAt((a.row + b.row) / 2, (a.col + b.col) / 2)));
+    }
+  });
+  const path = move.map(String);
+  return captures.length > 0 ? { path, captures } : { path };
+}
 
 const SEATS = { b: "black", B: "black", w: "white", W: "white" } as const;
 
