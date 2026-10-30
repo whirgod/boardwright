@@ -34,7 +34,11 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Game master auto-plays a forced pass (#65)
 - [x] External Engine protocol: out-of-process Engines over stdio (#18, ADR 0008)
 - [x] Web UI: SAN in the Move list (#60); polish, accessible board state (#55)
+- [x] Minimax transposition table: hash-Move ordering, score reuse, byte budget (#76)
 
 ## Next
 
-All planned roadmap items are done. New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
+New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
+
+- [ ] Contract kit: decoded Positions must play identically (#78)
+- [ ] Minimax table: test the slot re-read in `store`; replacement under a full budget (#79)
