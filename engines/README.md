@@ -48,8 +48,14 @@ export const engine = createMinimaxEngine({
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
-- No transposition table yet; add one (keyed by `Notation.encodePosition`) when a Game's
-  Engine shows it pays off.
+- Transposition table (`src/table.ts`), keyed by `Notation.encodePosition`: tries the best Move
+  of the previous depth first (hash Move) and reuses stored scores where sound (searched at least
+  as deep, bound settles the window, forced results counted from the Position, a stored horizon
+  still counts against `solved`). Scores inside the window are searched again, so PVs stay
+  complete. A stored deeper result may let a depth see further than a plain search of that depth.
+- One table per `analyze` call, bounded by the `tableSize` option (`DEFAULT_TABLE_SIZE` entries;
+  an entry takes roughly 100-300 bytes, mostly its key); deeper entries win a slot, entries from
+  earlier depths give way.
 
 ## `engines/expectiminimax` (`@boardwright/engine-expectiminimax`)
 
@@ -95,8 +101,9 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
   guards and central squares.
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
-  switching to an endgame table. The library has no move-ordering hook yet, so search is plain
-  alpha-beta; use `maxDepth` (3-4) or `maxTimeMs`.
+  switching to an endgame table. Move ordering comes only from the library's transposition table
+  (no captures-first hook yet), and chess keys include the move clocks and repetition history, so
+  few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without

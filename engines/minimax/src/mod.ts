@@ -7,13 +7,27 @@
  * const engine = createMinimaxEngine({ rules, evaluate, name: "minimax" });
  * ```
  *
- * Move ordering: alpha-beta prunes the most when the best Move is searched
- * first, and iterative deepening supplies a good guess, the best Move found
- * one depth shallower. At the root, the previous depth's scores order all
- * Moves. Below it, a transposition table (`table.ts`) keyed by
- * `Notation.encodePosition` remembers the best Move found per Position, the
- * hash Move, which the next depth tries first. Ordering changes how much is
- * pruned, never a score (among equally good Moves, it may pick another).
+ * Iterative deepening searches the same Positions again at every depth, and
+ * different Move orders often reach the same Position (a transposition). A
+ * transposition table (`table.ts`), keyed by `Notation.encodePosition`,
+ * remembers for each Position below the root the best Move found and the
+ * score:
+ * - Move ordering: alpha-beta prunes the most when the best Move is searched
+ *   first, and the best Move found one depth shallower (the hash Move) is a
+ *   good guess, so it is tried first. At the root, the previous depth's
+ *   scores order all Moves.
+ * - Score reuse: a stored score answers a later visit without a search if it
+ *   was searched at least as deep and its bound settles the window (see
+ *   `negamax`). Forced wins and losses are stored counted from the Position,
+ *   as it may recur at another ply. A stored search that hit the horizon
+ *   counts as hitting it again, so a depth is `solved` only if it is; one
+ *   that ended in Outcomes everywhere holds at any depth.
+ *
+ * Principal variations stay complete: a score inside the window is never
+ * taken from the table. A stored score may come from a deeper search, so a
+ * depth can see further than a plain search to that depth would. Each
+ * `analyze` call has its own table of at most `tableSize` entries (Engines
+ * run in a Worker per search, which would drop a longer-lived table anyway).
  *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness
@@ -40,7 +54,12 @@ import {
   toLines,
   validateLimits,
 } from "@boardwright/engine-search";
-import { createTranspositionTable } from "./table.ts";
+import {
+  type Bound,
+  createTranspositionTable,
+  fromTableScore,
+  toTableScore,
+} from "./table.ts";
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
 export { MAX_EVALUATION } from "@boardwright/engine-search";
@@ -65,7 +84,9 @@ export interface MinimaxOptions<Position, Move> {
   readonly name: string;
   /**
    * Entries in the transposition table, an integer >= 1 (default
-   * {@link DEFAULT_TABLE_SIZE}). Each `analyze` call gets its own table.
+   * {@link DEFAULT_TABLE_SIZE}). Each `analyze` call gets its own table,
+   * which grows up to this size; an entry takes some 100-300 bytes, mostly
+   * its key (the encoded Position).
    */
   readonly tableSize?: number;
 }
@@ -139,11 +160,13 @@ async function* analyze<Position, Move>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
-  // Best Move per Position below the root, tried first at the next depth.
+  // What the search found per Position below the root (see `negamax`).
   const table = createTranspositionTable(tableSize);
   const counter = createNodeCounter();
-  // Set when a depth evaluated a horizon Position; if not, it was exact.
-  let hitHorizon = false;
+  // Horizon Positions evaluated in the current depth, counting a stored
+  // result that came from a search that hit the horizon as one. While none
+  // is found, the depth is exact.
+  let horizons = 0;
 
   /** Score of `child` (reached from a Position where `seat` moved) if it is a leaf. */
   function leafScore(
@@ -155,7 +178,7 @@ async function* analyze<Position, Move>(
     const outcome = rules.outcome(child);
     if (outcome) return terminalScore(outcome, seat, ply);
     if (depthLeft > 0) return undefined;
-    hitHorizon = true;
+    horizons++;
     const value = horizonScore(
       evaluate(child),
       () => rules.notation.encodePosition(child),
@@ -190,7 +213,16 @@ async function* analyze<Position, Move>(
     return { score: -r.score, pv: r.pv };
   }
 
-  /** Fail-soft negamax over a non-terminal `position`; `depth` >= 1. */
+  /**
+   * Fail-soft negamax over a non-terminal `position`; `depth` >= 1.
+   *
+   * A result stored in the table answers without a search if it was searched
+   * at least as deep and settles the window: a lower bound >= `beta` fails
+   * high, an upper bound <= `alpha` fails low (an exact score is both
+   * bounds). A score inside the window is searched again (its hash Move
+   * first), as the caller needs its principal variation, which the table
+   * does not keep.
+   */
   function* negamax(
     position: Position,
     seat: Seat,
@@ -200,7 +232,24 @@ async function* analyze<Position, Move>(
     beta: number,
   ): Search<Result<Move>> {
     const key = rules.notation.encodePosition(position);
-    const hashMove = table.get(key)?.move ?? -1;
+    const entry = table.get(key);
+    if (entry !== undefined && entry.depth >= depth) {
+      const score = fromTableScore(entry.score, ply);
+      if (
+        (entry.bound !== "upper" && score >= beta) ||
+        (entry.bound !== "lower" && score <= alpha)
+      ) {
+        // Its horizon is ours: a depth is not solved by skipping a search.
+        if (entry.depth < Infinity) horizons++;
+        return { score, pv: NO_MOVES };
+      }
+    }
+
+    // The window as given (`alpha` rises while searching), and the horizons
+    // so far, to tell afterwards what the result is and if it is solved.
+    const alpha0 = alpha;
+    const horizons0 = horizons;
+    const hashMove = entry?.move ?? -1;
     const moves = rules.legalMoves(position);
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
     let bestIndex = -1;
@@ -217,13 +266,25 @@ async function* analyze<Position, Move>(
         }
       }
     }
-    table.set(key, { move: bestIndex, depth });
+    const bound: Bound = best.score <= alpha0
+      ? "upper"
+      : best.score >= beta
+      ? "lower"
+      : "exact";
+    // Without a horizon below, the result holds at any depth.
+    const solved = horizons === horizons0;
+    table.set(key, {
+      move: bestIndex,
+      depth: solved ? Infinity : depth,
+      score: toTableScore(best.score, ply),
+      bound,
+    });
     return best;
   }
 
   /** One depth: every root Move searched to `depth`, best `wanted` exact. */
   function* searchDepth(depth: number): Search<Iteration<Move>> {
-    hitHorizon = false;
+    horizons = 0;
     table.nextIteration();
     const results = yield* rankRootMoves(
       order,
@@ -234,7 +295,7 @@ async function* analyze<Position, Move>(
     order = results.map((r) => r.pv[0]!);
     return {
       analysis: { depth, lines: toLines(results, wanted) },
-      solved: !hitHorizon,
+      solved: horizons === 0,
     };
   }
 

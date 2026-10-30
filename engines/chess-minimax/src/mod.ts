@@ -21,12 +21,17 @@
  * What it deliberately does not do (so it is easy to read, and to improve):
  * no quiescence search, so it can stop mid-exchange at the depth cut and
  * misjudge captures (horizon effect); no king-safety, mobility, pawn-structure
- * or bishop-pair terms beyond the tables; no move ordering or transposition
- * table, so it searches only a few plies per second budget.
+ * or bishop-pair terms beyond the tables; no chess-specific move ordering
+ * (captures first, killer Moves), so it searches only a few plies per second
+ * budget.
  *
  * Checkmate and draws are scored exactly by the search library through the
  * rules; this function only sees non-terminal Positions. Move ordering is
- * whatever the library does (best Move of the previous depth first).
+ * whatever the library does: the best Move of the previous depth first, from
+ * its transposition table. The table's key is the whole Position, and a
+ * chess Position includes the move clocks and the repetition history, so
+ * different Move orders (1. Nf3 Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3) rarely
+ * share a key: the table mostly helps by ordering Moves.
  *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker.
  */

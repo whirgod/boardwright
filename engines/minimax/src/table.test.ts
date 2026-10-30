@@ -1,7 +1,18 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
-import { createTranspositionTable, type Entry } from "./table.ts";
+import { MATE, MAX_EVALUATION } from "@boardwright/engine-search";
+import {
+  createTranspositionTable,
+  type Entry,
+  fromTableScore,
+  toTableScore,
+} from "./table.ts";
 
-const entry = (depth: number, move = 0): Entry => ({ move, depth });
+const entry = (depth: number, move = 0): Entry => ({
+  move,
+  depth,
+  score: 0,
+  bound: "exact",
+});
 
 Deno.test("returns what was stored, by key", () => {
   const table = createTranspositionTable(1024);
@@ -57,5 +68,19 @@ Deno.test("entries from an earlier iteration always give way", () => {
 Deno.test("rejects an invalid capacity", () => {
   for (const capacity of [0, -1, 1.5, NaN, Infinity]) {
     assertThrows(() => createTranspositionTable(capacity), RangeError);
+  }
+});
+
+Deno.test("forced results are stored counted from the Position", () => {
+  // Found at ply 2: a win 5 plies after the root is 3 after the Position...
+  assertEquals(toTableScore(MATE - 5, 2), MATE - 3);
+  // ...so where the Position recurs at ply 4, it is 7 after the root.
+  assertEquals(fromTableScore(MATE - 3, 4), MATE - 7);
+  assertEquals(toTableScore(-(MATE - 5), 2), -(MATE - 3));
+  assertEquals(fromTableScore(-(MATE - 3), 4), -(MATE - 7));
+  // Evaluations and draws do not depend on the ply.
+  for (const score of [0, 42, -MAX_EVALUATION, MAX_EVALUATION]) {
+    assertEquals(toTableScore(score, 3), score);
+    assertEquals(fromTableScore(score, 3), score);
   }
 });
