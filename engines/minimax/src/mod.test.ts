@@ -5,19 +5,38 @@ import type {
   GameRules,
   Score,
   SearchLimits,
+  Seat,
 } from "@boardwright/core";
 import {
   ticTacToe as ttt,
   type TicTacToeMove,
   type TicTacToePosition,
 } from "@boardwright/game-tic-tac-toe";
-import { assertEngineContract, diceRace } from "@boardwright/testing";
-import { createMinimaxEngine, MAX_EVALUATION } from "./mod.ts";
+import {
+  assertEngineContract,
+  diceRace,
+  seededRandom,
+} from "@boardwright/testing";
+import {
+  createMinimaxEngine,
+  DEFAULT_TABLE_BYTES,
+  MAX_EVALUATION,
+} from "./mod.ts";
 
 const engine = createMinimaxEngine({
   rules: ttt,
   evaluate: () => 0,
   name: "minimax",
+});
+// Table budgets for 1 and 3 slots (and entries with short keys): every
+// Position shares a slot or two, so entries are replaced all the time.
+const ONE_SLOT = 300;
+const THREE_SLOTS = 600;
+const tinyTable = createMinimaxEngine({
+  rules: ttt,
+  evaluate: () => 0,
+  name: "minimax",
+  tableBytes: ONE_SLOT,
 });
 
 const decode = (text: string) => ttt.notation.decodePosition(text);
@@ -65,26 +84,41 @@ function replay<P, M>(
   return moves.reduce((p, m) => rules.play(p, m), position);
 }
 
-// Independent reference: plain minimax without pruning, in rank() units.
-const refMemo = new Map<string, number>();
-function reference(p: TicTacToePosition): number {
-  const key = ttt.notation.encodePosition(p);
-  const cached = refMemo.get(key);
-  if (cached !== undefined) return cached;
-  let best = -Infinity;
-  for (const m of ttt.legalMoves(p)) {
-    best = Math.max(best, referenceMove(p, m));
+/** Independent reference: plain minimax without pruning, in rank() units. */
+function solver<P, M>(rules: GameRules<P, M>) {
+  const memo = new Map<string, number>();
+  /** Value of non-terminal `p` for its Seat to move. */
+  function value(p: P): number {
+    const key = rules.notation.encodePosition(p);
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let best = -Infinity;
+    for (const m of rules.legalMoves(p)) best = Math.max(best, moveValue(p, m));
+    memo.set(key, best);
+    return best;
   }
-  refMemo.set(key, best);
-  return best;
+  /** Value of Move `m` in `p` for the Seat to move. */
+  function moveValue(p: P, m: M): number {
+    const seat = rules.toMove(p);
+    const child = rules.play(p, m);
+    const outcome = rules.outcome(child);
+    if (outcome) {
+      return outcome.winner === undefined
+        ? 0
+        : outcome.winner === seat
+        ? 999
+        : -999;
+    }
+    const r = rules.toMove(child) === seat ? value(child) : -value(child);
+    // A forced result one ply further away.
+    return r > 0 ? r - 1 : r < 0 ? r + 1 : 0;
+  }
+  return { value, moveValue };
 }
-function referenceMove(p: TicTacToePosition, m: TicTacToeMove): number {
-  const child = ttt.play(p, m);
-  const outcome = ttt.outcome(child);
-  if (outcome) return outcome.winner ? 999 : 0;
-  const r = reference(child);
-  return r === 0 ? 0 : r > 0 ? -r + 1 : -r - 1;
-}
+const { value: reference, moveValue: referenceMove } = solver<
+  TicTacToePosition,
+  TicTacToeMove
+>(ttt);
 
 Deno.test("neutral Scores are +0, never -0", async () => {
   const a = await final(engine, ttt.initialPosition(), { maxDepth: 1 });
@@ -192,16 +226,18 @@ async function assertExactMultiPv<P, M>(
 }
 
 Deno.test("multi-PV Lines below the first are exact (solved)", async () => {
-  for (const p of samplePositions()) {
-    const moves = ttt.legalMoves(p);
-    await assertExactMultiPv(
-      engine,
-      p,
-      {},
-      moves,
-      (m) => referenceMove(p, m),
-      ttt.notation.encodePosition(p),
-    );
+  for (const e of [engine, tinyTable]) {
+    for (const p of samplePositions()) {
+      const moves = ttt.legalMoves(p);
+      await assertExactMultiPv(
+        e,
+        p,
+        {},
+        moves,
+        (m) => referenceMove(p, m),
+        ttt.notation.encodePosition(p),
+      );
+    }
   }
 });
 
@@ -239,31 +275,62 @@ function wideReference(p: readonly number[], depth: number): number {
 }
 
 Deno.test("multi-PV Lines below the first are exact (depth-limited)", async () => {
-  const e = createMinimaxEngine({
-    rules: wide,
-    name: "w",
-    evaluate: hashValue,
-  });
-  for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
-    for (const maxDepth of [1, 2, 3, 4]) {
-      await assertExactMultiPv(
-        e,
-        root,
-        { maxDepth },
-        wide.legalMoves(root),
-        (m) => -wideReference([...root, m], maxDepth - 1),
-        `${root.join("")} depth=${maxDepth}`,
-      );
+  for (const tableBytes of [DEFAULT_TABLE_BYTES, ONE_SLOT]) {
+    const e = createMinimaxEngine({
+      rules: wide,
+      name: "w",
+      evaluate: hashValue,
+      tableBytes,
+    });
+    for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
+      for (const maxDepth of [1, 2, 3, 4]) {
+        await assertExactMultiPv(
+          e,
+          root,
+          { maxDepth },
+          wide.legalMoves(root),
+          (m) => -wideReference([...root, m], maxDepth - 1),
+          `${root.join("")} depth=${maxDepth} tableBytes=${tableBytes}`,
+        );
+      }
     }
   }
 });
 
+Deno.test("hash Moves from the previous depth save nodes", async () => {
+  // The Seat to move's Moves minus the other Seat's: the largest Move is
+  // best at every depth, but the Game lists it last.
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  /** Nodes (Moves played) to search `wide` to depth 6. */
+  async function nodes(tableBytes: number) {
+    let played = 0;
+    const counting = {
+      ...wide,
+      play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableBytes,
+    });
+    const a = await final(e, [], { maxDepth: 6 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4, 4]);
+    return played;
+  }
+  const withTable = await nodes(DEFAULT_TABLE_BYTES);
+  const withoutTable = await nodes(0); // a budget of 0 stores nothing
+  assert(withTable < withoutTable / 2, `${withTable} vs ${withoutTable}`);
+});
+
 Deno.test("matches an exhaustive reference on sampled positions", async () => {
   const sample = samplePositions();
-  for (const p of sample) {
+  const runs = [engine, tinyTable].flatMap((e) => sample.map((p) => [e, p]));
+  for (const [e, p] of runs as [typeof engine, TicTacToePosition][]) {
     const key = ttt.notation.encodePosition(p);
     const moves = ttt.legalMoves(p);
-    const a = await final(engine, p, { lines: moves.length });
+    const a = await final(e, p, { lines: moves.length });
     assertEquals(a.lines.length, moves.length, key);
     for (const line of a.lines) {
       const move = line.moves[0]!;
@@ -365,6 +432,22 @@ Deno.test("rejects NaN evaluations", async () => {
     TypeError,
     "NaN",
   );
+});
+
+Deno.test("rejects an invalid tableBytes", () => {
+  for (const tableBytes of [-1, 1.5, NaN, Infinity, 2 ** 32 + 1]) {
+    assertThrows(
+      () =>
+        createMinimaxEngine({
+          rules: ttt,
+          evaluate: () => 0,
+          name: "m",
+          tableBytes,
+        }),
+      RangeError,
+      "tableBytes",
+    );
+  }
 });
 
 Deno.test("rejects invalid limits", () => {
@@ -515,6 +598,206 @@ Deno.test("handles a Seat moving several times in a row", async () => {
   });
   const c = await final(h, [], { maxDepth: 1 });
   assertEquals(c.lines[0], { moves: [1], score: { kind: "value", value: 7 } });
+});
+
+// --- Transposition table ---------------------------------------------------
+
+interface GraphNode {
+  /** The Seat to move; a node without `moves` is terminal. */
+  readonly seat?: Seat;
+  /** The nodes it leads to. */
+  readonly moves?: readonly string[];
+  /** Winner of a terminal node; none is a draw. */
+  readonly winner?: Seat;
+}
+
+/**
+ * A Game on a directed acyclic graph: a Position is a node, a Move the node
+ * it leads to. Every node has its own Seat to move, so a Seat may move
+ * several times in a row, and paths of different lengths meet at the same
+ * node: transpositions at different plies, with the same Seat to move.
+ */
+function graphGame(
+  nodes: Readonly<Record<string, GraphNode>>,
+): GameRules<string, string> {
+  const node = (p: string) => nodes[p]!;
+  return {
+    id: "graph",
+    name: "Graph",
+    seats: ["a", "b"],
+    initialPosition: () => "root",
+    toMove: (p) => (node(p).moves ? node(p).seat : undefined),
+    legalMoves: (p) => node(p).moves ?? [],
+    play: (_, m) => m,
+    outcome: (p) =>
+      node(p).moves
+        ? undefined
+        : { reason: "end", ...(node(p).winner && { winner: node(p).winner }) },
+    notation: {
+      encodePosition: String,
+      decodePosition: String,
+      encodeMove: String,
+      decodeMove: String,
+    },
+  };
+}
+
+/** A random `graphGame` on nodes "root", "1", "2", ...; the last 6 are terminal. */
+function randomGraph(seed: number, size: number): GameRules<string, string> {
+  const random = seededRandom(seed);
+  const name = (i: number) => (i === 0 ? "root" : String(i));
+  const nodes: Record<string, GraphNode> = {};
+  for (let i = 0; i < size; i++) {
+    const r = random();
+    if (i >= size - 6) {
+      nodes[name(i)] = r < 0.4
+        ? { winner: "a" }
+        : r < 0.8
+        ? { winner: "b" }
+        : {};
+      continue;
+    }
+    const moves = new Set<string>();
+    const count = 1 + Math.floor(random() * 3);
+    for (let k = 0; k < count; k++) {
+      moves.add(name(i + 1 + Math.floor(random() * Math.min(4, size - 1 - i))));
+    }
+    nodes[name(i)] = { seat: r < 0.5 ? "a" : "b", moves: [...moves] };
+  }
+  return graphGame(nodes);
+}
+
+/**
+ * Checks the Lines of `a` (from `p`) against the reference: all of them if
+ * the search was `solved` (ran without limits), else those that claim a
+ * forced result.
+ */
+function assertExactLines<P, M>(
+  rules: GameRules<P, M>,
+  exact: ReturnType<typeof solver<P, M>>,
+  p: P,
+  a: Analysis<M>,
+  label: string,
+  solved: boolean,
+) {
+  for (const line of a.lines) {
+    const where = `${label}: ${line.moves.map(rules.notation.encodeMove)}`;
+    if (!solved && line.score.kind === "value") continue;
+    assertEquals(rank(line.score), exact.moveValue(p, line.moves[0]!), where);
+    // The PV realises the Score: it reaches an Outcome, after exactly as
+    // many plies as a forced result claims.
+    const outcome = rules.outcome(replay(rules, p, line.moves));
+    assert(outcome, `${where}: PV does not reach an Outcome`);
+    if (line.score.kind === "value") {
+      assertEquals(outcome.winner, undefined, where);
+    } else {
+      assertEquals(line.moves.length, line.score.plies, where);
+      const won = outcome.winner === rules.toMove(p);
+      assertEquals(won, line.score.kind === "win-in", where);
+    }
+  }
+}
+
+Deno.test("transpositions at different plies keep results and mate distances exact", async () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const rules = randomGraph(seed, 32);
+    const exact = solver(rules);
+    // A random but fixed evaluation per Position, so horizons mislead.
+    const random = seededRandom(seed);
+    const values = new Map<string, number>();
+    const evaluate = (p: string) => {
+      if (!values.has(p)) values.set(p, Math.round(random() * 200 - 100));
+      return values.get(p)!;
+    };
+    // Small tables replace entries all the time.
+    for (const tableBytes of [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT]) {
+      const e = createMinimaxEngine({ rules, name: "g", evaluate, tableBytes });
+      for (const p of ["root", "1", "2"]) {
+        if (!rules.toMove(p)) continue;
+        for (const lines of [1, rules.legalMoves(p).length]) {
+          const label = `seed ${seed} from ${p} tableBytes ${tableBytes}`;
+          const solved = await final(e, p, { lines });
+          assertExactLines(rules, exact, p, solved, label, true);
+          // Depth-limited: the forced results found so far are exact, too.
+          for (const maxDepth of [2, 4, 6]) {
+            const a = await final(e, p, { maxDepth, lines });
+            assertExactLines(
+              rules,
+              exact,
+              p,
+              a,
+              `${label} depth ${maxDepth}`,
+              false,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+Deno.test("a cutoff from a stored search that hit the horizon is not solved", async () => {
+  // Only a moves. "draw" ends level at once; the other root Moves reach x,
+  // which takes 3 more plies to end (a loses) and looks bad (-5) at the
+  // horizon. x is reached at ply 2 via "detour" (searched first) and at
+  // ply 1 directly.
+  const rules = graphGame({
+    root: { seat: "a", moves: ["draw", "detour", "x"] },
+    draw: {},
+    detour: { seat: "a", moves: ["x"] },
+    x: { seat: "a", moves: ["x1"] },
+    x1: { seat: "a", moves: ["x2"] },
+    x2: { seat: "a", moves: ["lost"] },
+    lost: { winner: "b" },
+  });
+  let evaluations = 0;
+  const e = createMinimaxEngine({
+    rules,
+    name: "graph",
+    evaluate: () => (evaluations++, -5),
+  });
+  const perDepth: number[] = [];
+  const all = await collect(e.analyze("root", {}), () => {
+    perDepth.push(evaluations);
+    evaluations = 0;
+  });
+  // Depth 3 searched x (at ply 1) 2 plies deep and stored "<= -5". Depth 4
+  // reaches x first at ply 2, needing 2 plies: the stored result settles it
+  // (x cannot beat the draw), so x is not searched there. Then x at ply 1 is
+  // searched to its end. Depth 4 evaluates nothing, yet it is not solved:
+  // the stored result came from a search that hit the horizon.
+  assertEquals(perDepth[3], 0);
+  assertEquals(all.map((a) => a.depth), [1, 2, 3, 4, 5]);
+  assertEquals(all.at(-1)!.lines, [{
+    moves: ["draw"],
+    score: { kind: "value", value: 0 },
+  }]);
+});
+
+Deno.test("a stored Move index out of range counts as no hash Move", async () => {
+  // Breaks the key requirement on purpose: "three" and "one" share a key but
+  // not their Moves. "three" is searched first and stores its best Move,
+  // index 2; "one" has a single Move.
+  const graph = graphGame({
+    root: { seat: "a", moves: ["three", "one"] },
+    three: { seat: "b", moves: ["t1", "t2", "t3"] },
+    one: { seat: "b", moves: ["o1"] },
+    t1: {},
+    t2: {},
+    t3: { winner: "b" },
+    o1: {},
+  });
+  const shared = (p: string) => (p === "three" || p === "one" ? "shared" : p);
+  const rules = {
+    ...graph,
+    notation: { ...graph.notation, encodePosition: shared },
+  };
+  const e = createMinimaxEngine({ rules, name: "g", evaluate: () => 0 });
+  const a = await final(e, "root", { lines: 2 });
+  assertEquals(a.lines, [
+    { moves: ["one", "o1"], score: { kind: "value", value: 0 } },
+    { moves: ["three", "t3"], score: { kind: "loss-in", plies: 2 } },
+  ]);
 });
 
 Deno.test("honours the Engine contract", async () => {

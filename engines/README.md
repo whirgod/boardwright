@@ -48,8 +48,21 @@ export const engine = createMinimaxEngine({
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
-- No transposition table yet; add one (keyed by `Notation.encodePosition`) when a Game's
-  Engine shows it pays off.
+- Transposition table (`src/table.ts`), keyed by `Notation.encodePosition`: tries the best Move
+  of the previous depth first (hash Move) and reuses stored scores where sound (searched at least
+  as deep, bound settles the window, forced results counted from the Position, a stored horizon
+  still counts against `solved`). Scores inside the window are searched again, so PVs stay
+  complete. A stored deeper result may let a depth see further than a plain search of that depth.
+- The key must determine everything the search sees: equal `encodePosition` texts must have the
+  same legal Moves in the same order, the same Seat to move and Outcome, and the same future
+  (repetition history, move clocks). A Notation that leaves part of the Position out makes stored
+  scores wrong.
+- One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
+  (`DEFAULT_TABLE_BYTES` = 32 MiB, 0 = no table). It counts each entry as 160 bytes plus its key
+  (V8 needs about 100-110 bytes plus the key). Keys are exact and can be long: from a few dozen
+  characters to about 2,000 in a quiet chess endgame with a long repetition history. An entry
+  that would exceed the budget is not stored; deeper entries win a slot, entries from earlier
+  depths give way.
 
 ## `engines/expectiminimax` (`@boardwright/engine-expectiminimax`)
 
@@ -95,8 +108,9 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
   guards and central squares.
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
-  switching to an endgame table. The library has no move-ordering hook yet, so search is plain
-  alpha-beta; use `maxDepth` (3-4) or `maxTimeMs`.
+  switching to an endgame table. Move ordering comes only from the library's transposition table
+  (no captures-first hook yet), and chess keys include the move clocks and repetition history, so
+  few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without
