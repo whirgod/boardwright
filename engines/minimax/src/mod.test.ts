@@ -12,12 +12,23 @@ import {
   type TicTacToePosition,
 } from "@boardwright/game-tic-tac-toe";
 import { assertEngineContract, diceRace } from "@boardwright/testing";
-import { createMinimaxEngine, MAX_EVALUATION } from "./mod.ts";
+import {
+  createMinimaxEngine,
+  DEFAULT_TABLE_SIZE,
+  MAX_EVALUATION,
+} from "./mod.ts";
 
 const engine = createMinimaxEngine({
   rules: ttt,
   evaluate: () => 0,
   name: "minimax",
+});
+// Every Position shares one table slot: constant replacement.
+const tinyTable = createMinimaxEngine({
+  rules: ttt,
+  evaluate: () => 0,
+  name: "minimax",
+  tableSize: 1,
 });
 
 const decode = (text: string) => ttt.notation.decodePosition(text);
@@ -192,16 +203,18 @@ async function assertExactMultiPv<P, M>(
 }
 
 Deno.test("multi-PV Lines below the first are exact (solved)", async () => {
-  for (const p of samplePositions()) {
-    const moves = ttt.legalMoves(p);
-    await assertExactMultiPv(
-      engine,
-      p,
-      {},
-      moves,
-      (m) => referenceMove(p, m),
-      ttt.notation.encodePosition(p),
-    );
+  for (const e of [engine, tinyTable]) {
+    for (const p of samplePositions()) {
+      const moves = ttt.legalMoves(p);
+      await assertExactMultiPv(
+        e,
+        p,
+        {},
+        moves,
+        (m) => referenceMove(p, m),
+        ttt.notation.encodePosition(p),
+      );
+    }
   }
 });
 
@@ -239,31 +252,62 @@ function wideReference(p: readonly number[], depth: number): number {
 }
 
 Deno.test("multi-PV Lines below the first are exact (depth-limited)", async () => {
-  const e = createMinimaxEngine({
-    rules: wide,
-    name: "w",
-    evaluate: hashValue,
-  });
-  for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
-    for (const maxDepth of [1, 2, 3, 4]) {
-      await assertExactMultiPv(
-        e,
-        root,
-        { maxDepth },
-        wide.legalMoves(root),
-        (m) => -wideReference([...root, m], maxDepth - 1),
-        `${root.join("")} depth=${maxDepth}`,
-      );
+  for (const tableSize of [DEFAULT_TABLE_SIZE, 1]) {
+    const e = createMinimaxEngine({
+      rules: wide,
+      name: "w",
+      evaluate: hashValue,
+      tableSize,
+    });
+    for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
+      for (const maxDepth of [1, 2, 3, 4]) {
+        await assertExactMultiPv(
+          e,
+          root,
+          { maxDepth },
+          wide.legalMoves(root),
+          (m) => -wideReference([...root, m], maxDepth - 1),
+          `${root.join("")} depth=${maxDepth} tableSize=${tableSize}`,
+        );
+      }
     }
   }
 });
 
+Deno.test("hash Moves from the previous depth save nodes", async () => {
+  // The Seat to move's Moves minus the other Seat's: the largest Move is
+  // best at every depth, but the Game lists it last.
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  /** Nodes (Moves played) to search `wide` to depth 6. */
+  async function nodes(tableSize: number) {
+    let played = 0;
+    const counting = {
+      ...wide,
+      play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableSize,
+    });
+    const a = await final(e, [], { maxDepth: 6 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4, 4]);
+    return played;
+  }
+  const withTable = await nodes(DEFAULT_TABLE_SIZE);
+  const withoutTable = await nodes(1); // one slot remembers almost nothing
+  assert(withTable < withoutTable / 2, `${withTable} vs ${withoutTable}`);
+});
+
 Deno.test("matches an exhaustive reference on sampled positions", async () => {
   const sample = samplePositions();
-  for (const p of sample) {
+  const runs = [engine, tinyTable].flatMap((e) => sample.map((p) => [e, p]));
+  for (const [e, p] of runs as [typeof engine, TicTacToePosition][]) {
     const key = ttt.notation.encodePosition(p);
     const moves = ttt.legalMoves(p);
-    const a = await final(engine, p, { lines: moves.length });
+    const a = await final(e, p, { lines: moves.length });
     assertEquals(a.lines.length, moves.length, key);
     for (const line of a.lines) {
       const move = line.moves[0]!;
@@ -365,6 +409,22 @@ Deno.test("rejects NaN evaluations", async () => {
     TypeError,
     "NaN",
   );
+});
+
+Deno.test("rejects an invalid tableSize", () => {
+  for (const tableSize of [0, -1, 1.5, NaN, Infinity]) {
+    assertThrows(
+      () =>
+        createMinimaxEngine({
+          rules: ttt,
+          evaluate: () => 0,
+          name: "m",
+          tableSize,
+        }),
+      RangeError,
+      "tableSize",
+    );
+  }
 });
 
 Deno.test("rejects invalid limits", () => {

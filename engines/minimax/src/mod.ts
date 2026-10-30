@@ -7,6 +7,14 @@
  * const engine = createMinimaxEngine({ rules, evaluate, name: "minimax" });
  * ```
  *
+ * Move ordering: alpha-beta prunes the most when the best Move is searched
+ * first, and iterative deepening supplies a good guess, the best Move found
+ * one depth shallower. At the root, the previous depth's scores order all
+ * Moves. Below it, a transposition table (`table.ts`) keyed by
+ * `Notation.encodePosition` remembers the best Move found per Position, the
+ * hash Move, which the next depth tries first. Ordering changes how much is
+ * pruned, never a score (among equally good Moves, it may pick another).
+ *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness
  * `@boardwright/engine-search`; this module is the algorithm.
@@ -32,6 +40,7 @@ import {
   toLines,
   validateLimits,
 } from "@boardwright/engine-search";
+import { createTranspositionTable } from "./table.ts";
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
 export { MAX_EVALUATION } from "@boardwright/engine-search";
@@ -54,7 +63,15 @@ export interface MinimaxOptions<Position, Move> {
    */
   readonly evaluate: (position: Position) => number;
   readonly name: string;
+  /**
+   * Entries in the transposition table, an integer >= 1 (default
+   * {@link DEFAULT_TABLE_SIZE}). Each `analyze` call gets its own table.
+   */
+  readonly tableSize?: number;
 }
+
+/** Default number of transposition table entries. */
+export const DEFAULT_TABLE_SIZE = 1 << 18;
 
 /**
  * Creates an Engine that searches with negamax + alpha-beta and iterative
@@ -71,7 +88,8 @@ export interface MinimaxOptions<Position, Move> {
  * - `lines` (multi-PV) reports the best n root Moves, best first, each with
  *   its own principal variation.
  * - A terminal Position yields a single Analysis with depth 0 and no Lines.
- * - Invalid limits throw a RangeError from `analyze` itself.
+ * - Invalid limits throw a RangeError from `analyze` itself; an invalid
+ *   `tableSize` throws one from `createMinimaxEngine`.
  *
  * The search runs on the calling thread but gives the event loop a turn
  * every few milliseconds, so timers and abort requests are observed while it
@@ -83,12 +101,15 @@ export interface MinimaxOptions<Position, Move> {
 export function createMinimaxEngine<Position, Move>(
   options: MinimaxOptions<Position, Move>,
 ): Engine<Position, Move> {
-  const { rules, evaluate, name } = options;
+  const { rules, evaluate, name, tableSize = DEFAULT_TABLE_SIZE } = options;
   // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
   if (hasChance(rules as GameRules<Position, Move>)) {
     throw new TypeError(
       `minimax cannot search ${rules.id}: it has Chance events (ADR 0005)`,
     );
+  }
+  if (!(Number.isInteger(tableSize) && tableSize >= 1)) {
+    throw new RangeError(`tableSize must be an integer >= 1, got ${tableSize}`);
   }
 
   return {
@@ -96,7 +117,7 @@ export function createMinimaxEngine<Position, Move>(
     gameId: rules.id,
     analyze(position, limits, signal) {
       validateLimits(limits);
-      return analyze(rules, evaluate, position, limits, signal);
+      return analyze(rules, evaluate, tableSize, position, limits, signal);
     },
   };
 }
@@ -104,6 +125,7 @@ export function createMinimaxEngine<Position, Move>(
 async function* analyze<Position, Move>(
   rules: GameRules<Position, Move>,
   evaluate: (position: Position) => number,
+  tableSize: number,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -117,6 +139,8 @@ async function* analyze<Position, Move>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
+  // Best Move per Position below the root, tried first at the next depth.
+  const table = createTranspositionTable(tableSize);
   const counter = createNodeCounter();
   // Set when a depth evaluated a horizon Position; if not, it was exact.
   let hitHorizon = false;
@@ -175,23 +199,32 @@ async function* analyze<Position, Move>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
+    const key = rules.notation.encodePosition(position);
+    const hashMove = table.get(key)?.move ?? -1;
+    const moves = rules.legalMoves(position);
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
-    for (const move of rules.legalMoves(position)) {
+    let bestIndex = -1;
+    for (let k = 0; k < moves.length; k++) {
+      const i = tryOrder(k, hashMove);
+      const move = moves[i]!;
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {
         best = { score: r.score, pv: [move, ...r.pv] };
+        bestIndex = i;
         if (r.score > alpha) {
           alpha = r.score;
           if (alpha >= beta) break;
         }
       }
     }
+    table.set(key, { move: bestIndex, depth });
     return best;
   }
 
   /** One depth: every root Move searched to `depth`, best `wanted` exact. */
   function* searchDepth(depth: number): Search<Iteration<Move>> {
     hitHorizon = false;
+    table.nextIteration();
     const results = yield* rankRootMoves(
       order,
       wanted,
@@ -206,4 +239,13 @@ async function* analyze<Position, Move>(
   }
 
   yield* iterativeDeepening(limits, signal, searchDepth);
+}
+
+/**
+ * Index of the `k`-th Move to try when the Move at index `first` goes first
+ * (the hash Move), the others keeping the Game's order; -1: no hash Move.
+ */
+function tryOrder(k: number, first: number): number {
+  if (k > first) return k;
+  return k === 0 ? first : k - 1;
 }
