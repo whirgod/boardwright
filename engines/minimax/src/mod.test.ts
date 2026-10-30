@@ -19,7 +19,7 @@ import {
 } from "@boardwright/testing";
 import {
   createMinimaxEngine,
-  DEFAULT_TABLE_SIZE,
+  DEFAULT_TABLE_BYTES,
   MAX_EVALUATION,
 } from "./mod.ts";
 
@@ -28,12 +28,15 @@ const engine = createMinimaxEngine({
   evaluate: () => 0,
   name: "minimax",
 });
-// Every Position shares one table slot: constant replacement.
+// Table budgets for 1 and 3 slots (and entries with short keys): every
+// Position shares a slot or two, so entries are replaced all the time.
+const ONE_SLOT = 300;
+const THREE_SLOTS = 600;
 const tinyTable = createMinimaxEngine({
   rules: ttt,
   evaluate: () => 0,
   name: "minimax",
-  tableSize: 1,
+  tableBytes: ONE_SLOT,
 });
 
 const decode = (text: string) => ttt.notation.decodePosition(text);
@@ -272,12 +275,12 @@ function wideReference(p: readonly number[], depth: number): number {
 }
 
 Deno.test("multi-PV Lines below the first are exact (depth-limited)", async () => {
-  for (const tableSize of [DEFAULT_TABLE_SIZE, 1]) {
+  for (const tableBytes of [DEFAULT_TABLE_BYTES, ONE_SLOT]) {
     const e = createMinimaxEngine({
       rules: wide,
       name: "w",
       evaluate: hashValue,
-      tableSize,
+      tableBytes,
     });
     for (const root of [[], [0], [3, 1], [4, 4, 2]]) {
       for (const maxDepth of [1, 2, 3, 4]) {
@@ -287,7 +290,7 @@ Deno.test("multi-PV Lines below the first are exact (depth-limited)", async () =
           { maxDepth },
           wide.legalMoves(root),
           (m) => -wideReference([...root, m], maxDepth - 1),
-          `${root.join("")} depth=${maxDepth} tableSize=${tableSize}`,
+          `${root.join("")} depth=${maxDepth} tableBytes=${tableBytes}`,
         );
       }
     }
@@ -300,7 +303,7 @@ Deno.test("hash Moves from the previous depth save nodes", async () => {
   const sum = (p: readonly number[]) =>
     p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
   /** Nodes (Moves played) to search `wide` to depth 6. */
-  async function nodes(tableSize: number) {
+  async function nodes(tableBytes: number) {
     let played = 0;
     const counting = {
       ...wide,
@@ -310,14 +313,14 @@ Deno.test("hash Moves from the previous depth save nodes", async () => {
       rules: counting,
       name: "w",
       evaluate: sum,
-      tableSize,
+      tableBytes,
     });
     const a = await final(e, [], { maxDepth: 6 });
     assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4, 4]);
     return played;
   }
-  const withTable = await nodes(DEFAULT_TABLE_SIZE);
-  const withoutTable = await nodes(1); // one slot remembers almost nothing
+  const withTable = await nodes(DEFAULT_TABLE_BYTES);
+  const withoutTable = await nodes(0); // a budget of 0 stores nothing
   assert(withTable < withoutTable / 2, `${withTable} vs ${withoutTable}`);
 });
 
@@ -431,18 +434,18 @@ Deno.test("rejects NaN evaluations", async () => {
   );
 });
 
-Deno.test("rejects an invalid tableSize", () => {
-  for (const tableSize of [0, -1, 1.5, NaN, Infinity]) {
+Deno.test("rejects an invalid tableBytes", () => {
+  for (const tableBytes of [-1, 1.5, NaN, Infinity, 2 ** 32 + 1]) {
     assertThrows(
       () =>
         createMinimaxEngine({
           rules: ttt,
           evaluate: () => 0,
           name: "m",
-          tableSize,
+          tableBytes,
         }),
       RangeError,
-      "tableSize",
+      "tableBytes",
     );
   }
 });
@@ -707,12 +710,12 @@ Deno.test("transpositions at different plies keep results and mate distances exa
       return values.get(p)!;
     };
     // Small tables replace entries all the time.
-    for (const tableSize of [DEFAULT_TABLE_SIZE, 3, 1]) {
-      const e = createMinimaxEngine({ rules, name: "g", evaluate, tableSize });
+    for (const tableBytes of [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT]) {
+      const e = createMinimaxEngine({ rules, name: "g", evaluate, tableBytes });
       for (const p of ["root", "1", "2"]) {
         if (!rules.toMove(p)) continue;
         for (const lines of [1, rules.legalMoves(p).length]) {
-          const label = `seed ${seed} from ${p} tableSize ${tableSize}`;
+          const label = `seed ${seed} from ${p} tableBytes ${tableBytes}`;
           const solved = await final(e, p, { lines });
           assertExactLines(rules, exact, p, solved, label, true);
           // Depth-limited: the forced results found so far are exact, too.
@@ -769,6 +772,32 @@ Deno.test("a cutoff from a stored search that hit the horizon is not solved", as
     moves: ["draw"],
     score: { kind: "value", value: 0 },
   }]);
+});
+
+Deno.test("a stored Move index out of range counts as no hash Move", async () => {
+  // Breaks the key requirement on purpose: "three" and "one" share a key but
+  // not their Moves. "three" is searched first and stores its best Move,
+  // index 2; "one" has a single Move.
+  const graph = graphGame({
+    root: { seat: "a", moves: ["three", "one"] },
+    three: { seat: "b", moves: ["t1", "t2", "t3"] },
+    one: { seat: "b", moves: ["o1"] },
+    t1: {},
+    t2: {},
+    t3: { winner: "b" },
+    o1: {},
+  });
+  const shared = (p: string) => (p === "three" || p === "one" ? "shared" : p);
+  const rules = {
+    ...graph,
+    notation: { ...graph.notation, encodePosition: shared },
+  };
+  const e = createMinimaxEngine({ rules, name: "g", evaluate: () => 0 });
+  const a = await final(e, "root", { lines: 2 });
+  assertEquals(a.lines, [
+    { moves: ["one", "o1"], score: { kind: "value", value: 0 } },
+    { moves: ["three", "t3"], score: { kind: "loss-in", plies: 2 } },
+  ]);
 });
 
 Deno.test("honours the Engine contract", async () => {

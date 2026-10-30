@@ -53,9 +53,16 @@ export const engine = createMinimaxEngine({
   as deep, bound settles the window, forced results counted from the Position, a stored horizon
   still counts against `solved`). Scores inside the window are searched again, so PVs stay
   complete. A stored deeper result may let a depth see further than a plain search of that depth.
-- One table per `analyze` call, bounded by the `tableSize` option (`DEFAULT_TABLE_SIZE` entries;
-  an entry takes roughly 100-300 bytes, mostly its key); deeper entries win a slot, entries from
-  earlier depths give way.
+- The key must determine everything the search sees: equal `encodePosition` texts must have the
+  same legal Moves in the same order, the same Seat to move and Outcome, and the same future
+  (repetition history, move clocks). A Notation that leaves part of the Position out makes stored
+  scores wrong.
+- One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
+  (`DEFAULT_TABLE_BYTES` = 32 MiB, 0 = no table). It counts each entry as 160 bytes plus its key
+  (V8 needs about 100-110 bytes plus the key). Keys are exact and can be long: from a few dozen
+  characters to about 2,000 in a quiet chess endgame with a long repetition history. An entry
+  that would exceed the budget is not stored; deeper entries win a slot, entries from earlier
+  depths give way.
 
 ## `engines/expectiminimax` (`@boardwright/engine-expectiminimax`)
 

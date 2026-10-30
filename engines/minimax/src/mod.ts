@@ -26,8 +26,15 @@
  * Principal variations stay complete: a score inside the window is never
  * taken from the table. A stored score may come from a deeper search, so a
  * depth can see further than a plain search to that depth would. Each
- * `analyze` call has its own table of at most `tableSize` entries (Engines
- * run in a Worker per search, which would drop a longer-lived table anyway).
+ * `analyze` call has its own table, bounded by a memory budget, `tableBytes`
+ * (Engines run in a Worker per search, which would drop a longer-lived table
+ * anyway).
+ *
+ * The key must determine everything the search sees: Positions with equal
+ * `encodePosition` text must have the same legal Moves in the same order,
+ * the same Seat to move and Outcome, and the same future (including draws by
+ * repetition or by a move clock). A Notation that leaves out part of the
+ * Position, e.g. its repetition history, makes stored scores wrong.
  *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness
@@ -56,6 +63,7 @@ import {
 } from "@boardwright/engine-search";
 import {
   type Bound,
+  checkTableBytes,
   createTranspositionTable,
   fromTableScore,
   toTableScore,
@@ -73,6 +81,13 @@ export type GameRulesWithoutChance<Position, Move> =
   & { readonly chanceEvents?: never; readonly resolveChance?: never };
 
 export interface MinimaxOptions<Position, Move> {
+  /**
+   * The Game. Its `notation.encodePosition` is the transposition table's key,
+   * so it must encode everything that matters for the rest of the Match:
+   * equal texts must mean the same legal Moves in the same order, the same
+   * Seat to move and Outcome, and the same future (e.g. repetition history
+   * and move clocks).
+   */
   readonly rules: GameRulesWithoutChance<Position, Move>;
   /**
    * Heuristic value of a non-terminal Position from the perspective of the
@@ -83,16 +98,18 @@ export interface MinimaxOptions<Position, Move> {
   readonly evaluate: (position: Position) => number;
   readonly name: string;
   /**
-   * Entries in the transposition table, an integer >= 1 (default
-   * {@link DEFAULT_TABLE_SIZE}). Each `analyze` call gets its own table,
-   * which grows up to this size; an entry takes some 100-300 bytes, mostly
-   * its key (the encoded Position).
+   * Memory budget of the transposition table in bytes, an integer from 0 (no
+   * table) to 2^32 (default {@link DEFAULT_TABLE_BYTES}). Each `analyze`
+   * call gets its own table, which grows up to this budget as estimated by
+   * `table.ts`: an entry counts as about 160 bytes plus its key (the encoded
+   * Position), which ranges from a few dozen characters to a few thousand
+   * with a long repetition history.
    */
-  readonly tableSize?: number;
+  readonly tableBytes?: number;
 }
 
-/** Default number of transposition table entries. */
-export const DEFAULT_TABLE_SIZE = 1 << 18;
+/** Default memory budget of the transposition table: 32 MiB per search. */
+export const DEFAULT_TABLE_BYTES = 32 * 2 ** 20;
 
 /**
  * Creates an Engine that searches with negamax + alpha-beta and iterative
@@ -110,7 +127,7 @@ export const DEFAULT_TABLE_SIZE = 1 << 18;
  *   its own principal variation.
  * - A terminal Position yields a single Analysis with depth 0 and no Lines.
  * - Invalid limits throw a RangeError from `analyze` itself; an invalid
- *   `tableSize` throws one from `createMinimaxEngine`.
+ *   `tableBytes` throws one from `createMinimaxEngine`.
  *
  * The search runs on the calling thread but gives the event loop a turn
  * every few milliseconds, so timers and abort requests are observed while it
@@ -122,23 +139,21 @@ export const DEFAULT_TABLE_SIZE = 1 << 18;
 export function createMinimaxEngine<Position, Move>(
   options: MinimaxOptions<Position, Move>,
 ): Engine<Position, Move> {
-  const { rules, evaluate, name, tableSize = DEFAULT_TABLE_SIZE } = options;
+  const { rules, evaluate, name, tableBytes = DEFAULT_TABLE_BYTES } = options;
   // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
   if (hasChance(rules as GameRules<Position, Move>)) {
     throw new TypeError(
       `minimax cannot search ${rules.id}: it has Chance events (ADR 0005)`,
     );
   }
-  if (!(Number.isInteger(tableSize) && tableSize >= 1)) {
-    throw new RangeError(`tableSize must be an integer >= 1, got ${tableSize}`);
-  }
+  checkTableBytes(tableBytes);
 
   return {
     name,
     gameId: rules.id,
     analyze(position, limits, signal) {
       validateLimits(limits);
-      return analyze(rules, evaluate, tableSize, position, limits, signal);
+      return analyze(rules, evaluate, tableBytes, position, limits, signal);
     },
   };
 }
@@ -146,7 +161,7 @@ export function createMinimaxEngine<Position, Move>(
 async function* analyze<Position, Move>(
   rules: GameRules<Position, Move>,
   evaluate: (position: Position) => number,
-  tableSize: number,
+  tableBytes: number,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -161,7 +176,7 @@ async function* analyze<Position, Move>(
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
   // What the search found per Position below the root (see `negamax`).
-  const table = createTranspositionTable(tableSize);
+  const table = createTranspositionTable(tableBytes);
   const counter = createNodeCounter();
   // Horizon Positions evaluated in the current depth, counting a stored
   // result that came from a search that hit the horizon as one. While none
@@ -231,8 +246,8 @@ async function* analyze<Position, Move>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
-    const key = rules.notation.encodePosition(position);
-    const entry = table.get(key);
+    const probe = table.probe(rules.notation.encodePosition(position));
+    const entry = probe.entry;
     if (entry !== undefined && entry.depth >= depth) {
       const score = fromTableScore(entry.score, ply);
       if (
@@ -249,8 +264,12 @@ async function* analyze<Position, Move>(
     // so far, to tell afterwards what the result is and if it is solved.
     const alpha0 = alpha;
     const horizons0 = horizons;
-    const hashMove = entry?.move ?? -1;
     const moves = rules.legalMoves(position);
+    // An index out of range (only if equal keys list different Moves, see
+    // `MinimaxOptions.rules`) counts as no hash Move.
+    const hashMove = entry !== undefined && entry.move < moves.length
+      ? entry.move
+      : -1;
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
     let bestIndex = -1;
     for (let k = 0; k < moves.length; k++) {
@@ -273,8 +292,10 @@ async function* analyze<Position, Move>(
       : "exact";
     // Without a horizon below, the result holds at any depth.
     const solved = horizons === horizons0;
-    table.set(key, {
-      move: bestIndex,
+    probe.store({
+      // After a fail-low every Move is only an upper bound, and the best of
+      // them says little: keep an earlier depth's hash Move instead.
+      move: bound === "upper" && hashMove >= 0 ? hashMove : bestIndex,
       depth: solved ? Infinity : depth,
       score: toTableScore(best.score, ply),
       bound,
