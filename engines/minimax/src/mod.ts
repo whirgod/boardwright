@@ -9,9 +9,10 @@
  *
  * Iterative deepening searches the same Positions again at every depth, and
  * different Move orders often reach the same Position (a transposition). A
- * transposition table (`@boardwright/engine-search/table`), keyed by
- * `Notation.encodePosition`, remembers for each Position below the root the
- * best Move found and the score:
+ * transposition table (`@boardwright/engine-search/table`), keyed by the
+ * Game's Transposition key (`GameRules.transpositionKey`) if it supplies one,
+ * else by `Notation.encodePosition`, remembers for each Position below the
+ * root the best Move found and the score:
  * - Move ordering: alpha-beta prunes the most when the best Move is searched
  *   first, and the best Move found one depth shallower (the hash Move) is a
  *   good guess, so it is tried first. At the root, the previous depth's
@@ -58,11 +59,17 @@
  * (Engines run in a Worker per search, which would drop a longer-lived table
  * anyway).
  *
- * The key must determine everything the search sees: Positions with equal
- * `encodePosition` text must have the same legal Moves in the same order,
- * the same Seat to move and Outcome, and the same future (including draws by
- * repetition or by a move clock). A Notation that leaves out part of the
- * Position, e.g. its repetition history, makes stored scores wrong.
+ * Positions without an Outcome that share a key have the same Seat to move
+ * and legal Moves in the same order (the Game's contract, checked by its
+ * contract kit), so a stored Move index means the same Move. An
+ * `encodePosition` key also determines the Outcomes that follow; a
+ * Transposition key may leave out earlier play that decides them (repetition
+ * history, move clocks), so Move orders that reach the same Position share
+ * entries. Then the search checks a Position's Outcome before it probes the
+ * table (a draw by repetition is never answered from the table), and a stored
+ * score may come from a path with other earlier play, e.g. one where a
+ * repetition was near: the graph-history interaction most engines accept
+ * (ADR 0009).
  *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness
@@ -107,6 +114,7 @@ import {
   createTranspositionTable,
   DEFAULT_TABLE_BYTES,
   fromTableScore,
+  tableKey,
   toTableScore,
 } from "@boardwright/engine-search/table";
 
@@ -124,11 +132,12 @@ export type GameRulesWithoutChance<Position, Move> =
 
 export interface MinimaxOptions<Position, Move> {
   /**
-   * The Game. Its `notation.encodePosition` is the transposition table's key,
-   * so it must encode everything that matters for the rest of the Match:
-   * equal texts must mean the same legal Moves in the same order, the same
-   * Seat to move and Outcome, and the same future (e.g. repetition history
-   * and move clocks).
+   * The Game. The transposition table's key is its `transpositionKey` if it
+   * supplies one, else its `notation.encodePosition`, as the Game's contract
+   * (checked by its contract kit) describes: Positions without an Outcome
+   * that share a key have the same Seat to move and legal Moves in the same
+   * order. A Transposition key may leave out earlier play that decides
+   * Outcomes (graph-history interaction, see the module doc).
    */
   readonly rules: GameRulesWithoutChance<Position, Move>;
   /**
@@ -145,8 +154,8 @@ export interface MinimaxOptions<Position, Move> {
    * table) to 2^32 (default {@link DEFAULT_TABLE_BYTES}). Each `analyze`
    * call gets its own table, which grows up to this budget as estimated by
    * `@boardwright/engine-search/table`: an entry counts as about 160 bytes
-   * plus its key (the encoded Position), which ranges from a few dozen
-   * characters to a few thousand with a long repetition history.
+   * plus its key, which ranges from a few dozen characters to a few
+   * thousand for an encoded Position with a long repetition history.
    */
   readonly tableBytes?: number;
   /**
@@ -343,8 +352,10 @@ async function* analyze<Position, Move>(
       listed[i]!
     );
   }
-  // What the search found per Position below the root (see `negamax`).
+  // What the search found per Position below the root (see `negamax`), by
+  // the Game's Transposition key, else `encodePosition` (see `tableKey`).
   const table = createTranspositionTable(tableBytes);
+  const keyOf = tableKey(rules);
   // Quiet Moves that caused a beta cutoff, per ply, of the current depth.
   const killers = new Killers();
   // Quiet Moves that caused a beta cutoff, per Seat, of the whole search.
@@ -532,7 +543,7 @@ async function* analyze<Position, Move>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
-    const probe = table.probe(rules.notation.encodePosition(position));
+    const probe = table.probe(keyOf(position));
     const entry = probe.entry;
     if (entry !== undefined && entry.depth >= depth) {
       const score = fromTableScore(entry.score, ply);
