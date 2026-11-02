@@ -21,12 +21,12 @@
  * {@link ENTRY_BYTES} of budget, so with real keys the budget runs out
  * before the slots do. The slots are allocated in chunks, when a store first
  * needs one, so a short search does not pay for a large budget. Replacement
- * prefers depth: a new entry does not
- * replace one searched deeper in the same iteration (depth of iterative
- * deepening), but entries from earlier iterations always give way, so the
- * table does not fill up with stale results. This holds when the budget is
- * full as well: an entry that does not fit still drops an occupant from an
- * earlier iteration, so the budget keeps turning over.
+ * prefers depth: a new entry does not replace one searched deeper in the
+ * same iteration (depth of iterative deepening), but entries from earlier
+ * iterations always give way, so the table does not fill up with stale
+ * results. This holds when the budget is full as well: an entry that does
+ * not fit still drops an occupant from an earlier iteration, so the budget
+ * keeps turning over.
  */
 
 import { MATE_BOUND } from "@boardwright/engine-search";
