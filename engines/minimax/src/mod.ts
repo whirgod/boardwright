@@ -24,7 +24,12 @@
  *   that ended in Outcomes everywhere holds at any depth.
  *
  * Below the hash Move, an optional Engine-supplied `movePriority` orders the
- * Moves (`ordering.ts` has the convention: tactical Moves first).
+ * Moves (`ordering.ts` has the convention: tactical Moves first), then the
+ * killer Moves: per ply, the last two quiet Moves that caused a beta cutoff
+ * often refute their siblings too, also in Positions the table has not seen.
+ * Moves are opaque, so a killer is remembered as `Notation.encodeMove` text,
+ * which is computed on a cutoff and, at a node, for quiet Moves only until the
+ * killers are found. Killers only reorder: values never change.
  *
  * Principal variations stay complete: a score inside the window is never
  * taken from the table. A stored score may come from a deeper search, so a
@@ -64,7 +69,7 @@ import {
   toLines,
   validateLimits,
 } from "@boardwright/engine-search";
-import { type MovePriority, orderMoves } from "./ordering.ts";
+import { Killers, type MovePriority, orderMoves } from "./ordering.ts";
 import {
   type Bound,
   checkTableBytes,
@@ -224,6 +229,10 @@ async function* analyze<Position, Move>(
   }
   // What the search found per Position below the root (see `negamax`).
   const table = createTranspositionTable(tableBytes);
+  // Quiet Moves that caused a beta cutoff, per ply, of the current depth.
+  const killers = new Killers();
+  const encodeMove = (move: Move) => rules.notation.encodeMove(move);
+  const priority: MovePriority<Position, Move> = movePriority ?? noPriority;
   const counter = createNodeCounter();
   // Horizon Positions evaluated in the current depth, counting a stored
   // result that came from a search that hit the horizon as one. While none
@@ -319,11 +328,18 @@ async function* analyze<Position, Move>(
       : -1;
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
     let bestIndex = -1;
-    const ordered = movePriority
-      ? orderMoves(position, moves, hashMove, movePriority, scratch)
-      : undefined;
+    const ordered = orderMoves(
+      position,
+      moves,
+      hashMove,
+      priority,
+      scratch,
+      killers,
+      ply,
+      encodeMove,
+    );
     for (let k = 0; k < moves.length; k++) {
-      const i = ordered ? ordered[k]! : tryOrder(k, hashMove);
+      const i = ordered[k]!;
       const move = moves[i]!;
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {
@@ -331,7 +347,13 @@ async function* analyze<Position, Move>(
         bestIndex = i;
         if (r.score > alpha) {
           alpha = r.score;
-          if (alpha >= beta) break;
+          if (alpha >= beta) {
+            // A quiet Move that refutes this Position may refute its siblings.
+            if (!movePriority || movePriority(position, move) <= 0) {
+              killers.record(ply, encodeMove(move));
+            }
+            break;
+          }
         }
       }
     }
@@ -357,6 +379,7 @@ async function* analyze<Position, Move>(
   function* searchDepth(depth: number): Search<Iteration<Move>> {
     horizons = 0;
     table.nextIteration();
+    killers.clear(); // see `Killers`
     const results = yield* rankRootMoves(
       order,
       wanted,
@@ -373,11 +396,7 @@ async function* analyze<Position, Move>(
   yield* iterativeDeepening(limits, signal, searchDepth);
 }
 
-/**
- * Index of the `k`-th Move to try when the Move at index `first` goes first
- * (the hash Move), the others keeping the Game's order; -1: no hash Move.
- */
-function tryOrder(k: number, first: number): number {
-  if (k > first) return k;
-  return k === 0 ? first : k - 1;
+/** The priority of every Move when there is no hook: all are quiet. */
+function noPriority(): number {
+  return 0;
 }

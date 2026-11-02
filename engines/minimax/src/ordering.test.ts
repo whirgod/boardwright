@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { seededRandom } from "@boardwright/testing";
-import { orderMoves } from "./ordering.ts";
+import { Killers, orderMoves } from "./ordering.ts";
 
 const order = (
   priorities: readonly number[],
@@ -75,4 +75,73 @@ Deno.test("random priorities and hash Moves: a stable, complete ordering", () =>
       assert(rest.slice(firstQuiet).every((i) => priorities[i]! <= 0), label);
     }
   }
+});
+
+const ordered = (
+  priorities: readonly number[],
+  killers: Killers,
+  hashMove = -1,
+  encoded: number[] = [],
+) =>
+  orderMoves(
+    null,
+    priorities.map((_, i) => i),
+    hashMove,
+    (_p, m: number) => priorities[m]!,
+    [],
+    killers,
+    2,
+    (m: number) => (encoded.push(m), `m${m}`),
+  );
+
+Deno.test("killers go after the tactical Moves, before the other quiet ones", () => {
+  const k = new Killers();
+  k.record(2, "m4");
+  assertEquals(ordered([0, 3, 0, 1, 0, -1], k), [1, 3, 4, 0, 2, 5]);
+  k.record(2, "m5"); // newer first
+  assertEquals(ordered([0, 3, 0, 1, 0, -1], k), [1, 3, 5, 4, 0, 2]);
+});
+
+Deno.test("killers are per ply and without any, nothing changes", () => {
+  const k = new Killers();
+  k.record(1, "m4");
+  assertEquals(ordered([0, 0, 0, 0, 0], k), [0, 1, 2, 3, 4]);
+});
+
+Deno.test("a killer that is the hash Move is skipped, an illegal one ignored", () => {
+  const k = new Killers();
+  k.record(2, "gone");
+  k.record(2, "m3");
+  assertEquals(ordered([0, 0, 0, 0, 0], k, 3), [3, 0, 1, 2, 4]);
+  assertEquals(ordered([0, 0, 0, 0, 0], k), [3, 0, 1, 2, 4]);
+  k.record(2, "m1");
+  assertEquals(ordered([0, 0, 0, 0, 0], k, 1), [1, 3, 0, 2, 4]);
+});
+
+Deno.test("a killer that is tactical here keeps its priority place", () => {
+  const k = new Killers();
+  k.record(2, "m2");
+  assertEquals(ordered([0, 5, 1, 0], k), [1, 2, 0, 3]);
+});
+
+Deno.test("Moves are encoded only until the killers are found", () => {
+  const k = new Killers();
+  k.record(2, "m1");
+  const encoded: number[] = [];
+  assertEquals(ordered([0, 0, 0, 0, 0], k, -1, encoded), [1, 0, 2, 3, 4]);
+  assertEquals(encoded, [0, 1]);
+});
+
+Deno.test("Killers keeps the last two distinct Moves, newest first", () => {
+  const k = new Killers();
+  k.record(0, "a");
+  k.record(0, "b");
+  k.record(0, "b");
+  assertEquals([k.newer(0), k.older(0)], ["b", "a"]);
+  k.record(0, "a");
+  assertEquals([k.newer(0), k.older(0)], ["a", "b"]);
+  k.record(0, "c");
+  assertEquals([k.newer(0), k.older(0)], ["c", "a"]);
+  k.clear();
+  assertEquals([k.newer(0), k.older(0)], [undefined, undefined]);
 });

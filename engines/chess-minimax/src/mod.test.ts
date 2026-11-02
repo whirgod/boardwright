@@ -236,11 +236,15 @@ Deno.test("movePriority: en passant is a capture of a pawn", () => {
 });
 
 Deno.test("the Move priority saves nodes and keeps the Score", async () => {
+  // A Notation that never names a Move twice defeats killer Moves, so the
+  // plain search has neither hook nor killers.
+  let unique = 0;
   const plain = (counted: { n: number }) =>
     createMinimaxEngine({
       rules: {
         ...rules,
         play: (p, m) => (counted.n++, rules.play(p, m)),
+        notation: { ...rules.notation, encodeMove: () => String(unique++) },
       },
       evaluate,
       name: "plain",
