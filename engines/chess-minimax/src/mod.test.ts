@@ -386,6 +386,7 @@ Deno.test("moveKey: distinct for distinct quiet Moves; promotions share one but 
   assertEquals(castled, 2);
   assertEquals(enPassant, 1); // tactical: not in `quiet`, never history-sorted
   assert(promoted >= 4);
+});
 
 Deno.test("check extension finds a mate by checks just past the nominal depth", async () => {
   // Rd2+ Ke1 Qf2#: three plies, found at depth 2 because the check is extended.

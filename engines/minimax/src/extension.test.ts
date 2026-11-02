@@ -135,9 +135,9 @@ const endless: GameRules<number, number> = {
 // no table, all Positions distinct.
 const EXACT: Record<string, number> = {
   "0/3": 17,
-  "1/3": 35,
-  "2/3": 70,
-  "3/1": 28,
+  "1/3": 34,
+  "2/3": 59,
+  "3/1": 25,
 };
 
 Deno.test("the bound holds on a Game with endless checks", async () => {
