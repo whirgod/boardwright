@@ -31,8 +31,7 @@ algorithm. Depends only on `core` and knows nothing about chance.
   (Infinity when no horizon was hit), and the mate-distance conversion `toTableScore` /
   `fromTableScore` (forced results are stored counted from the Position, which may recur at
   another ply). It only stores and finds entries: whose perspective a score takes and when it
-  may answer a visit is up to the library. `tryOrder` puts the hash Move first and keeps the
-  Game's order otherwise (expectiminimax; minimax orders Moves itself, `src/ordering.ts`).
+  may answer a visit is up to the library.
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 

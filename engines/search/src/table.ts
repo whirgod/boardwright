@@ -230,13 +230,3 @@ export function createTranspositionTable(budget: number): TranspositionTable {
     },
   };
 }
-
-/**
- * Index of the `k`-th Move to try when the Move at index `first` (the hash
- * Move, an {@link Entry}'s `move`) goes first and the others keep the Game's
- * order; -1: no hash Move, the Game's order.
- */
-export function tryOrder(k: number, first: number): number {
-  if (k > first) return k;
-  return k === 0 ? first : k - 1;
-}

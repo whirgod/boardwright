@@ -114,7 +114,6 @@ import {
   DEFAULT_TABLE_BYTES,
   fromTableScore,
   toTableScore,
-  tryOrder,
 } from "@boardwright/engine-search/table";
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
@@ -525,4 +524,14 @@ function perspective<Position, Move, Chance>(
   );
   const [only] = movers;
   return movers.size === 1 && only !== undefined ? only : rules.seats[0]!;
+}
+
+/**
+ * Index of the `k`-th Move to try when the Move at index `first` (the hash
+ * Move) goes first and the others keep the Game's order; -1: no hash Move,
+ * the Game's order.
+ */
+function tryOrder(k: number, first: number): number {
+  if (k > first) return k;
+  return k === 0 ? first : k - 1;
 }

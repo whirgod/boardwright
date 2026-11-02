@@ -954,37 +954,46 @@ function randomChanceGraph(
 }
 
 /**
- * Asserts that `score`, found by a search, is `exact` if the search was
- * `solved`. Otherwise a forced result must be real, but it may be slower
- * than the exact one: a stored result from a deeper search lets a depth see
- * past its horizon on one path, while a faster result on another path
- * (e.g. Moves up to the horizon, then a roll that wins whatever the dice)
- * waits for the next depth.
+ * Asserts that `score`, found by a search to some depth, is `exact` if the
+ * search was `solved`. Otherwise, where a plain search of that depth finds a
+ * forced result (`plain`), it is that result: every branch it rests on ends
+ * within the horizon, and stored deeper results only add to what the search
+ * sees. Where the plain search finds a value, a forced result must be real,
+ * but it may be slower than the exact one: a stored result from a deeper
+ * search lets the depth see past its horizon on one path, while a faster
+ * result one Move past the horizon on another path waits for the next depth
+ * (with chance also a roll at the horizon that wins whatever the dice, as a
+ * pending Chance event is evaluated there, not rolled).
  */
 function assertScore(
   score: Score | undefined,
   exact: number,
+  plain: number,
   solved: boolean,
   where: string,
 ) {
   const want = toScore(exact);
   if (solved) return assertEquals(score, want, where);
+  if (Math.abs(plain) > MATE_BOUND) {
+    return assertEquals(score, toScore(plain), `${where} (plain search)`);
+  }
   if (score === undefined || score.kind === "value") return;
   assertEquals(want.kind, score.kind, where);
   assert(want.kind !== "value" && want.plies <= score.plies, where);
 }
 
 /**
- * Checks Analysis `a` of `root` against the exhaustive value `exact` (of a
- * Position for a Seat, a number of Moves after the root): every Score if
- * the search was `solved` (it ran without limits), else the forced results
- * ({@link assertScore}). In a solved search every Line is complete: it ends
+ * Checks Analysis `a` of `root` against `value` (of a Position for a Seat,
+ * searching a number of Moves, Infinity: exhaustive, a number of Moves after
+ * the root): every Score against the exhaustive value if the search was
+ * `solved` (it ran without limits), else the forced results, against a plain
+ * search of `a`'s depth too ({@link assertScore}). In a solved search every Line is complete: it ends
  * at an Outcome or at the next Chance event, and a forced result's plies
  * count its Moves.
  */
 function assertExact<P, M, C>(
   rules: ChanceGameRules<P, M, C>,
-  exact: (p: P, seat: Seat, ply: number) => number,
+  value: (p: P, seat: Seat, depth: number, ply: number) => number,
   root: P,
   a: Analysis<M>,
   label: string,
@@ -993,19 +1002,24 @@ function assertExact<P, M, C>(
   const seat = rules.toMove(root);
   if (seat === undefined) {
     assertEquals(a.lines, [], label);
-    assertScore(a.score, exact(root, a.seat!, 0), solved, label);
+    const [exact, plain] = [Infinity, a.depth].map((d) =>
+      value(root, a.seat!, d, 0)
+    );
+    assertScore(a.score, exact!, plain!, solved, label);
     return;
   }
   const values = rules.legalMoves(root).map((m) =>
-    exact(rules.play(root, m), seat, 1)
+    value(rules.play(root, m), seat, Infinity, 1)
   );
   if (solved) {
     assertEquals(a.lines[0]!.score, toScore(Math.max(...values)), label);
   }
   for (const line of a.lines) {
     const where = `${label}: ${line.moves.map(rules.notation.encodeMove)}`;
-    const exactScore = exact(rules.play(root, line.moves[0]!), seat, 1);
-    assertScore(line.score, exactScore, solved, where);
+    const next = rules.play(root, line.moves[0]!);
+    const exact = value(next, seat, Infinity, 1);
+    const plain = value(next, seat, a.depth - 1, 1);
+    assertScore(line.score, exact, plain, solved, where);
     if (!solved) continue;
     const end = replay(rules, root, line.moves);
     const outcome = rules.outcome(end);
@@ -1029,8 +1043,8 @@ Deno.test("transpositions at different plies and perspectives keep results and m
     const rules = treeGame(nodes);
     const evaluate = treeEval(nodes);
     const memo = new Map<string, number>();
-    const exact = (p: string, seat: Seat, ply: number) =>
-      reference(rules, evaluate, 100, p, seat, Infinity, ply, memo);
+    const value = (p: string, seat: Seat, depth: number, ply: number) =>
+      reference(rules, evaluate, 100, p, seat, depth, ply, memo);
     const budgets = [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT, 0];
     for (const tableBytes of budgets) {
       const e = createExpectiminimaxEngine({
@@ -1050,20 +1064,21 @@ Deno.test("transpositions at different plies and perspectives keep results and m
           all.forEach((a, i) =>
             assertExact(
               rules,
-              exact,
+              value,
               root,
               a,
               `${label} depth ${a.depth}`,
               i === all.length - 1,
             )
           );
-          // Depth-limited: the forced results found so far are real.
+          // Depth-limited: the forced results found so far are real, and
+          // those a plain search of that depth finds are exact.
           for (const maxDepth of [2, 4]) {
             const [a] = (await collect(e.analyze(root, { maxDepth, lines })))
               .slice(-1);
             assertExact(
               rules,
-              exact,
+              value,
               root,
               a!,
               `${label} max ${maxDepth}`,
@@ -1145,6 +1160,48 @@ Deno.test("matches an unpruned reference at every depth on layered graphs with t
           limits,
           tableBytes,
         );
+      }
+    }
+  }
+});
+
+/**
+ * An evaluation that is not zero-sum: an independent random value per
+ * (Position, Seat), so `evaluate(p, "a")` is not `-evaluate(p, "b")`.
+ */
+function lopsidedEval(nodes: Readonly<Record<string, Node>>, seed: number) {
+  const random = seededRandom(seed);
+  const values = new Map<string, number>();
+  for (const id of Object.keys(nodes).sort()) {
+    for (const seat of ["a", "b"]) {
+      values.set(`${id} ${seat}`, Math.round(random() * 120 - 60));
+    }
+  }
+  return (p: string, seat: Seat) => values.get(`${p} ${seat}`)!;
+}
+
+Deno.test("a Chance event's stored value needs no zero-sum evaluation", async () => {
+  // The table stores a Chance event's value for one Seat and negates it for
+  // the other. That holds for any evaluation, as no horizon below a Chance
+  // event is evaluated for the Seat whose perspective it is valued from:
+  // the plain search agrees at every depth, from Chance and decision roots.
+  for (let seed = 1; seed <= 100; seed++) {
+    const nodes = layeredGraph(seed, 8, 6, 1 + (seed % 2));
+    const rules = treeGame(nodes);
+    const evaluate = lopsidedEval(nodes, seed);
+    for (const root of ["root", "c1.0", "d1.1", "c2.0"]) {
+      if (rules.outcome(root)) continue;
+      for (const tableBytes of [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT]) {
+        for (const limits of [{ lines: 1 }, { lines: 2 }]) {
+          await assertMatchesReference(
+            rules,
+            evaluate,
+            100,
+            root,
+            limits,
+            tableBytes,
+          );
+        }
       }
     }
   }

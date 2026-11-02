@@ -15,7 +15,6 @@ import {
   SLOT_BYTES,
   toTableScore,
   type TranspositionTable,
-  tryOrder,
 } from "./table.ts";
 
 const entry = (depth: number, move = 0): Entry => ({
@@ -260,12 +259,4 @@ Deno.test("forced results are stored counted from the Position", () => {
     assertEquals(toTableScore(score, 3), score);
     assertEquals(fromTableScore(score, 3), score);
   }
-});
-
-Deno.test("tryOrder puts the hash Move first, the rest in the Game's order", () => {
-  const order = (first: number) => [0, 1, 2, 3].map((k) => tryOrder(k, first));
-  assertEquals(order(-1), [0, 1, 2, 3]);
-  assertEquals(order(0), [0, 1, 2, 3]);
-  assertEquals(order(2), [2, 0, 1, 3]);
-  assertEquals(order(3), [3, 0, 1, 2]);
 });
