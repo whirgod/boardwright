@@ -875,3 +875,87 @@ Deno.test("quiescence still solves tic-tac-toe as a draw", async () => {
 Deno.test("honours the Engine contract with quiescence", async () => {
   await assertEngineContract(tttQuiescence, ttt);
 });
+
+// --- Delta pruning (`gain`) --------------------------------------------------
+
+// Depth 2: a plays m1 (a quiet 3) or m2. After m2, a is to move at the
+// horizon with alpha 3 (from m1): standing pat gives 0, and the captures
+// win 9 (xwin) and 1 (xsmall). Only a bound >= 9 may keep xwin.
+const DELTA: Record<string, GraphNode> = {
+  root: { seat: "a", moves: ["m1", "m2"] },
+  m1: { seat: "b", moves: ["c0"] },
+  c0: { seat: "a", moves: ["end"], value: 3 },
+  m2: { seat: "b", moves: ["c"] },
+  c: { seat: "a", moves: ["xsmall", "xwin", "end"], value: 0 },
+  xsmall: { seat: "b", moves: ["end"], value: -1 },
+  xwin: { seat: "b", moves: ["end"], value: -9 },
+  end: {},
+};
+
+async function deltaSearch(
+  nodes: Record<string, GraphNode>,
+  gain: ((p: string, m: string) => number) | undefined,
+) {
+  const g = graphGame(nodes);
+  const counted = counting(g.rules);
+  const e = createMinimaxEngine({
+    rules: counted.rules,
+    evaluate: g.evaluate,
+    movePriority: g.movePriority,
+    name: "delta",
+    quiescence: { ...g.quiescence, ...(gain ? { gain } : {}) },
+  });
+  const a = await final(e, "root", { maxDepth: 2 });
+  return { line: a.lines[0]!, nodes: counted.count.nodes };
+}
+
+Deno.test("delta pruning: a bound that holds prunes without changing the result", async () => {
+  const plain = await deltaSearch(DELTA, undefined);
+  assertEquals(plain.line.moves, ["m2", "c", "xwin"]);
+  assertEquals(plain.line.score, { kind: "value", value: 9 });
+  const asked: string[] = [];
+  const bounded = await deltaSearch(DELTA, (_p, m) => {
+    asked.push(m);
+    return m === "xwin" ? 9 : 1;
+  });
+  assertEquals(bounded.line, plain.line);
+  // xsmall (0 + 1 <= 3) is skipped, xwin (0 + 9 > 3) is searched.
+  assert(bounded.nodes < plain.nodes);
+  assert(asked.includes("xwin") && asked.includes("xsmall"));
+});
+
+Deno.test("delta pruning: a bound that is too low changes the result (the bound is trusted)", async () => {
+  const wrong = await deltaSearch(DELTA, () => 3);
+  assertEquals(wrong.line.moves[0], "m1");
+  // Infinity never prunes.
+  const never = await deltaSearch(DELTA, () => Infinity);
+  const plain = await deltaSearch(DELTA, undefined);
+  assertEquals(never, plain);
+});
+
+Deno.test("delta pruning: never where stand pat is refused", async () => {
+  const asked: string[] = [];
+  // Every capture would be pruned in c if asked, but c refuses stand pat.
+  const checked = { ...DELTA, c: { ...DELTA.c!, check: true } };
+  const r = await deltaSearch(checked, (p, m) => (asked.push(p + m), 0));
+  assertEquals(r.line.moves, ["m2", "c", "xwin"]);
+  assertEquals(asked, []);
+});
+
+Deno.test("delta pruning: not at the cap", async () => {
+  const asked: string[] = [];
+  const g = graphGame(DELTA);
+  const e = createMinimaxEngine({
+    rules: g.rules,
+    evaluate: g.evaluate,
+    movePriority: g.movePriority,
+    name: "delta",
+    quiescence: {
+      standPat: g.quiescence.standPat,
+      maxPlies: 0,
+      gain: (_p, m) => (asked.push(m), 0),
+    },
+  });
+  await final(e, "root", { maxDepth: 2 });
+  assertEquals(asked, []);
+});
