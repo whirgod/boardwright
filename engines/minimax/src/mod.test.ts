@@ -1031,7 +1031,14 @@ Deno.test("killer Moves save nodes (siblings share a refutation)", async () => {
   assert(killed < plain * 0.9, `${killed} vs ${plain}`);
 });
 
-Deno.test("killer Moves never change a Score or the multi-PV Scores (no table)", async () => {
+const moveKeys: (((m: string | number) => string | number) | undefined)[] = [
+  undefined, // default: encodeMove text
+  (m) => m,
+  (m) => String(m).charCodeAt(0) % 2, // some Moves alike
+  () => "same", // all Moves alike: blurs the history, never the values
+];
+
+Deno.test("killers and history never change a Score or the multi-PV Scores (no table)", async () => {
   const index = (p: TicTacToePosition, m: TicTacToeMove) =>
     ttt.legalMoves(p).indexOf(m);
   const hooks: (
@@ -1039,42 +1046,97 @@ Deno.test("killer Moves never change a Score or the multi-PV Scores (no table)",
     | undefined
   )[] = [undefined, (p, m) => -index(p, m), (p, m) => (index(p, m) % 3) - 1];
   for (const movePriority of hooks) {
-    const e = createMinimaxEngine({
-      rules: ttt,
-      evaluate: () => 0,
-      name: "killers",
-      tableBytes: 0,
-      ...(movePriority ? { movePriority } : {}),
-    });
-    for (const p of samplePositions()) {
-      const moves = ttt.legalMoves(p);
-      const a = await final(e, p, { lines: moves.length });
-      assertEquals(a.lines.length, moves.length);
-      for (const line of a.lines) {
-        const move = line.moves[0]!;
-        assertEquals(
-          rank(line.score),
-          referenceMove(p, move),
-          `${ttt.notation.encodePosition(p)} ${move}`,
-        );
+    for (const moveKey of moveKeys) {
+      const e = createMinimaxEngine({
+        rules: ttt,
+        evaluate: () => 0,
+        name: "killers",
+        tableBytes: 0,
+        ...(movePriority ? { movePriority } : {}),
+        ...(moveKey ? { moveKey } : {}),
+      });
+      for (const p of samplePositions()) {
+        const moves = ttt.legalMoves(p);
+        const a = await final(e, p, { lines: moves.length });
+        assertEquals(a.lines.length, moves.length);
+        for (const line of a.lines) {
+          const move = line.moves[0]!;
+          assertEquals(
+            rank(line.score),
+            referenceMove(p, move),
+            `${ttt.notation.encodePosition(p)} ${move}`,
+          );
+        }
       }
     }
   }
   // Depth-limited, where cutoffs are frequent.
+  for (const moveKey of moveKeys) {
+    const e = createMinimaxEngine({
+      rules: wide,
+      name: "w",
+      evaluate: hashValue,
+      tableBytes: 0,
+      ...(moveKey ? { moveKey } : {}),
+    });
+    for (const maxDepth of [2, 3, 4]) {
+      await assertExactMultiPv(
+        e,
+        [],
+        { maxDepth },
+        wide.legalMoves([]),
+        (m) => -wideReference([m], maxDepth - 1),
+        `killers depth=${maxDepth}`,
+      );
+    }
+  }
+});
+
+Deno.test("history saves nodes where killers cannot (moveKey names the Moves)", async () => {
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  /** Nodes (Moves played) to search `wide` to depth 5, without a table. */
+  async function nodes(moveKey?: (m: number) => string | number) {
+    const noKillers = withoutKillers(wide);
+    let played = 0;
+    const counting = {
+      ...noKillers,
+      play: (p: readonly number[], m: number) => (
+        played++, noKillers.play(p, m)
+      ),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableBytes: 0,
+      ...(moveKey ? { moveKey } : {}),
+    });
+    const a = await final(e, [], { maxDepth: 5 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4]);
+    return played;
+  }
+  const plain = await nodes(); // history keyed by a text that never repeats
+  const keyed = await nodes((m) => m);
+  assert(keyed < plain * 0.9, `${keyed} vs ${plain}`);
+});
+
+Deno.test("quiescence neither records nor orders by history", async () => {
+  let keyed = 0;
   const e = createMinimaxEngine({
     rules: wide,
     name: "w",
     evaluate: hashValue,
     tableBytes: 0,
+    moveKey: (m) => (keyed++, m),
+    // Every Move is searched at each quiescence node, three plies deep.
+    quiescence: { standPat: () => false, maxPlies: 3 },
   });
-  for (const maxDepth of [2, 3, 4]) {
-    await assertExactMultiPv(
-      e,
-      [],
-      { maxDepth },
-      wide.legalMoves([]),
-      (m) => -wideReference([m], maxDepth - 1),
-      `killers depth=${maxDepth}`,
-    );
-  }
+  // Depth 1: every Move below the root is a quiescence node.
+  const a = await final(e, [], { maxDepth: 1 });
+  assertEquals(a.lines.length, 1);
+  assertEquals(keyed, 0);
+  // One ply more has negamax nodes, which do use the key.
+  await final(e, [], { maxDepth: 2 });
+  assert(keyed > 0);
 });
