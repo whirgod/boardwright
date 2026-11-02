@@ -465,6 +465,15 @@ export const chess: GameRules<ChessPosition, ChessMove> = {
     if (isRepetition(position)) return { reason: "threefold-repetition" };
     return undefined;
   },
+  /**
+   * The repetition key (FIDE 9.2.3): placement, Seat to move, castling
+   * rights, and the en passant square only if a capture there is legal.
+   * Legal Moves are generated from these alone (an en passant square without
+   * a legal capture adds none), so equal keys list the same Moves in the same
+   * order; it leaves out the move clocks and the repetition history, which
+   * only decide draws. Memoized with the legal Moves.
+   */
+  transpositionKey: (position) => info(position).key,
   notation,
 };
 

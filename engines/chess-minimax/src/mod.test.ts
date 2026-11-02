@@ -7,6 +7,7 @@ import {
   DELTA_MARGIN,
   engine,
   evaluate,
+  extend,
   gain,
   MATERIAL,
   moveKey,
@@ -411,6 +412,71 @@ Deno.test("check extension finds a mate by checks just past the nominal depth", 
   const a = await search(fen, 2);
   assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
   assertEquals(a.lines[0]!.moves.map(uci), ["d5d2", "e2e1", "f4f2"]);
+});
+
+// --- Transposition key (ADR 0009) -----------------------------------------
+
+/**
+ * The Engine's options with `rules` counted (`play` calls), keyed by the
+ * Game's Transposition key or, without it, by `encodePosition`.
+ */
+function countedEngine(withKey: boolean, counted: { n: number }) {
+  const { transpositionKey: _, ...noKey } = rules;
+  const r = withKey ? rules : noKey;
+  return createMinimaxEngine({
+    rules: { ...r, play: (p, m) => (counted.n++, rules.play(p, m)) },
+    evaluate,
+    movePriority,
+    quiescence: quiescenceOptions,
+    moveKey,
+    extend,
+    name: withKey ? "key" : "encodePosition",
+  });
+}
+
+async function finalOf(
+  e: typeof engine,
+  position: ChessPosition,
+  maxDepth: number,
+): Promise<Analysis<ChessMove>> {
+  let last: Analysis<ChessMove> | undefined;
+  for await (const a of e.analyze(position, { maxDepth })) last = a;
+  return last!;
+}
+
+Deno.test("Move orders that reach the same Position share table entries", async () => {
+  // 1. Nf3 Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3 reach one Position with
+  // different histories: one key with the Game's Transposition key, two
+  // with `encodePosition`.
+  const start = rules.initialPosition();
+  const keyed = { n: 0 };
+  const plainKey = { n: 0 };
+  const a = await finalOf(countedEngine(true, keyed), start, 4);
+  const b = await finalOf(countedEngine(false, plainKey), start, 4);
+  assertEquals(a.lines[0]!.score, b.lines[0]!.score);
+  assertEquals(a.lines[0]!.moves.map(uci), b.lines[0]!.moves.map(uci));
+  assert(keyed.n < plainKey.n, `${keyed.n} vs ${plainKey.n} nodes`);
+});
+
+Deno.test("a draw by repetition is still found with the Transposition key", async () => {
+  // White, a queen down, shuffles the king while Black does the same; the
+  // Position after Kb1 has occurred twice, so Kb1 now draws. Every other
+  // Move loses the queen's worth.
+  let p = decode("7k/8/8/7q/8/8/8/K7 w - - 0 1");
+  for (const t of "a1b1 h8g8 b1a2 g8h8 a2b1 h8g8 b1a2 g8h8".split(" ")) {
+    p = rules.play(p, rules.notation.decodeMove(t, p));
+  }
+  const draw = rules.play(p, rules.notation.decodeMove("a2b1", p));
+  assertEquals(rules.outcome(draw), { reason: "threefold-repetition" });
+  for (const withKey of [true, false]) {
+    for (let depth = 1; depth <= 5; depth++) {
+      const a = await finalOf(countedEngine(withKey, { n: 0 }), p, depth);
+      assertEquals(a.lines[0], {
+        moves: [rules.notation.decodeMove("a2b1", p)],
+        score: { kind: "value", value: 0 },
+      }, `key ${withKey}, depth ${depth}`);
+    }
+  }
 });
 
 // --- Quiescence pruning (#95) ---------------------------------------------

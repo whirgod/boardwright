@@ -44,6 +44,9 @@ Chess (FIDE Laws of Chess) as a `GameRules` package (`chess`), plus SAN helpers 
   rights (none of which can be undone), oldest first. A key is
   `<placement>:<w|b>:<castling>:<en passant or ->`, with the en passant square only when a capture
   is legal: `... w KQkq - 2 2 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR:w:KQkq:-|rnbqkbnr/...:b:KQkq:-`.
+- Transposition key (`transpositionKey`, ADR 0009): the Position's repetition key as above. The
+  legal Moves depend on these fields only, so Move orders that reach the same Position share it
+  (1. Nf3 Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3), while the FEN text differs in its repetition field.
 
 Decoding is strict so text is canonical and the Position is reachable-looking:
 

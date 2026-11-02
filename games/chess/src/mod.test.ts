@@ -244,6 +244,43 @@ Deno.test("threefold repetition", () => {
   });
 });
 
+Deno.test("transpositionKey: Move orders share it, history and clocks aside", () => {
+  const key = g.transpositionKey!;
+  const start = g.initialPosition();
+  const a = play(start, "g1f3", "g8f6", "b1c3");
+  const b = play(start, "b1c3", "g8f6", "g1f3");
+  assert(fen(a) !== fen(b)); // the repetition history differs
+  assertEquals(key(a), key(b));
+  assertEquals(
+    key(a),
+    "rnbqkb1r/pppppppp/5n2/8/8/2N2N2/PPPPPPPP/R1BQKB1R:b:KQkq:-",
+  );
+  // Clocks and the repetition history are left out, so a Position that is
+  // a draw by repetition shares the key of the same Position still in play.
+  const cycle = ["g1f3", "g8f6", "f3g1", "f6g8"];
+  const thrice = play(start, ...cycle, ...cycle);
+  assertEquals(g.outcome(thrice), { reason: "threefold-repetition" });
+  assertEquals(key(thrice), key(start));
+  assertEquals(
+    key(pos("4k3/8/8/8/8/8/8/R3K3 w Q - 37 60")),
+    key(pos("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1")),
+  );
+  // Seat to move, castling rights and a usable en passant square count.
+  assert(key(play(start, "g1f3")) !== key(play(start, "g1f3", "g8f6")));
+  assert(
+    key(pos("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1")) !==
+      key(pos("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")),
+  );
+  const usable = play(pos("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1"), "e2e4");
+  const unusable = play(pos("4k3/8/8/8/2p5/8/4P3/4K3 w - - 0 1"), "e2e4");
+  assert(key(usable).endsWith(":e3"));
+  assert(key(unusable).endsWith(":-"));
+  assertEquals(
+    key(play(start, "e2e4")),
+    key(pos("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")),
+  );
+});
+
 Deno.test("repetition ignores an en passant square nobody can use", () => {
   const cycle = ["g8f6", "g1f3", "f6g8", "f3g1"];
   // After 1. e4 the FEN has e3, but no black pawn can capture.

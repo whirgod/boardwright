@@ -330,5 +330,11 @@ export const checkers: GameRules<CheckersPosition, CheckersMove> = {
     if (isRepetition(position)) return { reason: "threefold-repetition" };
     return undefined;
   },
+  /**
+   * The repetition key (`B/<white>/<black>`): Seat to move and pieces, from
+   * which the legal Moves are generated; it leaves out the clock and the
+   * repetition history, which only decide draws (ADR 0009).
+   */
+  transpositionKey: key,
   notation,
 };

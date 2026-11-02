@@ -273,6 +273,24 @@ Deno.test("draw by threefold repetition", () => {
   });
 });
 
+Deno.test("transpositionKey: Move orders share it, clock and history aside", () => {
+  const key = g.transpositionKey!;
+  const start = pos("B:WK29,K32:BK1,K4");
+  const a = play(start, "1-5", "32-27", "4-8");
+  const b = play(start, "4-8", "32-27", "1-5");
+  assertEquals(n.encodePosition(a) === n.encodePosition(b), false);
+  assertEquals(key(a), key(b));
+  assertEquals(key(a), "W/K27,K29/K5,K8");
+  // A draw by repetition shares the key of the same Position in play.
+  const cycle = ["1-5", "32-28", "5-1", "28-32"];
+  let p = pos("B:WK32:BK1");
+  for (const m of [...cycle, ...cycle]) p = play(p, m);
+  assertEquals(g.outcome(p), { reason: "threefold-repetition" });
+  assertEquals(key(p), key(pos("B:WK32:BK1")));
+  // The Seat to move counts.
+  assertEquals(key(pos("W:WK32:BK1")) === key(pos("B:WK32:BK1")), false);
+});
+
 Deno.test("repetition requires the same Seat to move", () => {
   // Same pieces, other side to move: not a repetition of the first Position.
   const a = pos("B:WK32:BK1");
