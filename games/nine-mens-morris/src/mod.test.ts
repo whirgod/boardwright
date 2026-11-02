@@ -51,8 +51,37 @@ function play(p: MorrisPosition, ...moves: string[]): MorrisPosition {
 const enc = (moves: readonly MorrisMove[]) =>
   moves.map((m) => n.encodeMove(m)).sort();
 
+/**
+ * Positions for the kit's `transpositionKey` checks that random playouts
+ * rarely meet: the same board and Seat to move with other pieces in hand
+ * (placing or flying; Black placing its last piece or moving). A key that
+ * leaves out Black's hand, or both hands, merges Positions that play
+ * differently, which the kit then reports. (White's hand alone may be left
+ * out: in a Position that decodes, Black's hand and the Seat to move fix it.)
+ */
+const KEY_POSITIONS = [
+  pos({ white: "a1 c3 e5", black: "a7 g1 e3", hand: [6, 6] }),
+  pos({ white: "a1 c3 e5", black: "a7 g1 e3", hand: [0, 0] }),
+  pos({
+    white: "a1 a7 c3 e5 g1",
+    black: "b4 d2 d6 f4",
+    turn: "black",
+    hand: [0, 1],
+  }),
+  pos({
+    white: "a1 a7 c3 e5 g1",
+    black: "b4 d2 d6 f4",
+    turn: "black",
+    hand: [0, 0],
+  }),
+].map((p) => n.encodePosition(p));
+
 Deno.test("satisfies the GameRules contract", () => {
-  assertGameRulesContract(g, { seed: 7, playouts: 150 });
+  assertGameRulesContract(g, {
+    seed: 7,
+    playouts: 150,
+    keyPositions: KEY_POSITIONS,
+  });
 });
 
 Deno.test("initial position", () => {
@@ -319,6 +348,27 @@ Deno.test("draw: threefold repetition", () => {
   assertEquals(g.outcome(p), { reason: "threefold-repetition" });
   assertEquals(g.toMove(p), undefined);
   assertEquals(g.legalMoves(p), []);
+});
+
+Deno.test("transpositionKey: board, Seat and hands; quiet plies and history aside", () => {
+  const key = g.transpositionKey!;
+  const start = pos({ white: "a1 g7 c3 e5", black: "a7 g1 e3 c5" });
+  const a = play(start, "a1-a4", "g1-g4", "c3-c4");
+  const b = play(start, "c3-c4", "g1-g4", "a1-a4");
+  assertEquals(n.encodePosition(a) === n.encodePosition(b), false);
+  assertEquals(key(a), key(b));
+  assertEquals(key(a), `${a.board.join("")}b:0:0`);
+  // A draw by repetition shares the key of the same Position in play.
+  const cycle = ["a1-a4", "g1-g4", "a4-a1", "g4-g1"];
+  const drawn = play(start, ...cycle, ...cycle);
+  assertEquals(g.outcome(drawn), { reason: "threefold-repetition" });
+  assertEquals(key(drawn), key(start));
+  // Pieces in hand decide the legal Moves (placing or flying): they count.
+  const board = { white: "a1 c3 e5", black: "a7 g1 e3" };
+  const placing = pos({ ...board, hand: [6, 6] });
+  const flying = pos({ ...board, hand: [0, 0] });
+  assertEquals(enc(g.legalMoves(placing)) === enc(g.legalMoves(flying)), false);
+  assertEquals(key(placing) === key(flying), false);
 });
 
 Deno.test("draw: twice is not enough, and a removal resets repetition", () => {

@@ -45,11 +45,11 @@
  * most valuable victim and least valuable attacker first; a queen promotion
  * ahead of them), then the library's killer Moves, then the other quiet
  * Moves by history score (the squares, `moveKey`), then in the Game's order. Quiescence searches the captures and promotions
- * in the same order (all legal Moves, in check). The table's key
- * is the whole Position, and a chess Position includes the move clocks and
- * the repetition history, so different Move orders (1. Nf3 Nf6 2. Nc3 and
- * 1. Nc3 Nf6 2. Nf3) rarely share a key: the table mostly helps by ordering
- * Moves.
+ * in the same order (all legal Moves, in check). The table's key is the
+ * Game's Transposition key (`chess.transpositionKey`: placement, Seat to
+ * move, castling rights, a usable en passant square), which leaves out the
+ * move clocks and the repetition history, so different Move orders (1. Nf3
+ * Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3) share table entries (ADR 0009).
  *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker, and
  * its parts (`evaluate`, `movePriority`, `quiescence`, `extend`) to compose variants.

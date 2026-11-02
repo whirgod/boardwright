@@ -1314,3 +1314,224 @@ Deno.test("a Chance event's stored value is negated for the other Seat", async (
     }
   }
 });
+
+// --- Transposition key (ADR 0009) -------------------------------------------
+
+/** A Position of {@link withHistory}: `node|trail`. */
+const splitTrail = (p: string) => {
+  const bar = p.indexOf("|");
+  return [p.slice(0, bar), p.slice(bar + 1)] as const;
+};
+
+/**
+ * A `treeGame` whose Positions carry their history: `node|trail`, the node
+ * and the nodes visited before it (by Moves and Chance results).
+ * `encodePosition` keeps the trail, so paths that meet at a node do not
+ * share it; the Transposition key is the node alone. `drawn(node, trail)`
+ * may make a Position a draw by its history (as a repetition does), so equal
+ * keys may differ by a draw.
+ */
+function withHistory(
+  tree: ChanceGameRules<string, string, string>,
+  drawn: (node: string, trail: string) => boolean = () => false,
+): ChanceGameRules<string, string, string> {
+  const outcome = (p: string) => {
+    const [node, trail] = splitTrail(p);
+    return drawn(node, trail) ? { reason: "history" } : tree.outcome(node);
+  };
+  const live = (p: string) => (outcome(p) ? undefined : splitTrail(p)[0]);
+  const next = (p: string, to: string) => {
+    const [node, trail] = splitTrail(p);
+    return `${to}|${trail}${node},`;
+  };
+  return {
+    ...tree,
+    initialPosition: () => `${tree.initialPosition()}|`,
+    toMove: (p) => (live(p) === undefined ? undefined : tree.toMove(live(p)!)),
+    legalMoves: (p) => (live(p) === undefined ? [] : tree.legalMoves(live(p)!)),
+    play: (p, m) => next(p, tree.play(splitTrail(p)[0], m)),
+    outcome,
+    chanceEvents: (p) =>
+      live(p) === undefined ? [] : tree.chanceEvents(live(p)!),
+    resolveChance: (p, c) => next(p, tree.resolveChance(splitTrail(p)[0], c)),
+    transpositionKey: (p) => splitTrail(p)[0],
+  };
+}
+
+Deno.test("a Transposition key shares entries across histories; without one, encodePosition is the key", async () => {
+  let keyed = 0, unkeyed = 0;
+  for (let seed = 1; seed <= 30; seed++) {
+    // Unlimited searches: they end once solved, so no draws (with a
+    // Transposition key a draw counts like a horizon, ADR 0009).
+    const random = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    const nodes = Object.fromEntries(
+      Object.entries(random).map((
+        [id, n],
+      ) => [id, "winner" in n && n.winner === null ? A_WINS : n]),
+    );
+    const rules = withHistory(treeGame(nodes));
+    const evaluate = treeEval(nodes);
+    const run = async (r: ChanceGameRules<string, string, string>) => {
+      let moves = 0, encoded = 0;
+      const counted: ChanceGameRules<string, string, string> = {
+        ...r,
+        play: (p, m) => (moves++, r.play(p, m)),
+        notation: {
+          ...r.notation,
+          encodePosition: (p) => (encoded++, r.notation.encodePosition(p)),
+        },
+      };
+      const e = createExpectiminimaxEngine({
+        rules: counted,
+        evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+        name: "graph",
+        winValue: 100,
+      });
+      const root = r.initialPosition();
+      const lines = Math.max(1, r.legalMoves(root).length);
+      const [a] = (await collect(e.analyze(root, { lines }))).slice(-1);
+      return { a: a!, moves, encoded };
+    };
+    const { transpositionKey: _, ...noKey } = rules;
+    const withKey = await run(rules);
+    const fallback = await run(noKey);
+    // Histories never decide an Outcome here: the same exact Scores.
+    assertEquals(withKey.a.score, fallback.a.score, `seed ${seed}`);
+    assertEquals(
+      withKey.a.lines.map((l) => l.score),
+      fallback.a.lines.map((l) => l.score),
+      `seed ${seed}`,
+    );
+    // The key path never encodes a Position; the fallback keys on the text.
+    assertEquals(withKey.encoded, 0, `seed ${seed}`);
+    assert(fallback.encoded > 0, `seed ${seed}`);
+    keyed += withKey.moves;
+    unkeyed += fallback.moves;
+  }
+  // Paths that meet at a node share its entry only with the key.
+  assert(keyed < unkeyed * 0.9, `${keyed} vs ${unkeyed} Moves`);
+});
+
+Deno.test("with draws in the tree, a Transposition key gives the same exact Scores", async () => {
+  // Draws count like horizons with the key, so it is never solved: a depth
+  // beyond the longest path (31 Moves) makes both searches exact.
+  for (let seed = 1; seed <= 20; seed++) {
+    const nodes = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    const rules = withHistory(treeGame(nodes));
+    const evaluate = treeEval(nodes);
+    const root = rules.initialPosition();
+    const limits = {
+      lines: Math.max(1, rules.legalMoves(root).length),
+      maxDepth: 32,
+    };
+    // Scores by root Move: tied Lines may come in another order.
+    const scores = async (r: ChanceGameRules<string, string, string>) => {
+      const e = createExpectiminimaxEngine({
+        rules: r,
+        evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+        name: "graph",
+        winValue: 100,
+      });
+      const [a] = (await collect(e.analyze(root, limits))).slice(-1);
+      return [
+        JSON.stringify(a!.score),
+        ...a!.lines.map((l) => `${l.moves[0]} ${JSON.stringify(l.score)}`)
+          .sort(),
+      ];
+    };
+    const { transpositionKey: _, ...noKey } = rules;
+    assertEquals(await scores(rules), await scores(noKey), `seed ${seed}`);
+  }
+});
+
+Deno.test("an Outcome decided by history is never answered from the table", async () => {
+  // The Chance event C always ends in b's win, unless reached through Q:
+  // then its history makes it a draw (like a repetition), with the same
+  // key. C looks good to a at the horizon, so P is searched first at depth 3
+  // and stores C's (exact) value before Q reaches it.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { P: "viaP", Q: "viaQ" } },
+    viaP: { seat: "b", moves: { go: "C" } },
+    viaQ: { seat: "b", moves: { go: "C" } },
+    C: { chance: { r: [1, "BW"] }, eval: 50 },
+    BW: B_WINS,
+  };
+  const rules = withHistory(
+    treeGame(nodes),
+    (node, trail) => node === "C" && trail.includes("viaQ"),
+  );
+  const evaluate = treeEval(nodes);
+  for (const [label, tableBytes] of BUDGETS) {
+    const e = createExpectiminimaxEngine({
+      rules,
+      evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+      name: "graph",
+      winValue: 100,
+      tableBytes,
+    });
+    // A draw is never `solved` with a Transposition key: limit the depth.
+    const all = await collect(e.analyze("root|", { lines: 2, maxDepth: 5 }));
+    assertEquals(all.map((a) => a.depth), [1, 2, 3, 4, 5], label);
+    for (const a of all.slice(1)) {
+      const viaQ = a.lines.find((l) => l.moves[0] === "Q");
+      assertEquals(viaQ, {
+        moves: ["Q", "go"],
+        score: { kind: "value", value: 0 },
+      }, `${label} depth ${a.depth}`);
+    }
+    assertEquals(all.at(-1)!.lines[1], {
+      moves: ["P", "go"],
+      score: { kind: "loss-in", plies: 2 },
+    }, label);
+  }
+});
+
+Deno.test("a draw decided by history is not trusted across depths (no false solved)", async () => {
+  // a wins in 4 through Q (Q go [r] m n). Through P, Y is a draw by its
+  // history (like a repetition), with the same key. P looks better at the
+  // horizon, so it is searched first: the Chance event C's value rests on
+  // that draw and is stored, and Q's visit to C is answered from it
+  // (graph-history interaction). Were the draw trusted at any depth, depth
+  // 3 would end in Outcomes everywhere, be `solved`, and stop there.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { P: "viaP", Q: "viaQ" } },
+    viaP: { seat: "b", moves: { go: "C" }, eval: 10 },
+    viaQ: { seat: "b", moves: { go: "C" } },
+    C: { chance: { r: [1, "Y"] } },
+    Y: { seat: "a", moves: { m: "W" } },
+    W: { seat: "b", moves: { n: "AW" } },
+    AW: A_WINS,
+  };
+  const drawnThroughP = (node: string, trail: string) =>
+    node === "Y" && trail.includes("viaP,");
+  const evaluate = treeEval(nodes);
+  const run = async (r: ChanceGameRules<string, string, string>) =>
+    await collect(
+      createExpectiminimaxEngine({
+        rules: r,
+        evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+        name: "graph",
+        winValue: 100,
+      }).analyze("root|", { maxDepth: 8 }),
+    );
+  // With the key: the draw keeps every depth unsolved, up to the limit.
+  const rules = withHistory(treeGame(nodes), drawnThroughP);
+  const keyed = await run(rules);
+  assertEquals(keyed.map((a) => a.depth), [1, 2, 3, 4, 5, 6, 7, 8]);
+  // Without the key, Q's C has its own entry: the win, solved at depth 4.
+  const { transpositionKey: _, ...noKey } = rules;
+  const plain = await run(noKey);
+  assertEquals(plain.map((a) => a.depth), [1, 2, 3, 4]);
+  assertEquals(plain.at(-1)!.lines[0], {
+    moves: ["Q", "go"],
+    score: { kind: "win-in", plies: 4 },
+  });
+  // Decisive results are still solved with the key: without the draw, the
+  // same win ends the search at depth 4.
+  const decisive = await run(withHistory(treeGame(nodes)));
+  assertEquals(decisive.map((a) => a.depth), [1, 2, 3, 4]);
+  assertEquals(decisive.at(-1)!.lines[0]!.score, {
+    kind: "win-in",
+    plies: 4,
+  });
+});

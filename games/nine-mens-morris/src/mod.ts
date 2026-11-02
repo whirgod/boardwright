@@ -374,5 +374,15 @@ export const nineMensMorris: GameRules<MorrisPosition, MorrisMove> = {
     }
     return undefined;
   },
+  /**
+   * Board, Seat to move and pieces in hand (`<board><w|b>:<white>:<black>`):
+   * the legal Moves depend on these alone (placing while a piece is in hand,
+   * flying with three on the board); it leaves out the quiet plies and the
+   * repetition history, which only decide draws (ADR 0009).
+   */
+  transpositionKey: (position) =>
+    `${
+      repetitionKey(position.board, position.turn)
+    }:${position.inHand.white}:${position.inHand.black}`,
   notation,
 };

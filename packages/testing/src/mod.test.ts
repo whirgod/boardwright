@@ -320,3 +320,215 @@ Deno.test("rejects a Notation whose decoded Position has another Outcome", () =>
     "different outcome",
   );
 });
+
+// --- Transposition key -------------------------------------------------------
+
+/**
+ * Nim with a pile of 6 and a move clock: `plies` counts the Moves played,
+ * and the Match is drawn once it reaches 5 (unless the pile is empty). The
+ * same pile and Seat to move is reached after different numbers of plies
+ * (2+2 or 1+1+1+1 stones), so a key of pile and Seat leaves out history that
+ * decides only draws, as the contract allows.
+ */
+interface C {
+  readonly n: number;
+  readonly turn: "a" | "b";
+  readonly plies: number;
+  /** Set by `decodePosition` only, to break the key's round trip on purpose. */
+  readonly decoded?: boolean;
+}
+type ClockRules = GameRules<C, string>;
+
+const DRAW_PLIES = 5;
+const clockNim: ClockRules = {
+  id: "clock-nim",
+  name: "Nim with a move clock",
+  seats: ["a", "b"],
+  initialPosition: () => ({ n: 6, turn: "a", plies: 0 }),
+  toMove: (p) => (clockNim.outcome(p) ? undefined : p.turn),
+  legalMoves: (p) =>
+    clockNim.outcome(p) ? [] : ["t1", "t2"].filter((m) => Number(m[1]) <= p.n),
+  play(p, m) {
+    if (!clockNim.legalMoves(p).includes(m)) throw new Error(`illegal ${m}`);
+    return {
+      n: p.n - Number(m[1]),
+      turn: p.turn === "a" ? "b" : "a",
+      plies: p.plies + 1,
+    };
+  },
+  outcome: (p) =>
+    p.n === 0
+      ? { winner: p.turn === "a" ? "b" : "a", reason: "last-stone" }
+      : p.plies >= DRAW_PLIES
+      ? { reason: "move-clock" }
+      : undefined,
+  notation: {
+    encodePosition: (p) => `${p.n}:${p.turn}:${p.plies}`,
+    decodePosition(text) {
+      const m = /^([0-6]):([ab]):([0-6])$/.exec(text);
+      if (!m) throw new Error("bad position");
+      return { n: Number(m[1]), turn: m[2] as "a" | "b", plies: Number(m[3]) };
+    },
+    encodeMove: (m) => m,
+    decodeMove(text) {
+      if (!/^t[12]$/.test(text)) throw new Error("bad move");
+      return text;
+    },
+  },
+  transpositionKey: (p) => `${p.n}${p.turn}`,
+};
+
+/** Runs the kit against a variant of `clockNim` and expects `message`. */
+function expectKeyFailure(
+  patch: Partial<ClockRules>,
+  message: string,
+  opts = {},
+) {
+  const err = assertThrows(() =>
+    assertGameRulesContract({ ...clockNim, ...patch }, opts)
+  );
+  const text = (err as Error).message;
+  if (!text.includes(message) || !text.includes("seed=")) {
+    throw new Error(`expected "${message}" (with seed) in: ${text}`);
+  }
+}
+
+Deno.test("transpositionKey: a key that leaves out the move clock passes", () => {
+  // The key merges Positions with different Outcomes (a draw by the clock
+  // and a Position still in play): allowed.
+  const playing = { n: 1, turn: "b" as const, plies: 3 };
+  const drawn = { n: 1, turn: "b" as const, plies: 5 };
+  assertEquals(
+    clockNim.transpositionKey!(playing),
+    clockNim.transpositionKey!(drawn),
+  );
+  assertEquals(clockNim.outcome(playing), undefined);
+  assertEquals(clockNim.outcome(drawn), { reason: "move-clock" });
+  assertGameRulesContract(clockNim);
+});
+
+Deno.test("transpositionKey: detects a key that merges Seats to move", () => {
+  expectKeyFailure(
+    { transpositionKey: (p) => `${p.n}` },
+    "which have a different Seat to move",
+  );
+});
+
+Deno.test("transpositionKey: detects a key that merges different legal Moves", () => {
+  // Late in the Match only one stone may be taken: the key must tell.
+  // (`play` still takes two: not checked here.)
+  expectKeyFailure(
+    {
+      legalMoves: (p) =>
+        clockNim.legalMoves(p).filter((m) => p.plies < 3 || m === "t1"),
+    },
+    "which have a different legalMoves (set or order)",
+    { checkIllegalMoves: false },
+  );
+});
+
+Deno.test("transpositionKey: detects a key that merges different Move orders", () => {
+  // Late in the Match the Game lists its Moves the other way round.
+  expectKeyFailure(
+    {
+      legalMoves: (p) => {
+        const moves = clockNim.legalMoves(p);
+        return p.plies < 3 ? moves : [...moves].reverse();
+      },
+    },
+    "which have a different legalMoves (set or order)",
+  );
+});
+
+Deno.test("transpositionKey: detects a key whose Moves lead to different keys", () => {
+  // The key merges piles 3 and 4 (and Seat), which list the same Moves but
+  // lead to different piles, so it leaves out more than history.
+  const merged = (p: C) => `${p.n === 4 ? 3 : p.n}${p.turn}`;
+  expectKeyFailure(
+    { transpositionKey: merged },
+    "leads to different keys",
+  );
+});
+
+Deno.test("transpositionKey: must be kept by decoding", () => {
+  expectKeyFailure(
+    {
+      notation: {
+        ...clockNim.notation,
+        decodePosition: (t) => ({
+          ...clockNim.notation.decodePosition(t),
+          decoded: true,
+        }),
+      },
+      transpositionKey: (p) => `${p.n}${p.turn}${p.decoded ? "*" : ""}`,
+    },
+    "decoded position has a different transpositionKey",
+  );
+});
+
+Deno.test("transpositionKey: total, a string, stable", () => {
+  expectKeyFailure({
+    transpositionKey: () => {
+      throw new Error("boom");
+    },
+  }, "transpositionKey threw");
+  expectKeyFailure(
+    { transpositionKey: (() => 7) as never },
+    "did not return a string",
+  );
+  let calls = 0;
+  expectKeyFailure(
+    { transpositionKey: (p) => `${p.n}${p.turn}${calls++ % 2}` },
+    "transpositionKey is not stable",
+  );
+});
+
+Deno.test("transpositionKey: the play it leaves out may decide only draws", () => {
+  // The move clock now decides a win: the key may not leave it out.
+  expectKeyFailure(
+    {
+      outcome: (p) =>
+        p.n > 0 && p.plies >= DRAW_PLIES
+          ? { winner: "a", reason: "move-clock" }
+          : clockNim.outcome(p),
+    },
+    "differ in a decisive Outcome",
+  );
+});
+
+Deno.test("transpositionKey: fails when no two encodings ever share a key", () => {
+  // A key equal to `encodePosition` has nothing to compare.
+  const plain = { transpositionKey: clockNim.notation.encodePosition };
+  expectKeyFailure(plain, "fewer than minTranspositions=1");
+  assertGameRulesContract({ ...clockNim, ...plain }, { minTranspositions: 0 });
+  // The real key shares plenty, but not a thousand.
+  expectKeyFailure({}, "fewer than minTranspositions=1000", {
+    minTranspositions: 1000,
+  });
+});
+
+Deno.test("transpositionKey: keyPositions join the checks", () => {
+  // Notation also takes piles of 7 to 9, which playouts from 6 never reach;
+  // this key merges piles 7 and 8, which lead to different keys.
+  const decodeAny = (text: string): C => {
+    const m = /^([0-9]):([ab]):([0-6])$/.exec(text);
+    if (!m) throw new Error("bad position");
+    return { n: Number(m[1]), turn: m[2] as "a" | "b", plies: Number(m[3]) };
+  };
+  const wide: Partial<ClockRules> = {
+    notation: { ...clockNim.notation, decodePosition: decodeAny },
+  };
+  const merged = {
+    ...wide,
+    transpositionKey: (p: C) => `${p.n === 8 ? 7 : p.n}${p.turn}`,
+  };
+  // The playouts alone miss it.
+  assertGameRulesContract({ ...clockNim, ...merged });
+  const keyPositions = ["7:a:0", "8:a:0"];
+  expectKeyFailure(merged, "leads to different keys", { keyPositions });
+  // The right key keeps them apart.
+  assertGameRulesContract({ ...clockNim, ...wide }, { keyPositions });
+  expectKeyFailure(wide, "keyPositions[0] 9:z:0", {
+    keyPositions: ["9:z:0"],
+  });
+});

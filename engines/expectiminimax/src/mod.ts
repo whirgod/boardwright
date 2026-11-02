@@ -49,8 +49,9 @@
  * different Moves and rolls often reach the same Position (in backgammon,
  * rolls of 61, 52 and 43 can end in the same one). A transposition table
  * (`@boardwright/engine-search/table`, shared with the minimax library),
- * keyed by `Notation.encodePosition`, remembers what the search found below
- * the root:
+ * keyed by the Game's Transposition key (`GameRules.transpositionKey`) if it
+ * supplies one, else by `Notation.encodePosition`, remembers what the search
+ * found below the root:
  * - Decision nodes, as in minimax: the best Move found one depth shallower
  *   (the hash Move) is searched first, and a stored score answers a later
  *   visit if it was searched at least as deep and its bound settles the
@@ -70,8 +71,19 @@
  * everywhere holds at any depth. A stored deeper result may let a depth see
  * further than a plain search to that depth (it may then report a forced
  * result that the next depth finds faster). Each `analyze` call has its own
- * table, bounded by a memory budget, `tableBytes`. The key must determine
- * everything the search sees (see `ExpectiminimaxOptions.rules`).
+ * table, bounded by a memory budget, `tableBytes`.
+ *
+ * Positions without an Outcome that share a key have the same Seat to move
+ * (or the same pending Chance event) and legal Moves in the same order (see
+ * `ExpectiminimaxOptions.rules`). A Transposition key may leave out earlier
+ * play that decides draws, so the search checks a Position's Outcome before
+ * it probes the table, and counts every draw it reaches like a horizon: a
+ * result that rests on a draw is stored for its depth only and the depth is
+ * not `solved` (with such a key, a search that reaches a draw only ends at
+ * its limits). A stored value may still come from a path with other earlier
+ * play, also a decisive one solved on a path where another path's history
+ * would have drawn it, which can end a search early as `solved`
+ * (graph-history interaction, accepted: ADR 0009).
  *
  * Where a Chance event separates every two Moves, as in backgammon,
  * alpha-beta prunes nothing (every decision node's children are Chance
@@ -113,6 +125,8 @@ import {
   createTranspositionTable,
   DEFAULT_TABLE_BYTES,
   fromTableScore,
+  hasTranspositionKey,
+  tableKey,
   toTableScore,
 } from "@boardwright/engine-search/table";
 
@@ -128,11 +142,13 @@ export { DEFAULT_TABLE_BYTES };
 
 export interface ExpectiminimaxOptions<Position, Move, Chance> {
   /**
-   * The Game. Its `notation.encodePosition` is the transposition table's key,
-   * so it must encode everything that matters for the rest of the Match:
-   * equal texts must mean the same legal Moves in the same order, the same
-   * Seat to move (or the same pending Chance event, with the same results
-   * and probabilities) and Outcome, and the same future.
+   * The Game. The transposition table's key is its `transpositionKey` if it
+   * supplies one, else its `notation.encodePosition`, as the Game's contract
+   * (checked by its contract kit) describes: Positions without an Outcome
+   * that share a key have the same Seat to move (or the same pending Chance
+   * event, with the same results and probabilities) and legal Moves in the
+   * same order. A Transposition key may leave out earlier play that decides
+   * Outcomes (see the module doc).
    */
   readonly rules: ChanceGameRules<Position, Move, Chance>;
   /**
@@ -160,7 +176,7 @@ export interface ExpectiminimaxOptions<Position, Move, Chance> {
    * table) to 2^32 (default {@link DEFAULT_TABLE_BYTES}). Each `analyze`
    * call gets its own table, which grows up to this budget as estimated by
    * `@boardwright/engine-search/table`: an entry counts as about 160 bytes
-   * plus its key (the encoded Position).
+   * plus its key.
    */
   readonly tableBytes?: number;
 }
@@ -246,13 +262,18 @@ async function* analyze<Position, Move, Chance>(
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
   // What the search found per Position below the root (see `decision` and
-  // `expectation`).
+  // `expectation`), by the Game's Transposition key, else `encodePosition`
+  // (see `tableKey`).
   const table = createTranspositionTable(tableBytes);
+  const keyOf = tableKey(rules);
   const counter = createNodeCounter();
   // Horizon Positions evaluated in the current depth, counting a stored
-  // result that came from a search that hit the horizon as one. While none
-  // is found, the depth is exact.
+  // result that came from a search that hit the horizon as one, and with a
+  // Transposition key every draw reached. While none is found, the depth is
+  // exact.
   let horizons = 0;
+  // A draw may depend on the path's history, which the key leaves out.
+  const drawsAreHorizons = hasTranspositionKey(rules);
   // The perspective of expected values in the table (see `expectation`).
   const firstSeat = rules.seats[0];
 
@@ -272,6 +293,8 @@ async function* analyze<Position, Move, Chance>(
     if (counter.visit()) yield;
     const outcome = rules.outcome(position);
     if (outcome) {
+      // Not trusted across depths (see `hasTranspositionKey`).
+      if (drawsAreHorizons && outcome.winner === undefined) horizons++;
       return { score: terminalScore(outcome, seat, ply), pv: NO_MOVES };
     }
     if (depthLeft === 0) {
@@ -318,7 +341,7 @@ async function* analyze<Position, Move, Chance>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
-    const probe = table.probe(rules.notation.encodePosition(position));
+    const probe = table.probe(keyOf(position));
     const entry = probe.entry;
     if (entry !== undefined && entry.depth >= depth) {
       const score = fromTableScore(entry.score, ply);
@@ -395,7 +418,7 @@ async function* analyze<Position, Move, Chance>(
     depth: number,
     ply: number,
   ): Search<number> {
-    const probe = table.probe(rules.notation.encodePosition(position));
+    const probe = table.probe(keyOf(position));
     const sign = seat === firstSeat ? 1 : -1;
     const entry = probe.entry;
     if (entry !== undefined && entry.depth >= depth) {

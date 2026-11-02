@@ -4,6 +4,7 @@ import {
   assertObjectMatch,
   assertThrows,
 } from "@std/assert";
+import type { GameRules } from "@boardwright/core";
 import { MATE, MAX_EVALUATION } from "./mod.ts";
 import {
   CHUNK_SLOTS,
@@ -11,8 +12,10 @@ import {
   type Entry,
   ENTRY_BYTES,
   fromTableScore,
+  hasTranspositionKey,
   MAX_TABLE_BYTES,
   SLOT_BYTES,
+  tableKey,
   toTableScore,
   type TranspositionTable,
 } from "./table.ts";
@@ -259,4 +262,31 @@ Deno.test("forced results are stored counted from the Position", () => {
     assertEquals(toTableScore(score, 3), score);
     assertEquals(fromTableScore(score, 3), score);
   }
+});
+
+Deno.test("tableKey: the Game's Transposition key, else encodePosition (hasTranspositionKey)", () => {
+  // Positions are [stones, plies]; plies are history the key may leave out.
+  type P = readonly [number, number];
+  const rules: GameRules<P, string> = {
+    id: "toy",
+    name: "Toy",
+    seats: ["a", "b"],
+    initialPosition: () => [3, 0],
+    toMove: () => "a",
+    legalMoves: () => [],
+    play: (p) => p,
+    outcome: () => undefined,
+    notation: {
+      encodePosition: ([n, plies]) => `${n}@${plies}`,
+      decodePosition: () => [3, 0],
+      encodeMove: String,
+      decodeMove: String,
+    },
+  };
+  assertEquals(tableKey(rules)([2, 5]), "2@5");
+  assertEquals(hasTranspositionKey(rules), false);
+  const keyed = { ...rules, transpositionKey: ([n]: P) => `${n}` };
+  assertEquals(tableKey(keyed)([2, 5]), "2");
+  assertEquals(tableKey(keyed)([2, 7]), "2");
+  assertEquals(hasTranspositionKey(keyed), true);
 });

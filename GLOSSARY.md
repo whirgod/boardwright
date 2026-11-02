@@ -88,6 +88,10 @@ _Avoid_: Variation, PV (acceptable as shorthand in engine code)
 An Engine's evaluation of a Line from the perspective of the Seat to move: either a heuristic value or a forced win or loss in a number of Plies.
 _Avoid_: Eval, rating
 
+**Transposition key**:
+What Positions share when they play alike from here on: the pieces, the Seat to move and whatever else decides the legal Moves, but not the earlier play that only decides draws (repetitions, move clocks). Positions reached by different Move orders share it.
+_Avoid_: Hash, Zobrist key, position key
+
 ### Hosting
 
 **Seat token**:

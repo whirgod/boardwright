@@ -1,6 +1,8 @@
 /**
  * A transposition table: what earlier searches found out about a Position,
- * looked up by the Position's key (its `Notation.encodePosition` text).
+ * looked up by the Position's key ({@link tableKey}: the Game's Transposition
+ * key, `GameRules.transpositionKey`, if it supplies one, else the Position's
+ * `Notation.encodePosition` text).
  *
  * An entry holds the best Move found (to search it first next time) and the
  * score, with how far it can be trusted: how deep the search went, and
@@ -9,9 +11,10 @@
  * from the root, because the same Position can be reached at different
  * plies ({@link toTableScore}).
  *
- * Keys are exact, so a hit is never another Position's entry, but they can
- * be long: a key with a long repetition history runs to a few kilobytes. So
- * the table is bounded by a memory budget in bytes. It counts each entry as
+ * Keys are stored whole (not as a numeric hash), so a hit is never the entry
+ * of another key, but they can be long: an `encodePosition` key with a long
+ * repetition history runs to a few kilobytes. So the table is bounded by a
+ * memory budget in bytes. It counts each entry as
  * {@link ENTRY_BYTES} plus its key (one byte per character, two if the key
  * has a character beyond Latin-1, as V8 then stores the whole string), and
  * each slot as {@link SLOT_BYTES}. An entry that would exceed the budget is
@@ -35,7 +38,49 @@
  * library's search.
  */
 
+import type { GameRules } from "@boardwright/core";
 import { MATE_BOUND } from "./mod.ts";
+
+/**
+ * The function that keys `rules`' Positions in a table: the Game's
+ * Transposition key (`GameRules.transpositionKey`) if it supplies one, else
+ * `Notation.encodePosition`.
+ *
+ * Either way, Positions without an Outcome that share a key have the same
+ * Seat to move and legal Moves in the same order (so a stored Move index
+ * means the same Move), and with chance the same Chance events. A
+ * Transposition key may leave out earlier play that decides draws, so a
+ * search must check a Position's Outcome before it probes the table, should
+ * not trust a draw across depths ({@link hasTranspositionKey}), and accepts
+ * that a stored score may come from a path with other earlier play
+ * (graph-history interaction: ADR 0009).
+ */
+export function tableKey<Position, Move>(
+  rules: GameRules<Position, Move>,
+): (position: Position) => string {
+  if (hasTranspositionKey(rules)) {
+    return (position) => rules.transpositionKey!(position);
+  }
+  const notation = rules.notation;
+  return (position) => notation.encodePosition(position);
+}
+
+/**
+ * Whether {@link tableKey} is the Game's Transposition key. It may leave out
+ * earlier play that decides draws (never wins), so a draw the search reaches
+ * on one path need not be one on another path to the same key. A search then
+ * counts a draw like a horizon: a result that rests on one is stored for its
+ * depth only, never as holding at any depth, and the depth is not `solved`,
+ * so the next depth searches it again. That covers a draw on the path that
+ * stored a result, not the mirror case: a decisive result stored on one path
+ * may answer on another whose history would have drawn inside it, at any
+ * depth, and so still end a search early as `solved` (accepted, ADR 0009).
+ */
+export function hasTranspositionKey<Position, Move>(
+  rules: GameRules<Position, Move>,
+): boolean {
+  return typeof rules.transpositionKey === "function";
+}
 
 /**
  * What a fail-soft alpha-beta search of window (alpha, beta) returned: the
@@ -49,8 +94,8 @@ export type Bound = "exact" | "lower" | "upper";
 export interface Entry {
   /**
    * Index of the best Move found in `rules.legalMoves(position)`, or -1 if
-   * none (e.g. a pending Chance event). The key determines the Position, so
-   * the same key lists the same Moves in the same order.
+   * none (e.g. a pending Chance event). Positions without an Outcome that
+   * share a key list the same Moves in the same order ({@link tableKey}).
    */
   readonly move: number;
   /**

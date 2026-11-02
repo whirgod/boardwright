@@ -31,7 +31,10 @@ algorithm. Depends only on `core` and knows nothing about chance.
   (Infinity when no horizon was hit), and the mate-distance conversion `toTableScore` /
   `fromTableScore` (forced results are stored counted from the Position, which may recur at
   another ply). It only stores and finds entries: whose perspective a score takes and when it
-  may answer a visit is up to the library.
+  may answer a visit is up to the library. `tableKey(rules)` is the key both libraries use:
+  the Game's Transposition key (`GameRules.transpositionKey`, ADR 0009) if it supplies one,
+  else `Notation.encodePosition`; `hasTranspositionKey(rules)` tells which (then both count a
+  draw like a horizon).
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -84,7 +87,8 @@ export const engine = createMinimaxEngine({
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
-- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`:
+- Transposition table (`@boardwright/engine-search/table`), keyed by `tableKey(rules)` (the
+  Game's Transposition key, else `Notation.encodePosition`):
   tries the best Move of the previous depth first (hash Move) and reuses stored scores where
   sound (searched at least as deep, bound settles the window, forced results counted from the
   Position, a stored horizon still counts against `solved`). Scores inside the window are
@@ -100,16 +104,26 @@ export const engine = createMinimaxEngine({
   lowered for quiet Moves tried in vain, halved every depth, capped (65,536 entries). Its key is
   the `encodeMove` text unless the Engine supplies a cheaper `moveKey` (chess-minimax: squares). The hook runs once per Move at every interior node (once more for a Move that causes a cutoff); ordering never changes a value, only
   the node count.
-- The key must determine everything the search sees: equal `encodePosition` texts must have the
-  same legal Moves in the same order, the same Seat to move and Outcome, and the same future
-  (repetition history, move clocks). A Notation that leaves part of the Position out makes stored
-  scores wrong.
+- The key requirement is the Game's contract (checked by its contract kit): Positions without an
+  Outcome that share a key have the same Seat to move and legal Moves in the same order (a
+  stored Move is an index into `legalMoves`). An `encodePosition` key also fixes the Outcomes
+  that follow (repetition history, move clocks). A Transposition key (`GameRules.transpositionKey`;
+  chess, checkers and nine men's morris supply one) leaves out that earlier play, which decides
+  only draws, so Move orders that reach the same Position share entries. The search checks a
+  Position's Outcome before it probes the table, so a draw by repetition is never answered from
+  it, and counts every draw it reaches like a horizon (`hasTranspositionKey`): a result resting on
+  a draw holds for its depth only, and the depth is not `solved`, so the next depth searches it
+  again (a keyed search that reaches a draw ends only at its limits). A stored score may still
+  come from a path with other earlier play, also a decisive result solved on a path where another
+  path's history would have drawn it, which can end a search early as wrongly `solved`
+  (graph-history interaction, accepted as in most engines: ADR 0009).
 - One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
   (`DEFAULT_TABLE_BYTES` = 256 MiB, 0 = no table; the server runs up to 4 searches at once, so
   the worst case is about 1 GiB). The table grows with the search (its slots are allocated on
   first use), so short searches stay small. It counts each entry as 160 bytes plus its key
-  (V8 needs about 100-110 bytes plus the key). Keys are exact and can be long: from a few dozen
-  characters to about 2,000 in a quiet chess endgame with a long repetition history. An entry
+  (V8 needs about 100-110 bytes plus the key). Keys are stored whole and an `encodePosition` key
+  can be long: from a few dozen characters to about 2,000 in a quiet chess endgame with a long
+  repetition history (a Transposition key leaves the history out). An entry
   that would exceed the budget is not stored; deeper entries win a slot, entries from earlier
   depths give way (also when the budget is full).
 
@@ -142,8 +156,9 @@ export const engine = createExpectiminimaxEngine({
   _cardinal_ evaluations (e.g. expected points), unlike minimax, which only compares them.
 - A pending Position without `chanceEvents` (a Game bug) throws a descriptive `TypeError`.
 - Games without chance are refused with a `TypeError` (use minimax).
-- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`,
-  with the same key requirement as minimax (a pending Chance event must also list the same
+- Transposition table (`@boardwright/engine-search/table`), keyed by `tableKey(rules)` (the
+  Game's Transposition key, else `Notation.encodePosition`), with the same key requirement and
+  the same handling of draws as minimax (a pending Chance event must also list the same
   results). Decision nodes use it as minimax does: hash Move first, stored scores reused where
   sound, scores inside the window searched again so Lines stay complete. A Chance node stores
   its expected value (exact, as every result gets a full window, and with no Move), and any
@@ -171,15 +186,20 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 - `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
 - `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
   opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked". Move ordering: hash Move, then
-  Moves that close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7).
+  Moves that close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7). The
+  Game's Transposition key (board, Seat, hands) lets Move orders share table entries in the
+  moving phase (-11% to -17% nodes at depth 6 and 7, #83).
 - `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
-  guards and central squares.
+  guards and central squares. The Game's Transposition key lets king Moves in any order share
+  table entries (-40% to -59% nodes in a kings endgame at depth 10 and 12, #83).
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
   switching to an endgame table. Move ordering: the library's transposition table (hash Move), then
   captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77%
-  nodes at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks
-  and repetition history, so few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
+  nodes at depth 5, -32% to -97% at depth 6), then quiet Moves. The table is keyed by the chess
+  Transposition key (no move clocks or repetition history), so Move orders that reach the same
+  Position share entries (-1% to -14% nodes at depth 5 and 6, #83); use `maxDepth` (4-5) or
+  `maxTimeMs`.
   Quiescence search (`quiescence`): captures (en passant included) and queen promotions past the
   horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); where stand pat is
   allowed, captures that lose material by static exchange evaluation (`see`) are dropped and
