@@ -2,6 +2,7 @@ import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type {
   Analysis,
   ChanceGameRules,
+  Score,
   SearchLimits,
   Seat,
 } from "@boardwright/core";
@@ -397,7 +398,9 @@ testEachBudget(
 /**
  * Plain expectiminimax without pruning, straight from the definition, as a
  * reference for the pruned search: value of `p` for `seat` with `depth` Moves
- * left, `ply` Moves after the root.
+ * left (Infinity: exhaustive), `ply` Moves after the root. With `memo`, each
+ * (Position, Seat, depth, ply) is valued once, so a Game on a graph can be
+ * searched exhaustively.
  */
 function reference<P, M, C>(
   rules: ChanceGameRules<P, M, C>,
@@ -407,9 +410,29 @@ function reference<P, M, C>(
   seat: Seat,
   depth: number,
   ply: number,
+  memo?: Map<string, number>,
+): number {
+  const key = memo &&
+    `${rules.notation.encodePosition(p)} ${seat} ${depth} ${ply}`;
+  const known = key === undefined ? undefined : memo!.get(key);
+  if (known !== undefined) return known;
+  const v = referenceOf(rules, evaluate, winValue, p, seat, depth, ply, memo);
+  if (key !== undefined) memo!.set(key, v);
+  return v;
+}
+
+function referenceOf<P, M, C>(
+  rules: ChanceGameRules<P, M, C>,
+  evaluate: (p: P, seat: Seat) => number,
+  winValue: number,
+  p: P,
+  seat: Seat,
+  depth: number,
+  ply: number,
+  memo: Map<string, number> | undefined,
 ): number {
   const ref = (q: P, s: Seat, d: number, pl: number) =>
-    reference(rules, evaluate, winValue, q, s, d, pl);
+    reference(rules, evaluate, winValue, q, s, d, pl, memo);
   const outcome = rules.outcome(p);
   if (outcome) return terminalScore(outcome, seat, ply);
   if (depth === 0) {
@@ -867,4 +890,370 @@ Deno.test("a time limit stops an unbounded search after depth 1", async () => {
 
 Deno.test("honours the Engine contract", async () => {
   await assertEngineContract(raceEngine, diceRace);
+});
+
+// --- Transposition table ---------------------------------------------------
+
+/** A table budget with three slots: Positions share them, entries are replaced. */
+const THREE_SLOTS = 600;
+
+/** Replays a Line; `play` throws if any Move is illegal. */
+function replay<P, M>(
+  rules: ChanceGameRules<P, M, unknown>,
+  position: P,
+  moves: readonly M[],
+): P {
+  return moves.reduce((p, m) => rules.play(p, m), position);
+}
+
+/**
+ * A random Game with chance on a directed acyclic graph of `size` nodes
+ * ("root", "1", "2", ...; the last 6 are terminal): decision nodes with a
+ * random Seat to move and, with probability about `chanceShare`, Chance
+ * events with 2-3 results, each Move or result leading to one of the next
+ * few nodes (a Move is named after it).
+ * Paths of different lengths meet at the same node: Positions recur at
+ * different plies, and Chance events are reached from either Seat's
+ * perspective. Evaluations are random, so horizons mislead.
+ */
+function randomChanceGraph(
+  seed: number,
+  size: number,
+  chanceShare: number,
+): Record<string, Node> {
+  const random = seededRandom(seed);
+  const name = (i: number) => (i === 0 ? "root" : String(i));
+  const nodes: Record<string, Node> = {};
+  for (let i = 0; i < size; i++) {
+    const r = random();
+    if (i >= size - 6) {
+      nodes[name(i)] = { winner: r < 0.4 ? "a" : r < 0.8 ? "b" : null };
+      continue;
+    }
+    const evaluation = Math.round(random() * 120 - 60);
+    const targets = new Set<string>();
+    const count = 1 + Math.floor(random() * 3);
+    for (let k = 0; k < count; k++) {
+      targets.add(
+        name(i + 1 + Math.floor(random() * Math.min(4, size - 1 - i))),
+      );
+    }
+    if (r < chanceShare && targets.size >= 2) {
+      const ps = targets.size === 2 ? [0.5, 0.5] : [0.25, 0.25, 0.5];
+      const chance: Record<string, readonly [number, string]> = {};
+      [...targets].forEach((t, k) => (chance[`r${t}`] = [ps[k]!, t]));
+      nodes[name(i)] = { chance, eval: evaluation };
+    } else {
+      const moves: Record<string, string> = {};
+      for (const t of targets) moves[`m${t}`] = t;
+      const seat = random() < 0.5 ? "a" : "b";
+      nodes[name(i)] = { seat, moves, eval: evaluation };
+    }
+  }
+  return nodes;
+}
+
+/**
+ * Asserts that `score`, found by a search, is `exact` if the search was
+ * `solved`. Otherwise a forced result must be real, but it may be slower
+ * than the exact one: a stored result from a deeper search lets a depth see
+ * past its horizon on one path, while a faster result on another path
+ * (e.g. Moves up to the horizon, then a roll that wins whatever the dice)
+ * waits for the next depth.
+ */
+function assertScore(
+  score: Score | undefined,
+  exact: number,
+  solved: boolean,
+  where: string,
+) {
+  const want = toScore(exact);
+  if (solved) return assertEquals(score, want, where);
+  if (score === undefined || score.kind === "value") return;
+  assertEquals(want.kind, score.kind, where);
+  assert(want.kind !== "value" && want.plies <= score.plies, where);
+}
+
+/**
+ * Checks Analysis `a` of `root` against the exhaustive value `exact` (of a
+ * Position for a Seat, a number of Moves after the root): every Score if
+ * the search was `solved` (it ran without limits), else the forced results
+ * ({@link assertScore}). In a solved search every Line is complete: it ends
+ * at an Outcome or at the next Chance event, and a forced result's plies
+ * count its Moves.
+ */
+function assertExact<P, M, C>(
+  rules: ChanceGameRules<P, M, C>,
+  exact: (p: P, seat: Seat, ply: number) => number,
+  root: P,
+  a: Analysis<M>,
+  label: string,
+  solved: boolean,
+) {
+  const seat = rules.toMove(root);
+  if (seat === undefined) {
+    assertEquals(a.lines, [], label);
+    assertScore(a.score, exact(root, a.seat!, 0), solved, label);
+    return;
+  }
+  const values = rules.legalMoves(root).map((m) =>
+    exact(rules.play(root, m), seat, 1)
+  );
+  if (solved) {
+    assertEquals(a.lines[0]!.score, toScore(Math.max(...values)), label);
+  }
+  for (const line of a.lines) {
+    const where = `${label}: ${line.moves.map(rules.notation.encodeMove)}`;
+    const exactScore = exact(rules.play(root, line.moves[0]!), seat, 1);
+    assertScore(line.score, exactScore, solved, where);
+    if (!solved) continue;
+    const end = replay(rules, root, line.moves);
+    const outcome = rules.outcome(end);
+    assert(
+      outcome !== undefined || rules.toMove(end) === undefined,
+      `${where}: the Line stops before the next Chance event`,
+    );
+    if (line.score.kind !== "value") {
+      if (outcome) assertEquals(line.moves.length, line.score.plies, where);
+      else assert(line.moves.length <= line.score.plies, where);
+    }
+  }
+}
+
+Deno.test("transpositions at different plies and perspectives keep results and mate distances exact", async () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    // Few Chance events leave long runs of decision nodes, where narrow
+    // windows make stored bounds matter; many put more Chance events at
+    // transpositions.
+    const nodes = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    const rules = treeGame(nodes);
+    const evaluate = treeEval(nodes);
+    const memo = new Map<string, number>();
+    const exact = (p: string, seat: Seat, ply: number) =>
+      reference(rules, evaluate, 100, p, seat, Infinity, ply, memo);
+    const budgets = [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT, 0];
+    for (const tableBytes of budgets) {
+      const e = createExpectiminimaxEngine({
+        rules,
+        evaluate,
+        name: "graph",
+        winValue: 100,
+        tableBytes,
+      });
+      for (const root of ["root", "1", "2", "3"]) {
+        if (rules.outcome(root)) continue;
+        const count = rules.legalMoves(root).length;
+        for (const lines of new Set([1, Math.max(count, 1)])) {
+          const label =
+            `seed ${seed} from ${root} tableBytes ${tableBytes} lines ${lines}`;
+          const all = await collect(e.analyze(root, { lines }));
+          all.forEach((a, i) =>
+            assertExact(
+              rules,
+              exact,
+              root,
+              a,
+              `${label} depth ${a.depth}`,
+              i === all.length - 1,
+            )
+          );
+          // Depth-limited: the forced results found so far are real.
+          for (const maxDepth of [2, 4]) {
+            const [a] = (await collect(e.analyze(root, { maxDepth, lines })))
+              .slice(-1);
+            assertExact(
+              rules,
+              exact,
+              root,
+              a!,
+              `${label} max ${maxDepth}`,
+              false,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+/**
+ * A random Game with chance on a layered graph: layer k holds the Positions
+ * after k Moves, `width` decision nodes (random Seat to move, 1-3 Moves into
+ * layer k + 1, sometimes terminal) and `chances` Chance events (1-3 results
+ * among layer k's decision nodes, as a roll is no Move). Paths meet only at
+ * the same ply, so each depth is exactly a plain search of that depth, while
+ * transpositions bring the same Position with different windows and from
+ * either Seat's perspective.
+ */
+function layeredGraph(
+  seed: number,
+  layers: number,
+  width: number,
+  chances: number,
+): Record<string, Node> {
+  const random = seededRandom(seed);
+  const pick = <T>(xs: readonly T[]): T =>
+    xs[Math.floor(random() * xs.length)]!;
+  const some = (xs: readonly string[], max: number) => {
+    const chosen = new Set<string>();
+    const count = 1 + Math.floor(random() * max);
+    for (let k = 0; k < count; k++) chosen.add(pick(xs));
+    return [...chosen];
+  };
+  const decisions = (k: number) =>
+    Array.from({ length: width }, (_, i) => `d${k}.${i}`);
+  const chanceEvents = (k: number) =>
+    Array.from({ length: chances }, (_, i) => `c${k}.${i}`);
+  const nodes: Record<string, Node> = {};
+  for (let k = 0; k <= layers; k++) {
+    const next = [...decisions(k + 1), ...chanceEvents(k + 1)];
+    for (const id of decisions(k)) {
+      const r = random();
+      const evaluation = Math.round(random() * 120 - 60);
+      if (k === layers || (k > 0 && r < 0.1)) {
+        nodes[id] = { winner: pick(["a", "b", null] as const) };
+        continue;
+      }
+      const moves: Record<string, string> = {};
+      for (const t of some(next, 3)) moves[`m${t}`] = t;
+      nodes[id] = { seat: pick(["a", "b"]), moves, eval: evaluation };
+    }
+    for (const id of chanceEvents(k)) {
+      const results = some(decisions(k), 3);
+      const ps = [[1], [0.5, 0.5], [0.25, 0.25, 0.5]][results.length - 1]!;
+      const chance: Record<string, readonly [number, string]> = {};
+      results.forEach((t, i) => (chance[`r${t}`] = [ps[i]!, t]));
+      nodes[id] = { chance, eval: Math.round(random() * 120 - 60) };
+    }
+  }
+  nodes.root = nodes["d0.0"]!;
+  return nodes;
+}
+
+Deno.test("matches an unpruned reference at every depth on layered graphs with transpositions", async () => {
+  // Stored bounds go wrong only now and then: many small Games, with 0-2
+  // Chance events per layer (fewer leave longer runs of decision nodes).
+  for (let seed = 1; seed <= 300; seed++) {
+    const nodes = layeredGraph(seed, 8, 6, seed % 3);
+    for (const tableBytes of [DEFAULT_TABLE_BYTES, THREE_SLOTS, ONE_SLOT]) {
+      for (const limits of [{ lines: 1 }, { lines: 2 }]) {
+        await assertMatchesReference(
+          treeGame(nodes),
+          treeEval(nodes),
+          100,
+          "root",
+          limits,
+          tableBytes,
+        );
+      }
+    }
+  }
+});
+
+Deno.test("forced results through a Chance event keep their distance at another ply", async () => {
+  // C is a win for a whatever the dice: at once, or after one more Move. It
+  // is reached at ply 1 (direct) and at ply 2 (detour). Depth 2 solves and
+  // stores it from ply 1; depth 3 reuses it at ply 2.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { detour: "D", direct: "C" } },
+    D: { seat: "a", moves: { d: "C" } },
+    C: { chance: { r1: [0.5, "AW"], r2: [0.5, "Y"] } },
+    Y: { seat: "a", moves: { y: "AW" } },
+    AW: A_WINS,
+  };
+  for (const [label, tableBytes] of BUDGETS) {
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", { lines: 2 }),
+    );
+    assertEquals(all.at(-1), {
+      depth: 3,
+      lines: [
+        { moves: ["direct"], score: { kind: "win-in", plies: 2 } },
+        { moves: ["detour", "d"], score: { kind: "win-in", plies: 3 } },
+      ],
+    }, label);
+  }
+});
+
+Deno.test("a stored result that hit the horizon keeps a depth from being solved", async () => {
+  // Only a moves. "draw" ends level at once; "detour" and "direct" reach x,
+  // which takes 3 more Moves to end (a loses) and looks bad (-5) at the
+  // horizon; x is reached at ply 2 via "detour" (searched first) and at
+  // ply 1 via "direct". Depth 3 searches x at ply 1 for 2 Moves and stores
+  // the result. Depth 4 reaches x first at ply 2, needing 2 Moves: the
+  // stored result answers (x cannot beat the draw), so x is not searched
+  // there. Then x at ply 1 is searched to its end. Depth 4 evaluates
+  // nothing, yet it is not solved: the stored result hit the horizon.
+  const chain = (x: Node): Record<string, Node> => ({
+    root: { seat: "a", moves: { draw: "DRAW", detour: "D", direct: "X" } },
+    DRAW: DRAW,
+    D: { seat: "a", moves: { d: "X" }, eval: -5 },
+    X: x,
+    X1: { seat: "a", moves: { x1: "X2" }, eval: -5 },
+    X2: { seat: "a", moves: { x2: "X3" }, eval: -5 },
+    X3: { seat: "a", moves: { x3: "LOST" }, eval: -5 },
+    LOST: B_WINS,
+  });
+  const cases = {
+    // x is a decision node: a cutoff by its stored upper bound.
+    decision: chain({ seat: "a", moves: { x: "X2" }, eval: -5 }),
+    // x is a Chance event: its stored expected value answers.
+    chance: chain({ chance: { r: [1, "X1"] }, eval: -5 }),
+  };
+  for (const [kind, nodes] of Object.entries(cases)) {
+    let evaluations = 0;
+    const evaluate = treeEval(nodes);
+    const engine = createExpectiminimaxEngine({
+      rules: treeGame(nodes),
+      evaluate: (p, seat) => (evaluations++, evaluate(p, seat)),
+      name: "chain",
+      winValue: 100,
+    });
+    const perDepth: number[] = [];
+    for await (const _ of engine.analyze("root", {})) {
+      perDepth.push(evaluations);
+      evaluations = 0;
+    }
+    assertEquals(perDepth.length, 5, kind);
+    assertEquals(perDepth[3], 0, kind);
+  }
+});
+
+/**
+ * Seat `me` moves at the root: "mine" rolls the dice at once (C), "theirs"
+ * lets the other Seat choose between rolling them (C) and a draw. C is
+ * worth 50 to `me` (a win or a draw) and so -50 to the other Seat, who
+ * draws instead.
+ */
+function perspectiveTree(me: Seat, other: Seat): Record<string, Node> {
+  return {
+    root: { seat: me, moves: { mine: "C", theirs: "T" } },
+    T: { seat: other, moves: { c: "C", d: "DRAW" } },
+    C: { chance: { r1: [0.5, "WIN"], r2: [0.5, "E"] } },
+    E: { seat: me, moves: { e: "DRAW" } },
+    WIN: { winner: me },
+    DRAW: DRAW,
+  };
+}
+
+Deno.test("a Chance event's stored value is negated for the other Seat", async () => {
+  // Depth 2 solves C for `me` (via "mine") and stores it; depth 3 reuses it
+  // for the other Seat (via "theirs"). With "a" as `me`, the table holds a's
+  // value and b reads it; with "b", b's value is stored for a to read.
+  for (const [me, other] of [["a", "b"], ["b", "a"]] as const) {
+    for (const [label, tableBytes] of BUDGETS) {
+      const all = await collect(
+        treeEngine(perspectiveTree(me, other), tableBytes).analyze("root", {
+          lines: 2,
+        }),
+      );
+      assertEquals(all.at(-1), {
+        depth: 3,
+        lines: [
+          { moves: ["mine"], score: { kind: "value", value: 50 } },
+          { moves: ["theirs", "d"], score: { kind: "value", value: 0 } },
+        ],
+      }, `${me} ${label}`);
+    }
+  }
 });

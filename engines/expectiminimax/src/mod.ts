@@ -77,6 +77,7 @@ import {
   checkTableBytes,
   createTranspositionTable,
   DEFAULT_TABLE_BYTES,
+  fromTableScore,
   toTableScore,
   tryOrder,
 } from "@boardwright/engine-search/table";
@@ -210,11 +211,16 @@ async function* analyze<Position, Move, Chance>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
-  // What the search found per Position below the root (see `decision`).
+  // What the search found per Position below the root (see `decision` and
+  // `expectation`).
   const table = createTranspositionTable(tableBytes);
   const counter = createNodeCounter();
-  // Set when a depth evaluated a horizon Position; if not, it was exact.
-  let hitHorizon = false;
+  // Horizon Positions evaluated in the current depth, counting a stored
+  // result that came from a search that hit the horizon as one. While none
+  // is found, the depth is exact.
+  let horizons = 0;
+  // The perspective of expected values in the table (see `expectation`).
+  const firstSeat = rules.seats[0];
 
   /**
    * The value of `position` from `seat`'s perspective, searching `depthLeft`
@@ -235,7 +241,7 @@ async function* analyze<Position, Move, Chance>(
       return { score: terminalScore(outcome, seat, ply), pv: NO_MOVES };
     }
     if (depthLeft === 0) {
-      hitHorizon = true;
+      horizons++;
       const score = horizonScore(
         evaluate(position, seat),
         () => rules.notation.encodePosition(position),
@@ -261,6 +267,14 @@ async function* analyze<Position, Move, Chance>(
    * Decision node: fail-soft negamax over the Moves of `seat`, who is to
    * move in `position`; `depth` >= 1. The best Move found one depth
    * shallower (the hash Move, from the table) is searched first.
+   *
+   * A result stored in the table answers without a search if it was
+   * searched at least as deep and settles the window: a lower bound >=
+   * `beta` fails high, an upper bound <= `alpha` fails low (an exact score
+   * is both bounds). A score inside the window is searched again (its hash
+   * Move first), as the caller needs its principal variation, which the
+   * table does not keep. Scores are stored from `seat`'s perspective, the
+   * Seat to move.
    */
   function* decision(
     position: Position,
@@ -272,9 +286,22 @@ async function* analyze<Position, Move, Chance>(
   ): Search<Result<Move>> {
     const probe = table.probe(rules.notation.encodePosition(position));
     const entry = probe.entry;
-    // The window as given (`alpha` rises while searching), to tell
-    // afterwards what the result is.
+    if (entry !== undefined && entry.depth >= depth) {
+      const score = fromTableScore(entry.score, ply);
+      if (
+        (entry.bound !== "upper" && score >= beta) ||
+        (entry.bound !== "lower" && score <= alpha)
+      ) {
+        // Its horizon is ours: a depth is not solved by skipping a search.
+        if (entry.depth < Infinity) horizons++;
+        return { score, pv: NO_MOVES };
+      }
+    }
+
+    // The window as given (`alpha` rises while searching), and the horizons
+    // so far, to tell afterwards what the result is and if it is solved.
     const alpha0 = alpha;
+    const horizons0 = horizons;
     const moves = rules.legalMoves(position);
     // An index out of range (only if equal keys list different Moves, see
     // `ExpectiminimaxOptions.rules`) counts as no hash Move.
@@ -306,7 +333,8 @@ async function* analyze<Position, Move, Chance>(
       // After a fail-low every Move is only an upper bound, and the best of
       // them says little: keep an earlier depth's hash Move instead.
       move: bound === "upper" && hashMove >= 0 ? hashMove : bestIndex,
-      depth,
+      // Without a horizon below, the result holds at any depth.
+      depth: horizons === horizons0 ? Infinity : depth,
       score: toTableScore(best.score, ply),
       bound,
     });
@@ -315,15 +343,34 @@ async function* analyze<Position, Move, Chance>(
 
   /**
    * Chance node: the expected value of the Chance event pending in
-   * `position`, from `seat`'s perspective. Every result is searched with a
-   * full window, because each one contributes to the average.
+   * `position`, from `seat`'s perspective, searching `depth` more Moves.
+   * Every result is searched with a full window, because each one
+   * contributes to the average, so the value is exact (for that depth).
+   *
+   * The table keeps it, with no Move, and a stored value searched at least
+   * as deep answers any later visit: the Line ends here anyway. `seat` is
+   * not a Seat to move but the parent's, so the same Chance event is valued
+   * for either Seat. The table holds the first Seat's value; the other
+   * Seat's is its negation. That is exact: below a Chance event, horizons
+   * are evaluated for the Seat that just moved and every other value is
+   * negamax, so the two Seats' values differ only in sign.
    */
   function* expectation(
     position: Position,
     seat: Seat,
-    depthLeft: number,
+    depth: number,
     ply: number,
   ): Search<number> {
+    const probe = table.probe(rules.notation.encodePosition(position));
+    const sign = seat === firstSeat ? 1 : -1;
+    const entry = probe.entry;
+    if (entry !== undefined && entry.depth >= depth) {
+      // Its horizon is ours: a depth is not solved by skipping a search.
+      if (entry.depth < Infinity) horizons++;
+      return sign * fromTableScore(entry.score, ply);
+    }
+
+    const horizons0 = horizons;
     let expected = 0;
     let slowestWin = Infinity; // smallest score among forced wins
     let slowestLoss = -Infinity; // largest score among forced losses
@@ -343,7 +390,7 @@ async function* analyze<Position, Move, Chance>(
       const { score } = yield* value(
         next,
         seat,
-        depthLeft,
+        depth,
         ply,
         -Infinity,
         Infinity,
@@ -361,9 +408,19 @@ async function* analyze<Position, Move, Chance>(
       }
     }
     // Forced whatever the dice: keep the win-in / loss-in, counting the slowest.
-    if (wins === results.length) return slowestWin;
-    if (losses === results.length) return slowestLoss;
-    return expected;
+    const score = wins === results.length
+      ? slowestWin
+      : losses === results.length
+      ? slowestLoss
+      : expected;
+    probe.store({
+      move: -1,
+      // Without a horizon below, the value holds at any depth.
+      depth: horizons === horizons0 ? Infinity : depth,
+      score: toTableScore(sign * score, ply),
+      bound: "exact",
+    });
+    return score;
   }
 
   /** One depth from a Position where `seat` is to move: multi-PV over its Moves. */
@@ -371,7 +428,7 @@ async function* analyze<Position, Move, Chance>(
     seat: Seat,
     depth: number,
   ): Search<Iteration<Move>> {
-    hitHorizon = false;
+    horizons = 0;
     table.nextIteration();
     const results = yield* rankRootMoves(
       order,
@@ -382,7 +439,7 @@ async function* analyze<Position, Move, Chance>(
     order = results.map((r) => r.pv[0]!);
     return {
       analysis: { depth, lines: toLines(results, wanted) },
-      solved: !hitHorizon,
+      solved: horizons === 0,
     };
   }
 
@@ -391,12 +448,12 @@ async function* analyze<Position, Move, Chance>(
     seat: Seat,
     depth: number,
   ): Search<Iteration<Move>> {
-    hitHorizon = false;
+    horizons = 0;
     table.nextIteration();
     const score = yield* expectation(root, seat, depth, 0);
     return {
       analysis: { depth, lines: [], score: toScore(score), seat },
-      solved: !hitHorizon,
+      solved: horizons === 0,
     };
   }
 
