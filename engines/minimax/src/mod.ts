@@ -108,8 +108,13 @@ export interface MinimaxOptions<Position, Move> {
   readonly tableBytes?: number;
 }
 
-/** Default memory budget of the transposition table: 32 MiB per search. */
-export const DEFAULT_TABLE_BYTES = 32 * 2 ** 20;
+/**
+ * Default memory budget of the transposition table: 256 MiB per search. The
+ * table grows with the search, so short searches use little. The server runs
+ * up to 4 searches at once (Worker memory is not capped), so the worst case
+ * is about 1 GiB.
+ */
+export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
 
 /**
  * Creates an Engine that searches with negamax + alpha-beta and iterative
