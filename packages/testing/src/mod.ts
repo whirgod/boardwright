@@ -102,6 +102,15 @@ export function assertChanceGameRulesContract<Position, Move, Chance>(
 /** One step of a playout: a Move or a Chance event, in Notation. */
 type Step = { readonly chance: boolean; readonly text: string };
 
+/** Chance events of `position` as text, in order, with probabilities. */
+const showChance = <Position, Move, Chance>(
+  c: ChanceGameRules<Position, Move, Chance>,
+  position: Position,
+) =>
+  c.chanceEvents(position).map((e) =>
+    `${c.notation.encodeChance(e.chance)}@${e.probability}`
+  );
+
 const showSteps = (steps: readonly Step[]) =>
   steps.map((s) => (s.chance ? `[${s.text}]` : s.text)).join(" ");
 
@@ -301,11 +310,11 @@ function runContract<Position, Move, Chance>(
         const pending = chance !== undefined && seat === undefined &&
           outcome === undefined;
         if (chance) {
-          const show = () =>
-            chance.chanceEvents(position).map((e) =>
-              `${chance.notation.encodeChance(e.chance)}@${e.probability}`
-            );
-          assertEquals(show(), show(), "chanceEvents is not stable");
+          assertEquals(
+            showChance(chance, position),
+            showChance(chance, position),
+            "chanceEvents is not stable",
+          );
         }
         // A decoded Position must play identically (transposition tables key
         // on the encoded text): same Seat, Outcome, legal Moves in order.
@@ -317,8 +326,8 @@ function runContract<Position, Move, Chance>(
             "decoded position has a different toMove",
           );
           assertEquals(
-            JSON.stringify(rules.outcome(q)),
-            JSON.stringify(outcome),
+            rules.outcome(q),
+            outcome,
             "decoded position has a different outcome",
           );
           assertEquals(
@@ -327,13 +336,9 @@ function runContract<Position, Move, Chance>(
             "decoded position has different legalMoves (set or order)",
           );
           if (chance) {
-            const show = (pos: Position) =>
-              chance.chanceEvents(pos).map((e) =>
-                `${chance.notation.encodeChance(e.chance)}@${e.probability}`
-              );
             assertEquals(
-              show(q),
-              show(position),
+              showChance(chance, q),
+              showChance(chance, position),
               "decoded position has different chanceEvents",
             );
           }

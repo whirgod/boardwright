@@ -302,3 +302,21 @@ Deno.test("rejects a Notation that reorders legal Moves after decoding", () => {
     "different legalMoves",
   );
 });
+
+Deno.test("rejects a Notation whose decoded Position has another Outcome", () => {
+  // Decoded Positions forget that the game is over.
+  type Q = P & { readonly dec?: boolean };
+  const forgetful: GameRules<Q, string> = {
+    ...nim,
+    outcome: (p) => p.dec ? undefined : nim.outcome(p),
+    notation: {
+      ...nim.notation,
+      decodePosition: (t) => ({ ...nim.notation.decodePosition(t), dec: true }),
+    },
+  };
+  assertThrows(
+    () => assertGameRulesContract(forgetful),
+    Error,
+    "different outcome",
+  );
+});

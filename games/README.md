@@ -27,13 +27,14 @@ Deno.test("satisfies the GameRules contract", () => {
 
 It plays seeded random Matches and checks: `toMove`/`outcome` consistency, legal Moves in
 non-terminal and none in terminal Positions, `play` not mutating its input, Position and Move
-Notation round-trips (a decoded Position must have the same Seat, Outcome and legal Moves in the same order, so `encodePosition` must include all play-relevant state), `decode*` throwing on garbage (extend with `garbage: [...]`), and replay
-determinism. Failures print the seed and the Move list. Add game-specific rule tests next to it.
+Notation round-trips, `decode*` throwing on garbage (extend with `garbage: [...]`), and replay
+determinism. A decoded Position must play identically (same Seat, Outcome and legal Moves in
+the same order), so `encodePosition` must include all play-relevant state. Failures print the seed and the Move list. Add game-specific rule tests next to it.
 
 A Game with chance (dice, ADR 0005) implements `ChanceGameRules` (`chanceEvents`,
 `resolveChance`, `encodeChance`/`decodeChance`) and runs `assertChanceGameRulesContract`
 instead: the same checks with Chance events resolved at random by their probabilities, plus
-probabilities summing to 1, every result resolving, nothing pending or resolvable outside a
+identical `chanceEvents` for decoded Positions, probabilities summing to 1, every result resolving, nothing pending or resolvable outside a
 pending Chance event, and replay through Chance events (shown as `[result]` in failures).
 `diceRace` from `@boardwright/testing` is the smallest example; `games/backgammon` is the
 real one.
