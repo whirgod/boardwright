@@ -1083,6 +1083,28 @@ Deno.test("a Transposition key shares entries across histories; without one, enc
   assert(keyed < unkeyed * 0.9, `${keyed} vs ${unkeyed} nodes`);
 });
 
+Deno.test("with draws in the tree, a Transposition key gives the same exact Scores", async () => {
+  // Draws count like horizons with the key, so it is never solved: a depth
+  // beyond the longest path (31 plies) makes both searches exact.
+  for (let seed = 1; seed <= 20; seed++) {
+    const rules = withHistory(randomGraph(seed, 32));
+    const root = rules.initialPosition();
+    const limits = { lines: rules.legalMoves(root).length, maxDepth: 32 };
+    // Scores by root Move: tied Lines may come in another order.
+    const scores = async (r: GameRules<string, string>) => {
+      const e = createMinimaxEngine({ rules: r, name: "g", evaluate: () => 0 });
+      const a = await final(e, root, limits);
+      return a.lines.map((l) => `${l.moves[0]} ${JSON.stringify(l.score)}`)
+        .sort();
+    };
+    assertEquals(
+      await scores(rules),
+      await scores(withoutKey(rules)),
+      `seed ${seed}`,
+    );
+  }
+});
+
 Deno.test("an Outcome decided by history is never answered from the table", async () => {
   // x is lost for a (in 3 more plies), unless reached through viaQ: then
   // its history makes it a draw (like a repetition), with the same key. x

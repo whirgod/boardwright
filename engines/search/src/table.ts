@@ -71,7 +71,10 @@ export function tableKey<Position, Move>(
  * on one path need not be one on another path to the same key. A search then
  * counts a draw like a horizon: a result that rests on one is stored for its
  * depth only, never as holding at any depth, and the depth is not `solved`,
- * so the next depth searches it again (ADR 0009).
+ * so the next depth searches it again. That covers a draw on the path that
+ * stored a result, not the mirror case: a decisive result stored on one path
+ * may answer on another whose history would have drawn inside it, at any
+ * depth, and so still end a search early as `solved` (accepted, ADR 0009).
  */
 export function hasTranspositionKey<Position, Move>(
   rules: GameRules<Position, Move>,

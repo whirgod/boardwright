@@ -1412,6 +1412,38 @@ Deno.test("a Transposition key shares entries across histories; without one, enc
   assert(keyed < unkeyed * 0.9, `${keyed} vs ${unkeyed} Moves`);
 });
 
+Deno.test("with draws in the tree, a Transposition key gives the same exact Scores", async () => {
+  // Draws count like horizons with the key, so it is never solved: a depth
+  // beyond the longest path (31 Moves) makes both searches exact.
+  for (let seed = 1; seed <= 20; seed++) {
+    const nodes = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    const rules = withHistory(treeGame(nodes));
+    const evaluate = treeEval(nodes);
+    const root = rules.initialPosition();
+    const limits = {
+      lines: Math.max(1, rules.legalMoves(root).length),
+      maxDepth: 32,
+    };
+    // Scores by root Move: tied Lines may come in another order.
+    const scores = async (r: ChanceGameRules<string, string, string>) => {
+      const e = createExpectiminimaxEngine({
+        rules: r,
+        evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+        name: "graph",
+        winValue: 100,
+      });
+      const [a] = (await collect(e.analyze(root, limits))).slice(-1);
+      return [
+        JSON.stringify(a!.score),
+        ...a!.lines.map((l) => `${l.moves[0]} ${JSON.stringify(l.score)}`)
+          .sort(),
+      ];
+    };
+    const { transpositionKey: _, ...noKey } = rules;
+    assertEquals(await scores(rules), await scores(noKey), `seed ${seed}`);
+  }
+});
+
 Deno.test("an Outcome decided by history is never answered from the table", async () => {
   // The Chance event C always ends in b's win, unless reached through Q:
   // then its history makes it a draw (like a repetition), with the same

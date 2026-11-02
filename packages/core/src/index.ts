@@ -112,8 +112,8 @@ export interface GameRules<Position, Move> {
    * keys, one may be a draw by repetition while the other is in play, and so
    * differ in the value of what follows. Engines check the Outcome before
    * they use what they stored for a key, do not trust a draw across depths,
-   * and accept that a stored score may come from other earlier play
-   * (graph-history interaction, ADR 0009).
+   * and accept that a stored score, even a solved one, may come from other
+   * earlier play (graph-history interaction, ADR 0009).
    */
   transpositionKey?(position: Position): string;
 }

@@ -72,8 +72,9 @@
  * not `solved`, so the next depth searches it again (with such a key, a
  * search that reaches a draw only ends at its limits). A stored score may
  * still come from a path with other earlier play, e.g. one where a
- * repetition was near: the graph-history interaction most engines accept
- * (ADR 0009).
+ * repetition was near, and a decisive result solved on one path may answer
+ * on another whose history would have drawn it, even ending a search early
+ * as `solved`: the graph-history interaction most engines accept (ADR 0009).
  *
  * The plumbing (iterative deepening, limits, time and abort handling,
  * multi-PV bookkeeping, the score scale) lives in the shared search harness

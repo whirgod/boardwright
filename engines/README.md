@@ -114,8 +114,9 @@ export const engine = createMinimaxEngine({
   it, and counts every draw it reaches like a horizon (`hasTranspositionKey`): a result resting on
   a draw holds for its depth only, and the depth is not `solved`, so the next depth searches it
   again (a keyed search that reaches a draw ends only at its limits). A stored score may still
-  come from a path with other earlier play (graph-history interaction, accepted as in most
-  engines: ADR 0009).
+  come from a path with other earlier play, also a decisive result solved on a path where another
+  path's history would have drawn it, which can end a search early as wrongly `solved`
+  (graph-history interaction, accepted as in most engines: ADR 0009).
 - One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
   (`DEFAULT_TABLE_BYTES` = 256 MiB, 0 = no table; the server runs up to 4 searches at once, so
   the worst case is about 1 GiB). The table grows with the search (its slots are allocated on

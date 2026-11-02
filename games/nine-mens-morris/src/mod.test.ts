@@ -55,8 +55,9 @@ const enc = (moves: readonly MorrisMove[]) =>
  * Positions for the kit's `transpositionKey` checks that random playouts
  * rarely meet: the same board and Seat to move with other pieces in hand
  * (placing or flying; Black placing its last piece or moving). A key that
- * leaves out either hand merges Positions that play differently, which the
- * kit then reports.
+ * leaves out Black's hand, or both hands, merges Positions that play
+ * differently, which the kit then reports. (White's hand alone may be left
+ * out: in a Position that decodes, Black's hand and the Seat to move fix it.)
  */
 const KEY_POSITIONS = [
   pos({ white: "a1 c3 e5", black: "a7 g1 e3", hand: [6, 6] }),

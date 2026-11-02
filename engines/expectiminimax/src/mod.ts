@@ -81,7 +81,9 @@
  * result that rests on a draw is stored for its depth only and the depth is
  * not `solved` (with such a key, a search that reaches a draw only ends at
  * its limits). A stored value may still come from a path with other earlier
- * play (graph-history interaction, accepted: ADR 0009).
+ * play, also a decisive one solved on a path where another path's history
+ * would have drawn it, which can end a search early as `solved`
+ * (graph-history interaction, accepted: ADR 0009).
  *
  * Where a Chance event separates every two Moves, as in backgammon,
  * alpha-beta prunes nothing (every decision node's children are Chance

@@ -21,15 +21,18 @@ const play = (p: ChessPosition, ...uci: string[]): ChessPosition =>
 
 /**
  * Positions for the kit's `transpositionKey` checks that random playouts
- * rarely meet: the same placement with and without castling rights, and with
- * a usable, an unusable and no en passant square. A key that leaves out
- * castling or a usable en passant square merges Positions that play
+ * rarely meet: the same placement with and without castling rights (for
+ * either Seat to move, so each Seat's rights matter), and with a usable, an
+ * unusable and no en passant square. A key that leaves out any castling
+ * right or a usable en passant square merges Positions that play
  * differently, which the kit then reports.
  */
 const KEY_POSITIONS = [
   "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
   "r3k2r/8/8/8/8/8/8/R3K2R w Kq - 0 1",
   "r3k2r/8/8/8/8/8/8/R3K2R w - - 0 1",
+  "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
+  "r3k2r/8/8/8/8/8/8/R3K2R b KQ - 0 1",
   "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2",
   "4k3/8/8/3pP3/8/8/8/4K3 w - - 0 2",
   "4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1",
