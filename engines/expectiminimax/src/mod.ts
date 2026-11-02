@@ -72,11 +72,33 @@ import {
   toScore,
   validateLimits,
 } from "@boardwright/engine-search";
+import {
+  type Bound,
+  checkTableBytes,
+  createTranspositionTable,
+  DEFAULT_TABLE_BYTES,
+  toTableScore,
+  tryOrder,
+} from "@boardwright/engine-search/table";
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
 export { MAX_EVALUATION } from "@boardwright/engine-search";
 
+/**
+ * Default memory budget of the transposition table: 256 MiB per search, about
+ * 1 GiB with the server's 4 concurrent searches (see
+ * `@boardwright/engine-search/table`).
+ */
+export { DEFAULT_TABLE_BYTES };
+
 export interface ExpectiminimaxOptions<Position, Move, Chance> {
+  /**
+   * The Game. Its `notation.encodePosition` is the transposition table's key,
+   * so it must encode everything that matters for the rest of the Match:
+   * equal texts must mean the same legal Moves in the same order, the same
+   * Seat to move (or the same pending Chance event, with the same results
+   * and probabilities) and Outcome, and the same future.
+   */
   readonly rules: ChanceGameRules<Position, Move, Chance>;
   /**
    * Heuristic value of a non-terminal Position from the perspective of
@@ -98,6 +120,14 @@ export interface ExpectiminimaxOptions<Position, Move, Chance> {
    * In (0, {@link MAX_EVALUATION}].
    */
   readonly winValue: number;
+  /**
+   * Memory budget of the transposition table in bytes, an integer from 0 (no
+   * table) to 2^32 (default {@link DEFAULT_TABLE_BYTES}). Each `analyze`
+   * call gets its own table, which grows up to this budget as estimated by
+   * `@boardwright/engine-search/table`: an entry counts as about 160 bytes
+   * plus its key (the encoded Position).
+   */
+  readonly tableBytes?: number;
 }
 
 /**
@@ -116,14 +146,20 @@ export interface ExpectiminimaxOptions<Position, Move, Chance> {
  *   perspective, where `seat` is the Seat that moves after the roll if every
  *   result agrees on it, otherwise the Game's first Seat.
  *
- * Throws a TypeError for rules without chance (use the minimax library).
- * Assumes two Seats with zero-sum Outcomes; a Seat may move several times in
- * a row.
+ * Throws a TypeError for rules without chance (use the minimax library), and
+ * a RangeError for an invalid `winValue` or `tableBytes`. Assumes two Seats
+ * with zero-sum Outcomes; a Seat may move several times in a row.
  */
 export function createExpectiminimaxEngine<Position, Move, Chance>(
   options: ExpectiminimaxOptions<Position, Move, Chance>,
 ): Engine<Position, Move> {
-  const { rules, evaluate, name, winValue } = options;
+  const {
+    rules,
+    evaluate,
+    name,
+    winValue,
+    tableBytes = DEFAULT_TABLE_BYTES,
+  } = options;
   // Callers that bypass the type; a plain Game belongs to minimax (ADR 0005).
   if (!hasChance(rules as GameRules<Position, Move>)) {
     throw new TypeError(
@@ -135,6 +171,7 @@ export function createExpectiminimaxEngine<Position, Move, Chance>(
       `winValue must be in (0, ${MAX_EVALUATION}], got ${winValue}`,
     );
   }
+  checkTableBytes(tableBytes);
 
   return {
     name,
@@ -142,7 +179,7 @@ export function createExpectiminimaxEngine<Position, Move, Chance>(
     analyze(position, limits, signal) {
       validateLimits(limits);
       return analyze(
-        { rules, evaluate, winValue },
+        { rules, evaluate, winValue, tableBytes },
         position,
         limits,
         signal,
@@ -155,10 +192,11 @@ interface Setup<Position, Move, Chance> {
   readonly rules: ChanceGameRules<Position, Move, Chance>;
   readonly evaluate: (position: Position, seat: Seat) => number;
   readonly winValue: number;
+  readonly tableBytes: number;
 }
 
 async function* analyze<Position, Move, Chance>(
-  { rules, evaluate, winValue }: Setup<Position, Move, Chance>,
+  { rules, evaluate, winValue, tableBytes }: Setup<Position, Move, Chance>,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -172,6 +210,8 @@ async function* analyze<Position, Move, Chance>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
+  // What the search found per Position below the root (see `decision`).
+  const table = createTranspositionTable(tableBytes);
   const counter = createNodeCounter();
   // Set when a depth evaluated a horizon Position; if not, it was exact.
   let hitHorizon = false;
@@ -219,7 +259,8 @@ async function* analyze<Position, Move, Chance>(
 
   /**
    * Decision node: fail-soft negamax over the Moves of `seat`, who is to
-   * move in `position`; `depth` >= 1.
+   * move in `position`; `depth` >= 1. The best Move found one depth
+   * shallower (the hash Move, from the table) is searched first.
    */
   function* decision(
     position: Position,
@@ -229,18 +270,46 @@ async function* analyze<Position, Move, Chance>(
     alpha: number,
     beta: number,
   ): Search<Result<Move>> {
+    const probe = table.probe(rules.notation.encodePosition(position));
+    const entry = probe.entry;
+    // The window as given (`alpha` rises while searching), to tell
+    // afterwards what the result is.
+    const alpha0 = alpha;
+    const moves = rules.legalMoves(position);
+    // An index out of range (only if equal keys list different Moves, see
+    // `ExpectiminimaxOptions.rules`) counts as no hash Move.
+    const hashMove = entry !== undefined && entry.move < moves.length
+      ? entry.move
+      : -1;
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
-    for (const move of rules.legalMoves(position)) {
+    let bestIndex = -1;
+    for (let k = 0; k < moves.length; k++) {
+      const i = tryOrder(k, hashMove);
+      const move = moves[i]!;
       const next = rules.play(position, move);
       const r = yield* value(next, seat, depth - 1, ply + 1, alpha, beta);
       if (r.score > best.score) {
         best = { score: r.score, pv: [move, ...r.pv] };
+        bestIndex = i;
         if (r.score > alpha) {
           alpha = r.score;
           if (alpha >= beta) break; // the Opponent will not allow this line
         }
       }
     }
+    const bound: Bound = best.score <= alpha0
+      ? "upper"
+      : best.score >= beta
+      ? "lower"
+      : "exact";
+    probe.store({
+      // After a fail-low every Move is only an upper bound, and the best of
+      // them says little: keep an earlier depth's hash Move instead.
+      move: bound === "upper" && hashMove >= 0 ? hashMove : bestIndex,
+      depth,
+      score: toTableScore(best.score, ply),
+      bound,
+    });
     return best;
   }
 
@@ -303,6 +372,7 @@ async function* analyze<Position, Move, Chance>(
     depth: number,
   ): Search<Iteration<Move>> {
     hitHorizon = false;
+    table.nextIteration();
     const results = yield* rankRootMoves(
       order,
       wanted,
@@ -322,6 +392,7 @@ async function* analyze<Position, Move, Chance>(
     depth: number,
   ): Search<Iteration<Move>> {
     hitHorizon = false;
+    table.nextIteration();
     const score = yield* expectation(root, seat, depth, 0);
     return {
       analysis: { depth, lines: [], score: toScore(score), seat },

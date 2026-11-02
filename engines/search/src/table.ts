@@ -49,19 +49,21 @@ export type Bound = "exact" | "lower" | "upper";
 export interface Entry {
   /**
    * Index of the best Move found in `rules.legalMoves(position)`, or -1 if
-   * none. The key determines the Position, so the same key lists the same
-   * Moves in the same order.
+   * none (e.g. a pending Chance event). The key determines the Position, so
+   * the same key lists the same Moves in the same order.
    */
   readonly move: number;
   /**
-   * Nominal plies searched below the Position (quiescence, if any, searched
-   * on past them), or Infinity if the search hit no horizon (every branch it
-   * looked at ended in an Outcome): then the score holds at any depth.
+   * Nominal plies (Moves) searched below the Position (minimax's quiescence,
+   * if any, searched on past them), or Infinity if the search hit no horizon
+   * (every branch it looked at ended in an Outcome): then the score holds at
+   * any depth.
    */
   readonly depth: number;
   /**
-   * The search's score, from the perspective of the Seat to move, with
-   * forced wins and losses counted from this Position ({@link toTableScore}).
+   * The search's score, from the perspective the library fixes for the
+   * Position (the Seat to move, if any), with forced wins and losses counted
+   * from this Position ({@link toTableScore}).
    */
   readonly score: number;
   readonly bound: Bound;
@@ -227,4 +229,14 @@ export function createTranspositionTable(budget: number): TranspositionTable {
       return bytes;
     },
   };
+}
+
+/**
+ * Index of the `k`-th Move to try when the Move at index `first` (the hash
+ * Move, an {@link Entry}'s `move`) goes first and the others keep the Game's
+ * order; -1: no hash Move, the Game's order.
+ */
+export function tryOrder(k: number, first: number): number {
+  if (k > first) return k;
+  return k === 0 ? first : k - 1;
 }

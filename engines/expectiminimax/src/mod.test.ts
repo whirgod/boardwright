@@ -14,7 +14,7 @@ import {
   seededRandom,
 } from "@boardwright/testing";
 import { MATE_BOUND, terminalScore, toScore } from "@boardwright/engine-search";
-import { createExpectiminimaxEngine } from "./mod.ts";
+import { createExpectiminimaxEngine, DEFAULT_TABLE_BYTES } from "./mod.ts";
 
 /**
  * A hand-written game tree with chance, for exact expected values. Positions
@@ -102,12 +102,16 @@ function treeEval(nodes: Readonly<Record<string, Node>>) {
   };
 }
 
-function treeEngine(nodes: Readonly<Record<string, Node>>, root = "root") {
+function treeEngine(
+  nodes: Readonly<Record<string, Node>>,
+  tableBytes = DEFAULT_TABLE_BYTES,
+) {
   return createExpectiminimaxEngine({
-    rules: treeGame(nodes, root),
+    rules: treeGame(nodes),
     evaluate: treeEval(nodes),
     name: "expectiminimax",
     winValue: 100,
+    tableBytes,
   });
 }
 
@@ -117,6 +121,28 @@ async function collect<Move>(
   const all: Analysis<Move>[] = [];
   for await (const a of it) all.push(a);
   return all;
+}
+
+/**
+ * A table budget with exactly one slot (and room for one entry with a short
+ * key): every Position shares it, so entries are replaced all the time.
+ */
+const ONE_SLOT = 300;
+/** Table budgets the search must give the same results with. */
+const BUDGETS = [
+  ["default", DEFAULT_TABLE_BYTES],
+  ["one slot", ONE_SLOT],
+  ["none", 0],
+] as const;
+
+/** Registers test `name` once per table budget in {@link BUDGETS}. */
+function testEachBudget(
+  name: string,
+  fn: (tableBytes: number) => Promise<void>,
+) {
+  for (const [label, tableBytes] of BUDGETS) {
+    Deno.test(`${name} (table: ${label})`, () => fn(tableBytes));
+  }
 }
 
 const A_WINS: Node = { winner: "a" };
@@ -150,111 +176,147 @@ Deno.test("engine identity", () => {
   assertEquals(engine.name, "expectiminimax");
 });
 
-Deno.test("a pending Chance event at the horizon is evaluated, not rolled", async () => {
-  const [analysis] = await collect(
-    treeEngine(GAMBLES).analyze("root", { maxDepth: 1, lines: 2 }),
-  );
-  // Depth 1 ends right after a's Move, before the roll: evaluate C1 / C2.
-  assertEquals(analysis, {
-    depth: 1,
-    lines: [
-      { moves: ["L"], score: { kind: "value", value: 5 } },
-      { moves: ["R"], score: { kind: "value", value: -5 } },
-    ],
-  });
-});
+testEachBudget(
+  "a pending Chance event at the horizon is evaluated, not rolled",
+  async (tableBytes) => {
+    const [analysis] = await collect(
+      treeEngine(GAMBLES, tableBytes).analyze("root", {
+        maxDepth: 1,
+        lines: 2,
+      }),
+    );
+    // Depth 1 ends right after a's Move, before the roll: evaluate C1 / C2.
+    assertEquals(analysis, {
+      depth: 1,
+      lines: [
+        { moves: ["L"], score: { kind: "value", value: 5 } },
+        { moves: ["R"], score: { kind: "value", value: -5 } },
+      ],
+    });
+  },
+);
 
-Deno.test("forced results mixed with others count as ±winValue (solved at depth 2)", async () => {
-  const all = await collect(treeEngine(GAMBLES).analyze("root", { lines: 2 }));
-  // Depth 2 reaches only Outcomes, so the search stops there.
-  assertEquals(all.map((a) => a.depth), [1, 2]);
-  // L: b draws in X1 (0), wins in X2: 1/4 * 0 + 3/4 * -100 = -75.
-  // R: X3 is a draw (0), X4 a win for a: 1/2 * 0 + 1/2 * 100 = 50.
-  assertEquals(all[1]!.lines, [
-    { moves: ["R"], score: { kind: "value", value: 50 } },
-    { moves: ["L"], score: { kind: "value", value: -75 } },
-  ]);
-});
+testEachBudget(
+  "forced results mixed with others count as ±winValue (solved at depth 2)",
+  async (tableBytes) => {
+    const all = await collect(
+      treeEngine(GAMBLES, tableBytes).analyze("root", { lines: 2 }),
+    );
+    // Depth 2 reaches only Outcomes, so the search stops there.
+    assertEquals(all.map((a) => a.depth), [1, 2]);
+    // L: b draws in X1 (0), wins in X2: 1/4 * 0 + 3/4 * -100 = -75.
+    // R: X3 is a draw (0), X4 a win for a: 1/2 * 0 + 1/2 * 100 = 50.
+    assertEquals(all[1]!.lines, [
+      { moves: ["R"], score: { kind: "value", value: 50 } },
+      { moves: ["L"], score: { kind: "value", value: -75 } },
+    ]);
+  },
+);
 
-Deno.test("win-in only when forced whatever the dice, counting the slowest", async () => {
-  const nodes: Record<string, Node> = {
-    root: { seat: "a", moves: { W: "C", S: "S" } },
-    // Either roll wins: at once (ply 1) or after one more Move (ply 2).
-    C: { chance: { r1: [0.5, "AW"], r2: [0.5, "Y"] } },
-    Y: { seat: "a", moves: { w: "AW" } },
-    // A safe draw.
-    S: DRAW,
-    AW: A_WINS,
-  };
-  const all = await collect(treeEngine(nodes).analyze("root", { lines: 2 }));
-  assertEquals(all.at(-1)!.lines, [
-    { moves: ["W"], score: { kind: "win-in", plies: 2 } },
-    { moves: ["S"], score: { kind: "value", value: 0 } },
-  ]);
-});
+testEachBudget(
+  "win-in only when forced whatever the dice, counting the slowest",
+  async (tableBytes) => {
+    const nodes: Record<string, Node> = {
+      root: { seat: "a", moves: { W: "C", S: "S" } },
+      // Either roll wins: at once (ply 1) or after one more Move (ply 2).
+      C: { chance: { r1: [0.5, "AW"], r2: [0.5, "Y"] } },
+      Y: { seat: "a", moves: { w: "AW" } },
+      // A safe draw.
+      S: DRAW,
+      AW: A_WINS,
+    };
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", { lines: 2 }),
+    );
+    assertEquals(all.at(-1)!.lines, [
+      { moves: ["W"], score: { kind: "win-in", plies: 2 } },
+      { moves: ["S"], score: { kind: "value", value: 0 } },
+    ]);
+  },
+);
 
-Deno.test("loss-in when every roll loses, counting the slowest", async () => {
-  const nodes: Record<string, Node> = {
-    root: { seat: "a", moves: { m: "C" } },
-    C: { chance: { r1: [0.5, "BW"], r2: [0.5, "Y"] } },
-    Y: { seat: "b", moves: { w: "BW" } },
-    BW: B_WINS,
-  };
-  const all = await collect(treeEngine(nodes).analyze("root", {}));
-  assertEquals(all.at(-1)!.lines, [
-    { moves: ["m"], score: { kind: "loss-in", plies: 2 } },
-  ]);
-});
+testEachBudget(
+  "loss-in when every roll loses, counting the slowest",
+  async (tableBytes) => {
+    const nodes: Record<string, Node> = {
+      root: { seat: "a", moves: { m: "C" } },
+      C: { chance: { r1: [0.5, "BW"], r2: [0.5, "Y"] } },
+      Y: { seat: "b", moves: { w: "BW" } },
+      BW: B_WINS,
+    };
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", {}),
+    );
+    assertEquals(all.at(-1)!.lines, [
+      { moves: ["m"], score: { kind: "loss-in", plies: 2 } },
+    ]);
+  },
+);
 
-Deno.test("Lines end at the next Chance event, also after several Moves", async () => {
-  const nodes: Record<string, Node> = {
-    // a moves twice in a row, then the dice decide.
-    root: { seat: "a", moves: { p: "Z" } },
-    Z: { seat: "a", moves: { q: "C" } },
-    C: { chance: { r1: [0.5, "Y"], r2: [0.5, "Y"] }, eval: 3 },
-    Y: { seat: "b", moves: { y: "D" } },
-    D: DRAW,
-  };
-  const all = await collect(treeEngine(nodes).analyze("root", {}));
-  assertEquals(all.map((a) => a.depth), [1, 2, 3]);
-  assertEquals(all[1]!.lines, [
-    { moves: ["p", "q"], score: { kind: "value", value: 3 } },
-  ]);
-  assertEquals(all[2]!.lines, [
-    { moves: ["p", "q"], score: { kind: "value", value: 0 } },
-  ]);
-});
+testEachBudget(
+  "Lines end at the next Chance event, also after several Moves",
+  async (tableBytes) => {
+    const nodes: Record<string, Node> = {
+      // a moves twice in a row, then the dice decide.
+      root: { seat: "a", moves: { p: "Z" } },
+      Z: { seat: "a", moves: { q: "C" } },
+      C: { chance: { r1: [0.5, "Y"], r2: [0.5, "Y"] }, eval: 3 },
+      Y: { seat: "b", moves: { y: "D" } },
+      D: DRAW,
+    };
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", {}),
+    );
+    assertEquals(all.map((a) => a.depth), [1, 2, 3]);
+    assertEquals(all[1]!.lines, [
+      { moves: ["p", "q"], score: { kind: "value", value: 3 } },
+    ]);
+    assertEquals(all[2]!.lines, [
+      { moves: ["p", "q"], score: { kind: "value", value: 0 } },
+    ]);
+  },
+);
 
-Deno.test("a pending Chance event yields its expected Score and no Lines", async () => {
-  const nodes: Record<string, Node> = {
-    root: { chance: { r1: [0.5, "A1"], r2: [0.5, "A2"] }, eval: 7 },
-    A1: { seat: "a", moves: { m: "AW", n: "D" }, eval: 30 },
-    A2: { seat: "a", moves: { m: "D" }, eval: -10 },
-    AW: A_WINS,
-    D: DRAW,
-  };
-  const all = await collect(treeEngine(nodes).analyze("root", {}));
-  // Depth counts Moves: the roll is free, then one Move of "a" ends the tree.
-  // 1/2 * 100 (forced win, mixed) + 1/2 * 0 = 50, from "a" (who moves next).
-  assertEquals(all, [
-    { depth: 1, lines: [], score: { kind: "value", value: 50 }, seat: "a" },
-  ]);
-});
+testEachBudget(
+  "a pending Chance event yields its expected Score and no Lines",
+  async (tableBytes) => {
+    const nodes: Record<string, Node> = {
+      root: { chance: { r1: [0.5, "A1"], r2: [0.5, "A2"] }, eval: 7 },
+      A1: { seat: "a", moves: { m: "AW", n: "D" }, eval: 30 },
+      A2: { seat: "a", moves: { m: "D" }, eval: -10 },
+      AW: A_WINS,
+      D: DRAW,
+    };
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", {}),
+    );
+    // Depth counts Moves: the roll is free, then one Move of "a" ends the tree.
+    // 1/2 * 100 (forced win, mixed) + 1/2 * 0 = 50, from "a" (who moves next).
+    assertEquals(all, [
+      { depth: 1, lines: [], score: { kind: "value", value: 50 }, seat: "a" },
+    ]);
+  },
+);
 
-Deno.test("a pending Chance event takes the first Seat's view when the mover depends on the roll", async () => {
-  const nodes: Record<string, Node> = {
-    root: { chance: { r1: [0.25, "A"], r2: [0.75, "B"] } },
-    A: { seat: "a", moves: { m: "AW" }, eval: 1 },
-    B: { seat: "b", moves: { m: "BW" }, eval: 1 },
-    AW: A_WINS,
-    BW: B_WINS,
-  };
-  const all = await collect(treeEngine(nodes).analyze("root", {}));
-  // 1/4 * 100 + 3/4 * -100 = -50 for "a".
-  assertEquals(all, [
-    { depth: 1, lines: [], score: { kind: "value", value: -50 }, seat: "a" },
-  ]);
-});
+testEachBudget(
+  "a pending Chance event takes the first Seat's view when the mover depends on the roll",
+  async (tableBytes) => {
+    const nodes: Record<string, Node> = {
+      root: { chance: { r1: [0.25, "A"], r2: [0.75, "B"] } },
+      A: { seat: "a", moves: { m: "AW" }, eval: 1 },
+      B: { seat: "b", moves: { m: "BW" }, eval: 1 },
+      AW: A_WINS,
+      BW: B_WINS,
+    };
+    const all = await collect(
+      treeEngine(nodes, tableBytes).analyze("root", {}),
+    );
+    // 1/4 * 100 + 3/4 * -100 = -50 for "a".
+    assertEquals(all, [
+      { depth: 1, lines: [], score: { kind: "value", value: -50 }, seat: "a" },
+    ]);
+  },
+);
 
 const race = (
   a: number,
@@ -267,46 +329,70 @@ const race = (
 const raceEval = (p: DiceRacePosition, seat: Seat) =>
   seat === "a" ? p.a - p.b : p.b - p.a;
 
-const raceEngine = createExpectiminimaxEngine({
-  rules: diceRace,
-  evaluate: raceEval,
-  name: "expectiminimax",
-  winValue: 100,
-});
+const raceEngineWith = (tableBytes: number) =>
+  createExpectiminimaxEngine({
+    rules: diceRace,
+    evaluate: raceEval,
+    name: "expectiminimax",
+    winValue: 100,
+    tableBytes,
+  });
+const raceEngine = raceEngineWith(DEFAULT_TABLE_BYTES);
 
-Deno.test("dice race: forced results through the dice", async () => {
-  // a at 5 wins with any roll.
-  assertEquals(await collect(raceEngine.analyze(race(5, 0, "a", null), {})), [
-    { depth: 1, lines: [], score: { kind: "win-in", plies: 1 }, seat: "a" },
-  ]);
-  // a at 4 cannot reach the goal; then b, at 5, wins with any roll.
-  const lost = await collect(raceEngine.analyze(race(4, 5, "a", 1), {}));
-  assertEquals(lost.at(-1)!.lines[0]!.score, { kind: "loss-in", plies: 2 });
-});
+testEachBudget(
+  "dice race: forced results through the dice",
+  async (tableBytes) => {
+    // a at 5 wins with any roll.
+    assertEquals(
+      await collect(
+        raceEngineWith(tableBytes).analyze(race(5, 0, "a", null), {}),
+      ),
+      [
+        { depth: 1, lines: [], score: { kind: "win-in", plies: 1 }, seat: "a" },
+      ],
+    );
+    // a at 4 cannot reach the goal; then b, at 5, wins with any roll.
+    const lost = await collect(
+      raceEngineWith(tableBytes).analyze(race(4, 5, "a", 1), {}),
+    );
+    assertEquals(lost.at(-1)!.lines[0]!.score, { kind: "loss-in", plies: 2 });
+  },
+);
 
-Deno.test("dice race: exact expected values per depth", async () => {
-  // a at 3, b at 5, a to roll. A 3 (p 1/4) wins at once; a 1 or 2 leaves b,
-  // at 5, to win with any roll.
-  const all = await collect(raceEngine.analyze(race(3, 5, "a", null), {}));
-  // Depth 1 evaluates after a's Move (progress difference, a's view):
-  // 1/2 * (4 - 5) + 1/4 * (5 - 5) + 1/4 * 100 = 24.5.
-  // Depth 2 is exact: 3/4 * -100 + 1/4 * 100 = -50.
-  assertEquals(all, [
-    { depth: 1, lines: [], score: { kind: "value", value: 24.5 }, seat: "a" },
-    { depth: 2, lines: [], score: { kind: "value", value: -50 }, seat: "a" },
-  ]);
-});
+testEachBudget(
+  "dice race: exact expected values per depth",
+  async (tableBytes) => {
+    // a at 3, b at 5, a to roll. A 3 (p 1/4) wins at once; a 1 or 2 leaves b,
+    // at 5, to win with any roll.
+    const all = await collect(
+      raceEngineWith(tableBytes).analyze(race(3, 5, "a", null), {}),
+    );
+    // Depth 1 evaluates after a's Move (progress difference, a's view):
+    // 1/2 * (4 - 5) + 1/4 * (5 - 5) + 1/4 * 100 = 24.5.
+    // Depth 2 is exact: 3/4 * -100 + 1/4 * 100 = -50.
+    assertEquals(all, [
+      { depth: 1, lines: [], score: { kind: "value", value: 24.5 }, seat: "a" },
+      { depth: 2, lines: [], score: { kind: "value", value: -50 }, seat: "a" },
+    ]);
+  },
+);
 
-Deno.test("dice race: Lines never continue past the next roll", async () => {
-  const all = await collect(
-    raceEngine.analyze(race(1, 1, "a", 2), { maxDepth: 4, lines: 2 }),
-  );
-  assertEquals(all.map((a) => a.depth), [1, 2, 3, 4]);
-  for (const a of all) {
-    // Both Moves are reported, and every Line stops at b's roll.
-    assertEquals(a.lines.map((l) => l.moves.length), [1, 1]);
-  }
-});
+testEachBudget(
+  "dice race: Lines never continue past the next roll",
+  async (tableBytes) => {
+    const all = await collect(
+      raceEngineWith(tableBytes).analyze(race(1, 1, "a", 2), {
+        maxDepth: 4,
+        lines: 2,
+      }),
+    );
+    assertEquals(all.map((a) => a.depth), [1, 2, 3, 4]);
+    for (const a of all) {
+      // Both Moves are reported, and every Line stops at b's roll.
+      assertEquals(a.lines.map((l) => l.moves.length), [1, 1]);
+    }
+  },
+);
 
 /**
  * Plain expectiminimax without pruning, straight from the definition, as a
@@ -367,12 +453,14 @@ async function assertMatchesReference<P, M, C>(
   winValue: number,
   position: P,
   limits: SearchLimits,
+  tableBytes = DEFAULT_TABLE_BYTES,
 ): Promise<void> {
   const engine = createExpectiminimaxEngine({
     rules,
     evaluate,
     winValue,
     name: "pruned",
+    tableBytes,
   });
   const where = `${rules.notation.encodePosition(position)} ${
     JSON.stringify(limits)
@@ -404,23 +492,27 @@ async function assertMatchesReference<P, M, C>(
   }
 }
 
-Deno.test("matches an unpruned reference on sampled dice races", async () => {
-  for (const [a, b] of [[0, 0], [2, 3], [4, 1], [3, 4], [5, 2]] as const) {
-    for (const turn of ["a", "b"] as const) {
-      for (const roll of [1, 2, 3] as const) {
-        for (const lines of [1, 2]) {
-          await assertMatchesReference(
-            diceRace,
-            raceEval,
-            100,
-            race(a, b, turn, roll),
-            { maxDepth: 4, lines },
-          );
+testEachBudget(
+  "matches an unpruned reference on sampled dice races",
+  async (tableBytes) => {
+    for (const [a, b] of [[0, 0], [2, 3], [4, 1], [3, 4], [5, 2]] as const) {
+      for (const turn of ["a", "b"] as const) {
+        for (const roll of [1, 2, 3] as const) {
+          for (const lines of [1, 2]) {
+            await assertMatchesReference(
+              diceRace,
+              raceEval,
+              100,
+              race(a, b, turn, roll),
+              { maxDepth: 4, lines },
+              tableBytes,
+            );
+          }
         }
       }
     }
-  }
-});
+  },
+);
 
 /**
  * A random game tree with chance, `height` levels deep: decision nodes (a
@@ -457,72 +549,152 @@ function randomTree(seed: number, height: number): Record<string, Node> {
   return nodes;
 }
 
-Deno.test("matches an unpruned reference on random trees with consecutive Moves", async () => {
-  for (let seed = 1; seed <= 60; seed++) {
-    const nodes = randomTree(seed, 6);
-    for (
-      const limits of [{ lines: 1 }, { lines: 1, maxDepth: 3 }, { lines: 2 }]
-    ) {
-      await assertMatchesReference(
-        treeGame(nodes),
-        treeEval(nodes),
-        100,
-        "root",
-        limits,
-      );
+testEachBudget(
+  "matches an unpruned reference on random trees with consecutive Moves",
+  async (tableBytes) => {
+    for (let seed = 1; seed <= 60; seed++) {
+      const nodes = randomTree(seed, 6);
+      for (
+        const limits of [{ lines: 1 }, { lines: 1, maxDepth: 3 }, { lines: 2 }]
+      ) {
+        await assertMatchesReference(
+          treeGame(nodes),
+          treeEval(nodes),
+          100,
+          "root",
+          limits,
+          tableBytes,
+        );
+      }
     }
+  },
+);
+
+/**
+ * An endless Game with chance: a coin is tossed (`x` or `y`) before every
+ * third Move; Seats alternate and each has the Moves 0-4. A Position is the
+ * list of Moves and tosses, so it never repeats.
+ */
+type TripleItem = number | "x" | "y";
+const tripleMoves = (p: readonly TripleItem[]) =>
+  p.filter((i): i is number => typeof i === "number");
+const triple: ChanceGameRules<readonly TripleItem[], number, "x" | "y"> = {
+  id: "triple",
+  name: "Triple",
+  seats: ["a", "b"],
+  initialPosition: () => [],
+  toMove(p) {
+    const moves = tripleMoves(p).length;
+    if (moves % 3 === 0 && typeof (p.at(-1) ?? 0) === "number") {
+      return undefined; // the coin is due
+    }
+    return moves % 2 === 0 ? "a" : "b";
+  },
+  legalMoves: (p) => (triple.toMove(p) ? [0, 1, 2, 3, 4] : []),
+  play: (p, m) => [...p, m],
+  outcome: () => undefined,
+  chanceEvents: (p) =>
+    triple.toMove(p)
+      ? []
+      : [{ chance: "x", probability: 0.5 }, { chance: "y", probability: 0.5 }],
+  resolveChance: (p, c) => [...p, c],
+  notation: {
+    encodePosition: (p) => p.join(""),
+    decodePosition: (t) =>
+      [...t].map((c) => (c === "x" || c === "y" ? c : Number(c))),
+    encodeMove: String,
+    decodeMove: Number,
+    encodeChance: String,
+    decodeChance: (t) => (t === "x" ? "x" : "y"),
+  },
+};
+
+Deno.test("hash Moves from the previous depth save nodes", async () => {
+  // `seat`'s Moves minus the other Seat's: the largest Move is best at every
+  // depth, but the Game lists it last.
+  const sum = (p: readonly TripleItem[], seat: Seat) =>
+    tripleMoves(p).reduce((s, m, i) => s + (i % 2 === 0 ? m : -m), 0) *
+    (seat === "a" ? 1 : -1);
+  /** Nodes (Moves played) to search `triple` to depth 6. */
+  async function nodes(tableBytes: number) {
+    let played = 0;
+    const counting = {
+      ...triple,
+      play: (p: readonly TripleItem[], m: number) => (
+        played++, triple.play(p, m)
+      ),
+    };
+    const e = createExpectiminimaxEngine({
+      rules: counting,
+      name: "t",
+      evaluate: sum,
+      winValue: 100,
+      tableBytes,
+    });
+    const all = await collect(e.analyze(["x"], { maxDepth: 6 }));
+    // The Line ends at the next coin toss.
+    assertEquals(all.at(-1)!.lines[0]!.moves, [4, 4, 4]);
+    return played;
   }
+  const withTable = await nodes(DEFAULT_TABLE_BYTES);
+  const withoutTable = await nodes(0); // a budget of 0 stores nothing
+  assert(withTable < withoutTable / 4, `${withTable} vs ${withoutTable}`);
 });
 
-Deno.test("alpha-beta cuts off a refuted Move above Chance events", async () => {
-  // a's M1 is worth 50. Against M2, b's first reply q1 already gives a only
-  // -50 < 50, so b's second reply q2 (a sure win for a) is never searched.
-  const nodes: Record<string, Node> = {
-    root: { seat: "a", moves: { M1: "P", M2: "Q" } },
-    P: { seat: "b", moves: { p: "CP" } },
-    CP: { chance: { r1: [0.5, "D"], r2: [0.5, "AW"] } },
-    Q: { seat: "b", moves: { q1: "CQ1", q2: "CQ2" } },
-    CQ1: { chance: { r1: [0.5, "BW"], r2: [0.5, "D"] } },
-    CQ2: { chance: { r1: [1, "AW"] } },
-    AW: A_WINS,
-    BW: B_WINS,
-    D: DRAW,
-  };
-  const rules = treeGame(nodes);
-  const visited = new Set<string>();
-  const spy: ChanceGameRules<string, string, string> = {
-    ...rules,
-    outcome: (p) => {
-      visited.add(p);
-      return rules.outcome(p);
-    },
-  };
-  const engine = createExpectiminimaxEngine({
-    rules: spy,
-    evaluate: treeEval(nodes),
-    name: "spy",
-    winValue: 100,
-  });
-  const all = await collect(engine.analyze("root", { lines: 1 }));
-  assertEquals(all.at(-1)!.lines, [
-    { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
-  ]);
-  assert(visited.has("CQ1"), "q1 was searched");
-  assert(!visited.has("CQ2"), "q2 should have been cut off");
-  // With both Lines wanted, nothing is cut and M2 is exact: b plays q1.
-  const both = await collect(
-    createExpectiminimaxEngine({
-      rules,
+testEachBudget(
+  "alpha-beta cuts off a refuted Move above Chance events",
+  async (tableBytes) => {
+    // a's M1 is worth 50. Against M2, b's first reply q1 already gives a only
+    // -50 < 50, so b's second reply q2 (a sure win for a) is never searched.
+    const nodes: Record<string, Node> = {
+      root: { seat: "a", moves: { M1: "P", M2: "Q" } },
+      P: { seat: "b", moves: { p: "CP" } },
+      CP: { chance: { r1: [0.5, "D"], r2: [0.5, "AW"] } },
+      Q: { seat: "b", moves: { q1: "CQ1", q2: "CQ2" } },
+      CQ1: { chance: { r1: [0.5, "BW"], r2: [0.5, "D"] } },
+      CQ2: { chance: { r1: [1, "AW"] } },
+      AW: A_WINS,
+      BW: B_WINS,
+      D: DRAW,
+    };
+    const rules = treeGame(nodes);
+    const visited = new Set<string>();
+    const spy: ChanceGameRules<string, string, string> = {
+      ...rules,
+      outcome: (p) => {
+        visited.add(p);
+        return rules.outcome(p);
+      },
+    };
+    const engine = createExpectiminimaxEngine({
+      rules: spy,
       evaluate: treeEval(nodes),
-      name: "full",
+      name: "spy",
       winValue: 100,
-    }).analyze("root", { lines: 2 }),
-  );
-  assertEquals(both.at(-1)!.lines, [
-    { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
-    { moves: ["M2", "q1"], score: { kind: "value", value: -50 } },
-  ]);
-});
+      tableBytes,
+    });
+    const all = await collect(engine.analyze("root", { lines: 1 }));
+    assertEquals(all.at(-1)!.lines, [
+      { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
+    ]);
+    assert(visited.has("CQ1"), "q1 was searched");
+    assert(!visited.has("CQ2"), "q2 should have been cut off");
+    // With both Lines wanted, nothing is cut and M2 is exact: b plays q1.
+    const both = await collect(
+      createExpectiminimaxEngine({
+        rules,
+        evaluate: treeEval(nodes),
+        name: "full",
+        winValue: 100,
+        tableBytes,
+      }).analyze("root", { lines: 2 }),
+    );
+    assertEquals(both.at(-1)!.lines, [
+      { moves: ["M1", "p"], score: { kind: "value", value: 50 } },
+      { moves: ["M2", "q1"], score: { kind: "value", value: -50 } },
+    ]);
+  },
+);
 
 Deno.test("a pending Position without chanceEvents is reported as a Game bug", async () => {
   const nodes: Record<string, Node> = {
@@ -536,33 +708,45 @@ Deno.test("a pending Position without chanceEvents is reported as a Game bug", a
   );
 });
 
-Deno.test("a terminal Position yields one empty Analysis", async () => {
-  assertEquals(
-    await collect(raceEngine.analyze(race(DICE_RACE_GOAL, 0, "b", null), {})),
-    [{ depth: 0, lines: [] }],
-  );
-});
+testEachBudget(
+  "a terminal Position yields one empty Analysis",
+  async (tableBytes) => {
+    assertEquals(
+      await collect(
+        raceEngineWith(tableBytes).analyze(
+          race(DICE_RACE_GOAL, 0, "b", null),
+          {},
+        ),
+      ),
+      [{ depth: 0, lines: [] }],
+    );
+  },
+);
 
-Deno.test("the horizon may be a pending Chance event, evaluated from the searching Seat", async () => {
-  const seen: [string, Seat][] = [];
-  const engine = createExpectiminimaxEngine({
-    rules: diceRace,
-    evaluate: (p, seat) => {
-      seen.push([diceRace.notation.encodePosition(p), seat]);
-      return raceEval(p, seat);
-    },
-    name: "probe",
-    winValue: 100,
-  });
-  const [analysis] = await collect(
-    engine.analyze(race(0, 0, "a", 3), { maxDepth: 1 }),
-  );
-  assertEquals(seen, [["3:0:b:-", "a"], ["1:0:b:-", "a"]]);
-  assertEquals(analysis!.lines[0], {
-    moves: ["f"],
-    score: { kind: "value", value: 3 },
-  });
-});
+testEachBudget(
+  "the horizon may be a pending Chance event, evaluated from the searching Seat",
+  async (tableBytes) => {
+    const seen: [string, Seat][] = [];
+    const engine = createExpectiminimaxEngine({
+      rules: diceRace,
+      evaluate: (p, seat) => {
+        seen.push([diceRace.notation.encodePosition(p), seat]);
+        return raceEval(p, seat);
+      },
+      name: "probe",
+      winValue: 100,
+      tableBytes,
+    });
+    const [analysis] = await collect(
+      engine.analyze(race(0, 0, "a", 3), { maxDepth: 1 }),
+    );
+    assertEquals(seen, [["3:0:b:-", "a"], ["1:0:b:-", "a"]]);
+    assertEquals(analysis!.lines[0], {
+      moves: ["f"],
+      score: { kind: "value", value: 3 },
+    });
+  },
+);
 
 Deno.test("clamps evaluations and rejects NaN", async () => {
   const huge = createExpectiminimaxEngine({
@@ -612,6 +796,50 @@ Deno.test("rejects invalid limits and options", () => {
       RangeError,
     );
   }
+  for (const tableBytes of [-1, 1.5, NaN, Infinity, 2 ** 32 + 1]) {
+    assertThrows(
+      () =>
+        createExpectiminimaxEngine({
+          rules: diceRace,
+          evaluate: () => 0,
+          name: "x",
+          winValue: 1,
+          tableBytes,
+        }),
+      RangeError,
+      "tableBytes",
+    );
+  }
+});
+
+Deno.test("a stored Move index out of range counts as no hash Move", async () => {
+  // Breaks the key requirement on purpose: "three" and "one" share a key but
+  // not their Moves. "three" is searched first and stores its best Move,
+  // index 2; "one" has a single Move.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { three: "T", one: "O" } },
+    T: { seat: "b", moves: { t1: "D", t2: "D", t3: "BW" } },
+    O: { seat: "b", moves: { o1: "D" } },
+    D: DRAW,
+    BW: B_WINS,
+  };
+  const tree = treeGame(nodes);
+  const shared = (p: string) => (p === "T" || p === "O" ? "shared" : p);
+  const rules = {
+    ...tree,
+    notation: { ...tree.notation, encodePosition: shared },
+  };
+  const e = createExpectiminimaxEngine({
+    rules,
+    evaluate: treeEval(nodes),
+    name: "broken key",
+    winValue: 100,
+  });
+  const all = await collect(e.analyze("root", { lines: 2 }));
+  assertEquals(all.at(-1)!.lines, [
+    { moves: ["one", "o1"], score: { kind: "value", value: 0 } },
+    { moves: ["three", "t3"], score: { kind: "loss-in", plies: 2 } },
+  ]);
 });
 
 Deno.test("refuses Games without chance (ADR 0005)", () => {
