@@ -14,7 +14,7 @@ import type { Seat } from "@boardwright/core";
  *    ply (`Killers`), the newer first, those legal here and not the hash Move;
  * 4. the other quiet Moves, `movePriority <= 0` (and every Move without a
  *    hook), by priority, highest first, equal priorities by history score
- *    (`History`), highest first.
+ *    (`HistoryScores`), highest first.
  * The Game's order breaks ties everywhere.
  *
  * A Move has no identity across Positions (the Game's Moves are opaque), so
@@ -57,32 +57,32 @@ export class Killers {
   }
 }
 
-/** What identifies a Move for `History`: see `MinimaxOptions.moveKey`. */
+/** What identifies a Move for `HistoryScores`: see `MinimaxOptions.moveKey`. */
 export type HistoryKey = string | number;
 
 /** What `orderMoves` needs to apply the history heuristic. */
 export interface HistoryUse<Move> {
-  readonly history: History;
+  readonly history: HistoryScores;
   readonly seat: Seat;
   readonly key: (move: Move) => HistoryKey;
 }
 
-/** Most (Seat, Move) scores `History` keeps; see there. */
+/** Most (Seat, Move) scores `HistoryScores` keeps; see there. */
 export const HISTORY_ENTRIES = 1 << 16;
-/** A score that would pass this halves all scores first; see `History`. */
+/** A score that would pass this halves all scores first; see `HistoryScores`. */
 const HISTORY_SCORE_LIMIT = 1 << 24;
 
 /**
- * History heuristic: a score per (Seat, quiet Move) that grows with every beta
+ * The history heuristic's scores: a score per (Seat, quiet Move) that grows with every beta
  * cutoff the Move caused (by depth squared: a cutoff near the root saves a
  * bigger subtree), in any Position of the search. A quiet Move that refuted
- * many Positions is tried earlier in the others. Moves are opaque, so the key
- * is `encodeMove` text, per Seat to move (a Move has no meaning for the other
- * Seat). Bounded: past `HISTORY_ENTRIES` entries, or a score past a limit, all
+ * many Positions is tried earlier in the others. Moves are opaque, so a Move
+ * is identified by its key, the Engine's `moveKey` (default: `encodeMove`
+ * text), per Seat to move (a Move has no meaning for the other Seat). Bounded: past `HISTORY_ENTRIES` entries, or a score past a limit, all
  * scores are halved (dropping those that reach 0), which is also how the
  * scores age between the depths of iterative deepening.
  */
-export class History {
+export class HistoryScores {
   readonly #scores = new Map<Seat, Map<HistoryKey, number>>();
   #size = 0;
   /** Scratch of `orderMoves`: the scores of a node's Moves, by Move index. */
@@ -114,8 +114,17 @@ export class History {
       if (old === undefined && this.#size >= HISTORY_ENTRIES) return;
     }
     if (scores === undefined) this.#scores.set(seat, scores = new Map());
+    const next = (old ?? 0) + add;
+    if (next === 0) {
+      // No information: do not hold a slot of the cap.
+      if (old !== undefined) {
+        scores.delete(key);
+        this.#size--;
+      }
+      return;
+    }
     if (old === undefined) this.#size++;
-    scores.set(key, (old ?? 0) + add);
+    scores.set(key, next);
   }
 
   /** Halves every score, dropping the ones that reach 0. */

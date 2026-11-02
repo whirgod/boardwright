@@ -33,7 +33,7 @@
  * (after the priority): a score per Seat and quiet Move, raised by every beta
  * cutoff the Move causes (by depth squared) anywhere in the search, lowered
  * for the quiet Moves tried in vain before it, halved at every depth and
- * whenever it grows too large or too many (`History`). Its key defaults to
+ * whenever it grows too large or too many (`HistoryScores`). Its key defaults to
  * `encodeMove` text, computed for every quiet Move at a node, which can cost
  * more than the nodes it saves: an Engine supplies a cheaper `moveKey`
  * (chess: the squares). Killers and history only reorder: values never change.
@@ -84,7 +84,12 @@ import {
   toLines,
   validateLimits,
 } from "@boardwright/engine-search";
-import { History, Killers, type MovePriority, orderMoves } from "./ordering.ts";
+import {
+  HistoryScores,
+  Killers,
+  type MovePriority,
+  orderMoves,
+} from "./ordering.ts";
 import {
   checkQuiescence,
   DEFAULT_QUIESCENCE_PLIES,
@@ -180,8 +185,11 @@ export interface MinimaxOptions<Position, Move> {
    * for every quiet Move at a node once the history is not empty. A cheaper
    * key makes that cheaper: it must be equal for Moves that mean the same in
    * different Positions of one Seat, e.g. the squares of a chess Move
-   * (`from * 64 + to`, plus the promotion piece). Equal keys for different
-   * Moves only blur the scores; ordering never changes a value.
+   * (`from * 64 + to`; chess promotions are tactical, priority > 0, so never
+   * history-sorted and their missing piece cannot collide). Two Moves, even
+   * of one Position, that share a key only share (blur) their history
+   * scores: ordering stays a permutation and values never change. Killers
+   * keep using `encodeMove` text whatever the key.
    */
   readonly moveKey?: (move: Move) => string | number;
 }
@@ -296,7 +304,7 @@ async function* analyze<Position, Move>(
   // Quiet Moves that caused a beta cutoff, per ply, of the current depth.
   const killers = new Killers();
   // Quiet Moves that caused a beta cutoff, per Seat, of the whole search.
-  const history = new History();
+  const history = new HistoryScores();
   const encodeMove = (move: Move) => rules.notation.encodeMove(move);
   const historyKey = moveKey ?? encodeMove;
   const priority: MovePriority<Position, Move> = movePriority ?? noPriority;
@@ -483,7 +491,7 @@ async function* analyze<Position, Move>(
             // A quiet Move that refutes this Position may refute its siblings.
             if (!movePriority || movePriority(position, move) <= 0) {
               killers.record(ply, encodeMove(move));
-              // History: credit the Move, and discredit the quiet Moves tried
+              // History heuristic: credit the Move, and discredit the quiet Moves tried
               // in vain before it (not the hash Move, tried for its own sake).
               history.record(seat, historyKey(move), depth);
               for (let q = 0; q < k; q++) {

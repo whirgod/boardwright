@@ -1,6 +1,11 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { seededRandom } from "@boardwright/testing";
-import { History, HISTORY_ENTRIES, Killers, orderMoves } from "./ordering.ts";
+import {
+  HISTORY_ENTRIES,
+  HistoryScores,
+  Killers,
+  orderMoves,
+} from "./ordering.ts";
 
 const order = (
   priorities: readonly number[],
@@ -196,8 +201,8 @@ Deno.test("random killers: tactical, then killers, then the other quiet Moves", 
   }
 });
 
-Deno.test("History: scores grow by depth squared, per Seat, and fall for failures", () => {
-  const h = new History();
+Deno.test("HistoryScores: scores grow by depth squared, per Seat, and fall for failures", () => {
+  const h = new HistoryScores();
   assertEquals(h.score("a", "x"), 0);
   h.record("a", "x", 3);
   h.record("a", "x", 2);
@@ -210,8 +215,8 @@ Deno.test("History: scores grow by depth squared, per Seat, and fall for failure
   assertEquals(h.size, 3);
 });
 
-Deno.test("History ages by halving and forgets scores that reach 0", () => {
-  const h = new History();
+Deno.test("HistoryScores ages by halving and forgets scores that reach 0", () => {
+  const h = new HistoryScores();
   h.record("a", "big", 4); // 16
   h.record("a", "small", 1); // 1
   h.record("b", "neg", 3, -1); // -9
@@ -225,8 +230,8 @@ Deno.test("History ages by halving and forgets scores that reach 0", () => {
   assertEquals(h.score("a", "x"), 1);
 });
 
-Deno.test("History keeps at most HISTORY_ENTRIES scores: aging makes room", () => {
-  const h = new History();
+Deno.test("HistoryScores keeps at most HISTORY_ENTRIES scores: aging makes room", () => {
+  const h = new HistoryScores();
   for (let i = 0; i < HISTORY_ENTRIES; i++) h.record("a", i, 2); // 4 each
   assertEquals(h.size, HISTORY_ENTRIES);
   h.record("a", "new", 1); // full: everything halves (4 -> 2), still full
@@ -242,8 +247,8 @@ Deno.test("History keeps at most HISTORY_ENTRIES scores: aging makes room", () =
   assertEquals([h.size, h.score("a", "new")], [1, 1]);
 });
 
-Deno.test("History stays within the cap however many Moves cause cutoffs", () => {
-  const h = new History();
+Deno.test("HistoryScores stays within the cap however many Moves cause cutoffs", () => {
+  const h = new HistoryScores();
   for (let i = 0; i < 3 * HISTORY_ENTRIES; i++) {
     h.record(i % 2 ? "a" : "b", i, 1 + (i % 7));
     assert(h.size <= HISTORY_ENTRIES);
@@ -251,8 +256,8 @@ Deno.test("History stays within the cap however many Moves cause cutoffs", () =>
   assert(h.size > 0);
 });
 
-Deno.test("History halves all scores before one passes the limit", () => {
-  const h = new History();
+Deno.test("HistoryScores halves all scores before one passes the limit", () => {
+  const h = new HistoryScores();
   h.record("a", "x", 4096); // 2^24: at the limit
   h.record("a", "y", 8);
   h.record("a", "x", 1); // would pass it: all halve first
@@ -261,7 +266,7 @@ Deno.test("History halves all scores before one passes the limit", () => {
 
 const withHistory = (
   priorities: readonly number[],
-  history: History,
+  history: HistoryScores,
   seat = "a",
   killers?: Killers,
   hashMove = -1,
@@ -279,7 +284,7 @@ const withHistory = (
   );
 
 Deno.test("history orders the quiet Moves, stably, below tactical Moves and killers", () => {
-  const h = new History();
+  const h = new HistoryScores();
   h.record("a", "m3", 2);
   h.record("a", "m2", 3);
   h.record("a", "m4", 1, -1);
@@ -298,7 +303,7 @@ Deno.test("history orders the quiet Moves, stably, below tactical Moves and kill
 });
 
 Deno.test("history scores are per Seat", () => {
-  const h = new History();
+  const h = new HistoryScores();
   h.record("a", "m2", 2);
   assertEquals(withHistory([0, 0, 0], h, "a"), [2, 0, 1]);
   assertEquals(withHistory([0, 0, 0], h, "b"), [0, 1, 2]);
@@ -314,7 +319,7 @@ Deno.test("random history, killers and hash Move: still a permutation", () => {
     );
     const hash = Math.floor(random() * (n + 1)) - 1;
     const some = () => `m${Math.floor(random() * Math.max(n, 1))}`;
-    const h = new History();
+    const h = new HistoryScores();
     for (let i = 0; i < 6; i++) {
       h.record("a", some(), 1 + (i % 3), random() < 0.3 ? -1 : 1);
     }
@@ -337,4 +342,13 @@ Deno.test("random history, killers and hash Move: still a permutation", () => {
       assert(rest.slice(firstQuiet).every((i) => priorities[i]! <= 0), label);
     }
   }
+});
+
+Deno.test("a score that returns to 0 frees its slot of the cap", () => {
+  const h = new HistoryScores();
+  h.record("a", "x", 3);
+  h.record("a", "x", 3, -1);
+  assertEquals([h.size, h.score("a", "x")], [0, 0]);
+  h.record("a", "y", 1, -1); // a new Move may start with a malus
+  assertEquals([h.size, h.score("a", "y")], [1, -1]);
 });

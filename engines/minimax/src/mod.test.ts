@@ -1034,6 +1034,7 @@ Deno.test("killer Moves save nodes (siblings share a refutation)", async () => {
 const moveKeys: (((m: string | number) => string | number) | undefined)[] = [
   undefined, // default: encodeMove text
   (m) => m,
+  (m) => String(m).charCodeAt(0) % 2, // some Moves alike
   () => "same", // all Moves alike: blurs the history, never the values
 ];
 
@@ -1118,4 +1119,24 @@ Deno.test("history saves nodes where killers cannot (moveKey names the Moves)", 
   const plain = await nodes(); // history keyed by a text that never repeats
   const keyed = await nodes((m) => m);
   assert(keyed < plain * 0.9, `${keyed} vs ${plain}`);
+});
+
+Deno.test("quiescence neither records nor orders by history", async () => {
+  let keyed = 0;
+  const e = createMinimaxEngine({
+    rules: wide,
+    name: "w",
+    evaluate: hashValue,
+    tableBytes: 0,
+    moveKey: (m) => (keyed++, m),
+    // Every Move is searched at each quiescence node, three plies deep.
+    quiescence: { standPat: () => false, maxPlies: 3 },
+  });
+  // Depth 1: every Move below the root is a quiescence node.
+  const a = await final(e, [], { maxDepth: 1 });
+  assertEquals(a.lines.length, 1);
+  assertEquals(keyed, 0);
+  // One ply more has negamax nodes, which do use the key.
+  await final(e, [], { maxDepth: 2 });
+  assert(keyed > 0);
 });

@@ -3,7 +3,14 @@ import type { Analysis } from "@boardwright/core";
 import type { ChessMove, ChessPosition } from "@boardwright/game-chess";
 import { assertEngineContract, seededRandom } from "@boardwright/testing";
 import { createMinimaxEngine } from "@boardwright/engine-minimax";
-import { engine, evaluate, MATERIAL, movePriority, rules } from "./mod.ts";
+import {
+  engine,
+  evaluate,
+  MATERIAL,
+  moveKey,
+  movePriority,
+  rules,
+} from "./mod.ts";
 
 const decode = (fen: string) => rules.notation.decodePosition(fen);
 const uci = rules.notation.encodeMove;
@@ -347,4 +354,36 @@ Deno.test("honours the Engine contract", async () => {
     maxDepth: 2,
     terminalPositions: [decode(FOOLS_MATE)],
   });
+});
+
+Deno.test("moveKey: distinct for distinct quiet Moves; promotions share one but are tactical", () => {
+  const fens = [
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", // castling both ways
+    "rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3", // en passant
+    "7k/P6P/8/8/8/8/8/K7 w - - 0 1", // promotions
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  ];
+  let castled = 0;
+  let enPassant = 0;
+  let promoted = 0;
+  for (const fen of fens) {
+    const position = decode(fen);
+    const legal = rules.legalMoves(position);
+    const quiet = legal.filter((m) => movePriority(position, m) <= 0);
+    assertEquals(new Set(quiet.map(moveKey)).size, quiet.length, fen);
+    for (const m of legal) {
+      if (uci(m) === "e1g1" || uci(m) === "e1c1") castled++;
+      if (uci(m) === "e5f6") enPassant++;
+      if (m.promotion) {
+        promoted++;
+        assert(movePriority(position, m) > 0, uci(m));
+        // Moves that differ only by the promotion piece share a key.
+        const same = legal.filter((o) => o.from === m.from && o.to === m.to);
+        assert(same.every((o) => moveKey(o) === moveKey(m)));
+      }
+    }
+  }
+  assertEquals(castled, 2);
+  assertEquals(enPassant, 1); // tactical: not in `quiet`, never history-sorted
+  assert(promoted >= 4);
 });

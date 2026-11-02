@@ -245,7 +245,10 @@ export function movePriority(
 export const quiescence: Quiescence<ChessPosition, ChessMove> = {
   standPat: (position) => !isInCheck(position),
 };
-/** Identity of a Move for the history heuristic: its squares (cheaper than its text). */
+/**
+ * Identity of a Move for the history heuristic: its squares (cheaper than its
+ * text). Promotions (tactical, so never history-sorted) share a key per squares.
+ */
 export function moveKey(move: ChessMove): number {
   return move.from * 64 + move.to;
 }
