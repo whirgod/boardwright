@@ -273,6 +273,74 @@ Deno.test("the Move priority saves nodes and keeps the Score", async () => {
   assert(b.n < a.n, `${b.n} vs ${a.n}`);
 });
 
+// --- Quiescence search -------------------------------------------------------
+
+/** The Engine without quiescence, and one that may always stand pat. */
+const plain = createMinimaxEngine({
+  rules,
+  evaluate,
+  movePriority,
+  name: "plain",
+});
+const standPatInCheck = createMinimaxEngine({
+  rules,
+  evaluate,
+  movePriority,
+  quiescence: { standPat: () => true },
+  name: "stand pat in check",
+});
+
+/** The best Move (UCI) of `e` in `fen` at `maxDepth`, and its Score. */
+async function best(
+  e: typeof engine,
+  fen: string,
+  maxDepth: number,
+): Promise<[string, Analysis<ChessMove>["lines"][number]]> {
+  let last: Analysis<ChessMove> | undefined;
+  for await (const a of e.analyze(decode(fen), { maxDepth })) last = a;
+  assertEquals(last!.depth, maxDepth);
+  return [uci(last!.lines[0]!.moves[0]!), last!.lines[0]!];
+}
+
+Deno.test("quiescence: no queen for a defended pawn at the horizon", async () => {
+  // Qxd5 wins a pawn at depth 1, but exd5 wins the queen.
+  const fen = "4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1";
+  assertEquals((await best(plain, fen, 1))[0], "d1d5");
+  const [move, line] = await best(engine, fen, 1);
+  assert(move !== "d1d5", move);
+  assert(line.score.kind === "value" && line.score.value > 600);
+});
+
+Deno.test("quiescence: sees the recapture of a recapture", async () => {
+  // Bxd5 Nxd5 Rxd5 wins a pawn and trades bishop for knight; at depth 2,
+  // without quiescence, it ends after Nxd5 and looks like a lost bishop.
+  const fen = "6k1/8/5n2/3p4/8/1B6/8/3R2K1 w - - 0 1";
+  assert((await best(plain, fen, 2))[0] !== "b3d5");
+  const [move, line] = await best(engine, fen, 2);
+  assertEquals(move, "b3d5");
+  // The Line goes on past the nominal depth with the quiescence Moves.
+  assertEquals(line.moves.map(uci), ["b3d5", "f6d5", "d1d5"]);
+});
+
+Deno.test("quiescence: no promotion on a guarded square", async () => {
+  // b8=Q is taken by the rook at once; the pawn is worth more on b7.
+  const fen = "7r/1P6/8/8/8/8/k7/4K3 w - - 0 1";
+  assertEquals((await best(plain, fen, 1))[0], "b7b8q");
+  const [move] = await best(engine, fen, 1);
+  assert(!move.startsWith("b7b8"), move);
+});
+
+Deno.test("quiescence: a Seat in check may not stand pat", async () => {
+  // Nxc7+ forks king and rook: the king must step aside, then Nxa8. Taking
+  // the knight on h5 is worth less. Standing pat in check misses the fork.
+  const fen = "r3k3/2p5/1P6/3N3n/8/8/8/6KR w - - 0 1";
+  const [move, line] = await best(engine, fen, 1);
+  assertEquals(move, "d5c7");
+  assertEquals(uci(line.moves[2]!), "c7a8");
+  assertEquals((await best(standPatInCheck, fen, 1))[0], "h1h5");
+  assertEquals((await best(plain, fen, 1))[0], "h1h5");
+});
+
 Deno.test("honours the Engine contract", async () => {
   await assertEngineContract(engine, rules, {
     positions: 3,

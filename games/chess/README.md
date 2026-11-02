@@ -82,6 +82,9 @@ public API wraps it immutably and memoizes legal Moves per Position object. Posi
 `decodePosition`, `initialPosition` and `play` are deeply frozen so that cache cannot go stale;
 build Positions through them rather than by hand.
 
+`isInCheck(position)` tells whether the Seat to move is in check (also when mated), memoized with
+the legal Moves; Engines use it (e.g. no stand pat in check). It is not part of `GameRules`.
+
 ## Tests and perft
 
 `perft(position, depth)` counts the leaves of the legal Move tree (ignoring draw rules). The tests

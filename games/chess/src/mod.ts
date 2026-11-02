@@ -7,6 +7,7 @@ export {
   FIFTY_MOVE_PLIES,
   formatSan,
   INITIAL_FEN,
+  isInCheck,
   isInsufficientMaterial,
   parseSan,
   parseSquare,

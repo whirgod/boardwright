@@ -48,9 +48,9 @@ export interface Entry {
    */
   readonly move: number;
   /**
-   * Plies searched below the Position, or Infinity if the search hit no
-   * horizon (every branch it looked at ended in an Outcome): then the score
-   * holds at any depth.
+   * Nominal plies searched below the Position (quiescence, if any, searched
+   * on past them), or Infinity if the search hit no horizon (every branch it
+   * looked at ended in an Outcome): then the score holds at any depth.
    */
   readonly depth: number;
   /**

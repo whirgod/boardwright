@@ -45,6 +45,20 @@ export const engine = createMinimaxEngine({
 - Forced results are `win-in` / `loss-in` Scores counted in plies (faster wins and slower
   losses preferred); draws score `value: 0`. Evaluations are clamped to `±MAX_EVALUATION`.
 - A Seat may move several times in a row; perspective flips only when the Seat to move changes.
+- Quiescence search (`src/quiescence.ts`), with the optional Engine-supplied `quiescence`
+  option: at the horizon the search goes on with the tactical Moves until the Position is quiet,
+  instead of evaluating it mid-exchange (the horizon effect). `standPat(position)`: may the Seat
+  to move decline them all and take the evaluation (a lower bound)? Return false where it may
+  not (chess: in check; checkers: a capture is compulsory); every legal Move is searched there.
+  `tactical(position, move)` picks the Moves (default `movePriority` > 0, none without it), in
+  `movePriority` order. `maxPlies` caps the plies past the horizon (`DEFAULT_QUIESCENCE_PLIES` =
+  16; RangeError unless an integer >= 0); at the cap a Position is evaluated as it stands.
+  Quiescence Moves count as nodes (time limits and aborts interrupt them), their results are not
+  stored in the table, and Lines include them, so a Line may be longer than the nominal `depth`.
+  Standing pat counts as a horizon (so the depth is not `solved`); a quiescence subtree that ends
+  only in Outcomes does not. Forced results found in quiescence count their plies from the root;
+  they are real wins, but a quiet Move past the horizon might win sooner. Without the option, a
+  Position at the horizon is evaluated as it stands.
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
@@ -123,6 +137,10 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
   captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77%
   nodes at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks
   and repetition history, so few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
+  Quiescence search (`quiescence`): captures (en passant included) and promotions past the
+  horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); it costs nodes in
+  tactical Positions but wins most games against the same Engine without it, at equal depth and
+  at equal time per Move.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without
