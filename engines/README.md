@@ -33,7 +33,8 @@ algorithm. Depends only on `core` and knows nothing about chance.
   another ply). It only stores and finds entries: whose perspective a score takes and when it
   may answer a visit is up to the library. `tableKey(rules)` is the key both libraries use:
   the Game's Transposition key (`GameRules.transpositionKey`, ADR 0009) if it supplies one,
-  else `Notation.encodePosition`.
+  else `Notation.encodePosition`; `hasTranspositionKey(rules)` tells which (then both count a
+  draw like a horizon).
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -107,11 +108,14 @@ export const engine = createMinimaxEngine({
   Outcome that share a key have the same Seat to move and legal Moves in the same order (a
   stored Move is an index into `legalMoves`). An `encodePosition` key also fixes the Outcomes
   that follow (repetition history, move clocks). A Transposition key (`GameRules.transpositionKey`;
-  chess, checkers and nine men's morris supply one) leaves out that earlier play, so Move orders
-  that reach the same Position share entries. The search checks a Position's Outcome before it
-  probes the table, so a draw by repetition is never answered from it, but a stored score may come
-  from a path with other earlier play (graph-history interaction, accepted as in most engines:
-  ADR 0009).
+  chess, checkers and nine men's morris supply one) leaves out that earlier play, which decides
+  only draws, so Move orders that reach the same Position share entries. The search checks a
+  Position's Outcome before it probes the table, so a draw by repetition is never answered from
+  it, and counts every draw it reaches like a horizon (`hasTranspositionKey`): a result resting on
+  a draw holds for its depth only, and the depth is not `solved`, so the next depth searches it
+  again (a keyed search that reaches a draw ends only at its limits). A stored score may still
+  come from a path with other earlier play (graph-history interaction, accepted as in most
+  engines: ADR 0009).
 - One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
   (`DEFAULT_TABLE_BYTES` = 256 MiB, 0 = no table; the server runs up to 4 searches at once, so
   the worst case is about 1 GiB). The table grows with the search (its slots are allocated on
@@ -151,8 +155,9 @@ export const engine = createExpectiminimaxEngine({
   _cardinal_ evaluations (e.g. expected points), unlike minimax, which only compares them.
 - A pending Position without `chanceEvents` (a Game bug) throws a descriptive `TypeError`.
 - Games without chance are refused with a `TypeError` (use minimax).
-- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`,
-  with the same key requirement as minimax (a pending Chance event must also list the same
+- Transposition table (`@boardwright/engine-search/table`), keyed by `tableKey(rules)` (the
+  Game's Transposition key, else `Notation.encodePosition`), with the same key requirement and
+  the same handling of draws as minimax (a pending Chance event must also list the same
   results). Decision nodes use it as minimax does: hash Move first, stored scores reused where
   sound, scores inside the window searched again so Lines stay complete. A Chance node stores
   its expected value (exact, as every result gets a full window, and with no Move), and any

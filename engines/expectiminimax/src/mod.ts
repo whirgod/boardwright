@@ -76,9 +76,12 @@
  * Positions without an Outcome that share a key have the same Seat to move
  * (or the same pending Chance event) and legal Moves in the same order (see
  * `ExpectiminimaxOptions.rules`). A Transposition key may leave out earlier
- * play that decides Outcomes, so the search checks a Position's Outcome
- * before it probes the table, and a stored value may come from a path with
- * other earlier play (graph-history interaction, accepted: ADR 0009).
+ * play that decides draws, so the search checks a Position's Outcome before
+ * it probes the table, and counts every draw it reaches like a horizon: a
+ * result that rests on a draw is stored for its depth only and the depth is
+ * not `solved` (with such a key, a search that reaches a draw only ends at
+ * its limits). A stored value may still come from a path with other earlier
+ * play (graph-history interaction, accepted: ADR 0009).
  *
  * Where a Chance event separates every two Moves, as in backgammon,
  * alpha-beta prunes nothing (every decision node's children are Chance
@@ -120,6 +123,7 @@ import {
   createTranspositionTable,
   DEFAULT_TABLE_BYTES,
   fromTableScore,
+  hasTranspositionKey,
   tableKey,
   toTableScore,
 } from "@boardwright/engine-search/table";
@@ -262,9 +266,12 @@ async function* analyze<Position, Move, Chance>(
   const keyOf = tableKey(rules);
   const counter = createNodeCounter();
   // Horizon Positions evaluated in the current depth, counting a stored
-  // result that came from a search that hit the horizon as one. While none
-  // is found, the depth is exact.
+  // result that came from a search that hit the horizon as one, and with a
+  // Transposition key every draw reached. While none is found, the depth is
+  // exact.
   let horizons = 0;
+  // A draw may depend on the path's history, which the key leaves out.
+  const drawsAreHorizons = hasTranspositionKey(rules);
   // The perspective of expected values in the table (see `expectation`).
   const firstSeat = rules.seats[0];
 
@@ -284,6 +291,8 @@ async function* analyze<Position, Move, Chance>(
     if (counter.visit()) yield;
     const outcome = rules.outcome(position);
     if (outcome) {
+      // Not trusted across depths (see `hasTranspositionKey`).
+      if (drawsAreHorizons && outcome.winner === undefined) horizons++;
       return { score: terminalScore(outcome, seat, ply), pv: NO_MOVES };
     }
     if (depthLeft === 0) {

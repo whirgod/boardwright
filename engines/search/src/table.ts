@@ -49,19 +49,34 @@ import { MATE_BOUND } from "./mod.ts";
  * Either way, Positions without an Outcome that share a key have the same
  * Seat to move and legal Moves in the same order (so a stored Move index
  * means the same Move), and with chance the same Chance events. A
- * Transposition key may leave out earlier play that decides Outcomes, so a
- * search must check a Position's Outcome before it probes the table, and a
- * stored score may come from a path with other earlier play (graph-history
- * interaction, accepted: ADR 0009).
+ * Transposition key may leave out earlier play that decides draws, so a
+ * search must check a Position's Outcome before it probes the table, should
+ * not trust a draw across depths ({@link hasTranspositionKey}), and accepts
+ * that a stored score may come from a path with other earlier play
+ * (graph-history interaction: ADR 0009).
  */
 export function tableKey<Position, Move>(
   rules: GameRules<Position, Move>,
 ): (position: Position) => string {
-  if (typeof rules.transpositionKey === "function") {
+  if (hasTranspositionKey(rules)) {
     return (position) => rules.transpositionKey!(position);
   }
   const notation = rules.notation;
   return (position) => notation.encodePosition(position);
+}
+
+/**
+ * Whether {@link tableKey} is the Game's Transposition key. It may leave out
+ * earlier play that decides draws (never wins), so a draw the search reaches
+ * on one path need not be one on another path to the same key. A search then
+ * counts a draw like a horizon: a result that rests on one is stored for its
+ * depth only, never as holding at any depth, and the depth is not `solved`,
+ * so the next depth searches it again (ADR 0009).
+ */
+export function hasTranspositionKey<Position, Move>(
+  rules: GameRules<Position, Move>,
+): boolean {
+  return typeof rules.transpositionKey === "function";
 }
 
 /**

@@ -63,11 +63,15 @@
  * and legal Moves in the same order (the Game's contract, checked by its
  * contract kit), so a stored Move index means the same Move. An
  * `encodePosition` key also determines the Outcomes that follow; a
- * Transposition key may leave out earlier play that decides them (repetition
+ * Transposition key may leave out earlier play that decides draws (repetition
  * history, move clocks), so Move orders that reach the same Position share
  * entries. Then the search checks a Position's Outcome before it probes the
- * table (a draw by repetition is never answered from the table), and a stored
- * score may come from a path with other earlier play, e.g. one where a
+ * table (a draw by repetition is never answered from the table), and counts
+ * every draw it reaches like a horizon: a result that rests on a draw is
+ * stored for its depth only, not as holding at any depth, and the depth is
+ * not `solved`, so the next depth searches it again (with such a key, a
+ * search that reaches a draw only ends at its limits). A stored score may
+ * still come from a path with other earlier play, e.g. one where a
  * repetition was near: the graph-history interaction most engines accept
  * (ADR 0009).
  *
@@ -114,6 +118,7 @@ import {
   createTranspositionTable,
   DEFAULT_TABLE_BYTES,
   fromTableScore,
+  hasTranspositionKey,
   tableKey,
   toTableScore,
 } from "@boardwright/engine-search/table";
@@ -250,7 +255,8 @@ export { DEFAULT_TABLE_BYTES };
  *
  * `analyze` yields one Analysis per completed depth, starting at 1:
  * - `maxDepth` caps the depth; without it the search deepens until the tree
- *   is solved (no horizon was hit), `maxTimeMs` elapses or `signal` aborts.
+ *   is solved (no horizon was hit, nor a draw if the Game supplies a
+ *   Transposition key), `maxTimeMs` elapses or `signal` aborts.
  * - `maxTimeMs` counts from the start of iteration (the first `next()`, as
  *   async generators are lazy), not from the `analyze` call. It never
  *   interrupts depth 1, so a time-limited search always yields at least one
@@ -366,8 +372,11 @@ async function* analyze<Position, Move>(
   const counter = createNodeCounter();
   // Horizon Positions evaluated in the current depth (in quiescence: every
   // stand pat), counting a stored result that came from a search that hit
-  // the horizon as one. While none is found, the depth is exact.
+  // the horizon as one, and with a Transposition key every draw reached.
+  // While none is found, the depth is exact.
   let horizons = 0;
+  // A draw may depend on the path's history, which the key leaves out.
+  const drawsAreHorizons = hasTranspositionKey(rules);
   // Quiescence plies past the horizon before a Position is evaluated anyway.
   const maxPlies = quiescence?.maxPlies ?? DEFAULT_QUIESCENCE_PLIES;
   // Extensions on the path from the root to the node being searched.
@@ -392,7 +401,11 @@ async function* analyze<Position, Move>(
     ply: number,
   ): number | undefined {
     const outcome = rules.outcome(child);
-    if (outcome) return terminalScore(outcome, seat, ply);
+    if (outcome) {
+      // Not trusted across depths (see `hasTranspositionKey`).
+      if (drawsAreHorizons && outcome.winner === undefined) horizons++;
+      return terminalScore(outcome, seat, ply);
+    }
     if (depthLeft > 0 || quiescence) return undefined;
     horizons++;
     const value = staticScore(child);
@@ -465,7 +478,7 @@ async function* analyze<Position, Move>(
    * is clamped like any evaluation, so it never makes a forced result; a
    * forced result found by the Moves is counted in plies from the root, like
    * any other. The PV includes the quiescence Moves. Results are not stored
-   * in the table: they are many, cheap, and keyed by long texts.
+   * in the table: they are many and cheap.
    */
   function* quiesce(
     position: Position,

@@ -1329,7 +1329,7 @@ const splitTrail = (p: string) => {
  * `encodePosition` keeps the trail, so paths that meet at a node do not
  * share it; the Transposition key is the node alone. `drawn(node, trail)`
  * may make a Position a draw by its history (as a repetition does), so equal
- * keys may differ in Outcome.
+ * keys may differ by a draw.
  */
 function withHistory(
   tree: ChanceGameRules<string, string, string>,
@@ -1361,7 +1361,14 @@ function withHistory(
 Deno.test("a Transposition key shares entries across histories; without one, encodePosition is the key", async () => {
   let keyed = 0, unkeyed = 0;
   for (let seed = 1; seed <= 30; seed++) {
-    const nodes = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    // Unlimited searches: they end once solved, so no draws (with a
+    // Transposition key a draw counts like a horizon, ADR 0009).
+    const random = randomChanceGraph(seed, 32, [0.1, 0.25, 0.4][seed % 3]!);
+    const nodes = Object.fromEntries(
+      Object.entries(random).map((
+        [id, n],
+      ) => [id, "winner" in n && n.winner === null ? A_WINS : n]),
+    );
     const rules = withHistory(treeGame(nodes));
     const evaluate = treeEval(nodes);
     const run = async (r: ChanceGameRules<string, string, string>) => {
@@ -1430,8 +1437,9 @@ Deno.test("an Outcome decided by history is never answered from the table", asyn
       winValue: 100,
       tableBytes,
     });
-    const all = await collect(e.analyze("root|", { lines: 2 }));
-    assertEquals(all.map((a) => a.depth), [1, 2, 3], label);
+    // A draw is never `solved` with a Transposition key: limit the depth.
+    const all = await collect(e.analyze("root|", { lines: 2, maxDepth: 5 }));
+    assertEquals(all.map((a) => a.depth), [1, 2, 3, 4, 5], label);
     for (const a of all.slice(1)) {
       const viaQ = a.lines.find((l) => l.moves[0] === "Q");
       assertEquals(viaQ, {
@@ -1444,4 +1452,54 @@ Deno.test("an Outcome decided by history is never answered from the table", asyn
       score: { kind: "loss-in", plies: 2 },
     }, label);
   }
+});
+
+Deno.test("a draw decided by history is not trusted across depths (no false solved)", async () => {
+  // a wins in 4 through Q (Q go [r] m n). Through P, Y is a draw by its
+  // history (like a repetition), with the same key. P looks better at the
+  // horizon, so it is searched first: the Chance event C's value rests on
+  // that draw and is stored, and Q's visit to C is answered from it
+  // (graph-history interaction). Were the draw trusted at any depth, depth
+  // 3 would end in Outcomes everywhere, be `solved`, and stop there.
+  const nodes: Record<string, Node> = {
+    root: { seat: "a", moves: { P: "viaP", Q: "viaQ" } },
+    viaP: { seat: "b", moves: { go: "C" }, eval: 10 },
+    viaQ: { seat: "b", moves: { go: "C" } },
+    C: { chance: { r: [1, "Y"] } },
+    Y: { seat: "a", moves: { m: "W" } },
+    W: { seat: "b", moves: { n: "AW" } },
+    AW: A_WINS,
+  };
+  const drawnThroughP = (node: string, trail: string) =>
+    node === "Y" && trail.includes("viaP,");
+  const evaluate = treeEval(nodes);
+  const run = async (r: ChanceGameRules<string, string, string>) =>
+    await collect(
+      createExpectiminimaxEngine({
+        rules: r,
+        evaluate: (p, seat) => evaluate(splitTrail(p)[0], seat),
+        name: "graph",
+        winValue: 100,
+      }).analyze("root|", { maxDepth: 8 }),
+    );
+  // With the key: the draw keeps every depth unsolved, up to the limit.
+  const rules = withHistory(treeGame(nodes), drawnThroughP);
+  const keyed = await run(rules);
+  assertEquals(keyed.map((a) => a.depth), [1, 2, 3, 4, 5, 6, 7, 8]);
+  // Without the key, Q's C has its own entry: the win, solved at depth 4.
+  const { transpositionKey: _, ...noKey } = rules;
+  const plain = await run(noKey);
+  assertEquals(plain.map((a) => a.depth), [1, 2, 3, 4]);
+  assertEquals(plain.at(-1)!.lines[0], {
+    moves: ["Q", "go"],
+    score: { kind: "win-in", plies: 4 },
+  });
+  // Decisive results are still solved with the key: without the draw, the
+  // same win ends the search at depth 4.
+  const decisive = await run(withHistory(treeGame(nodes)));
+  assertEquals(decisive.map((a) => a.depth), [1, 2, 3, 4]);
+  assertEquals(decisive.at(-1)!.lines[0]!.score, {
+    kind: "win-in",
+    plies: 4,
+  });
 });

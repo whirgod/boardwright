@@ -995,7 +995,7 @@ const splitTrail = (p: string) => {
  * and the nodes visited before it. `encodePosition` keeps the trail, so Move
  * orders that meet at a node do not share it; the Transposition key is the
  * node alone. `drawn(node, trail)` may make a Position a draw by its history
- * (as a repetition does), so equal keys may differ in Outcome.
+ * (as a repetition does), so equal keys may differ by a draw.
  */
 function withHistory(
   graph: GameRules<string, string>,
@@ -1019,6 +1019,23 @@ function withHistory(
   };
 }
 
+/**
+ * `graph` with every draw made a win for "a": a search keyed by a
+ * Transposition key counts a draw like a horizon, so only a tree without
+ * draws is ever `solved` (ADR 0009).
+ */
+function withoutDraws(
+  graph: GameRules<string, string>,
+): GameRules<string, string> {
+  return {
+    ...graph,
+    outcome: (p) => {
+      const o = graph.outcome(p);
+      return o && o.winner === undefined ? { winner: "a", reason: "end" } : o;
+    },
+  };
+}
+
 /** `rules` without its Transposition key: the table keys on `encodePosition`. */
 function withoutKey<P, M>(rules: GameRules<P, M>): GameRules<P, M> {
   const { transpositionKey: _, ...rest } = rules;
@@ -1028,7 +1045,8 @@ function withoutKey<P, M>(rules: GameRules<P, M>): GameRules<P, M> {
 Deno.test("a Transposition key shares entries across histories; without one, encodePosition is the key", async () => {
   let keyed = 0, unkeyed = 0;
   for (let seed = 1; seed <= 30; seed++) {
-    const rules = withHistory(randomGraph(seed, 32));
+    // Unlimited searches: they end once solved, so no draws.
+    const rules = withHistory(withoutDraws(randomGraph(seed, 32)));
     const random = seededRandom(seed);
     const values = new Map<string, number>();
     const evaluate = (p: string) => {
@@ -1085,7 +1103,9 @@ Deno.test("an Outcome decided by history is never answered from the table", asyn
   const evaluate = (p: string) => (p.startsWith("x|") ? 50 : 0);
   for (const tableBytes of [DEFAULT_TABLE_BYTES, ONE_SLOT]) {
     const e = createMinimaxEngine({ rules, name: "g", evaluate, tableBytes });
-    const all = await collect(e.analyze("root|", { lines: 2 }));
+    // A draw is never `solved` with a Transposition key: limit the depth.
+    const all = await collect(e.analyze("root|", { lines: 2, maxDepth: 7 }));
+    assertEquals(all.map((a) => a.depth), [1, 2, 3, 4, 5, 6, 7]);
     for (const a of all.slice(1)) {
       const viaQ = a.lines.find((l) => l.moves[0] === "viaQ");
       assertEquals(viaQ, {
@@ -1098,6 +1118,51 @@ Deno.test("an Outcome decided by history is never answered from the table", asyn
       score: { kind: "loss-in", plies: 5 },
     });
   }
+});
+
+Deno.test("a draw decided by history is not trusted across depths (no false solved)", async () => {
+  // a wins in 5 through Q (Q x y w WIN). Through P, y is a draw by its
+  // history (like a repetition), with the same key. P looks better at the
+  // horizon, so it is searched first: x's subtree ends in that draw and is
+  // stored, and Q's visit to x is answered from it (graph-history
+  // interaction). Were the draw trusted at any depth, depth 3 would end in
+  // Outcomes everywhere, be `solved`, and the search would stop there.
+  const graph = graphGame({
+    root: { seat: "a", moves: ["P", "Q"] },
+    P: { seat: "b", moves: ["x"] },
+    Q: { seat: "b", moves: ["x"] },
+    x: { seat: "a", moves: ["y"] },
+    y: { seat: "b", moves: ["w"] },
+    w: { seat: "a", moves: ["WIN"] },
+    WIN: { winner: "a" },
+  });
+  const drawnThroughP = (node: string, trail: string) =>
+    node === "y" && trail.includes("P,");
+  const rules = withHistory(graph, drawnThroughP);
+  const evaluate = (p: string) => (p.startsWith("P|") ? -10 : 0);
+  const run = async (r: GameRules<string, string>) =>
+    await collect(
+      createMinimaxEngine({ rules: r, name: "g", evaluate }).analyze("root|", {
+        maxDepth: 10,
+      }),
+    );
+  // With the key: the draw keeps every depth unsolved, so the search goes
+  // on to its limit. (Within a depth, Q may still be answered from x's
+  // entry, which P refreshed first: accepted graph-history interaction.)
+  const keyed = await run(rules);
+  assertEquals(keyed.map((a) => a.depth), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // Without the key, Q's x has its own entry: the win, solved at depth 5.
+  const plain = await run(withoutKey(rules));
+  assertEquals(plain.map((a) => a.depth), [1, 2, 3, 4, 5]);
+  assertEquals(plain.at(-1)!.lines[0], {
+    moves: ["Q", "x", "y", "w", "WIN"],
+    score: { kind: "win-in", plies: 5 },
+  });
+  // Decisive results are still solved with the key: without the draw, the
+  // same win ends the search at depth 5.
+  const decisive = await run(withHistory(graph));
+  assertEquals(decisive.map((a) => a.depth), [1, 2, 3, 4, 5]);
+  assertEquals(decisive.at(-1)!.lines[0]!.score, { kind: "win-in", plies: 5 });
 });
 
 Deno.test("honours the Engine contract", async () => {

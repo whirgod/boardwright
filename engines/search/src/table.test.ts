@@ -12,6 +12,7 @@ import {
   type Entry,
   ENTRY_BYTES,
   fromTableScore,
+  hasTranspositionKey,
   MAX_TABLE_BYTES,
   SLOT_BYTES,
   tableKey,
@@ -263,7 +264,7 @@ Deno.test("forced results are stored counted from the Position", () => {
   }
 });
 
-Deno.test("tableKey: the Game's Transposition key, else encodePosition", () => {
+Deno.test("tableKey: the Game's Transposition key, else encodePosition (hasTranspositionKey)", () => {
   // Positions are [stones, plies]; plies are history the key may leave out.
   type P = readonly [number, number];
   const rules: GameRules<P, string> = {
@@ -283,7 +284,9 @@ Deno.test("tableKey: the Game's Transposition key, else encodePosition", () => {
     },
   };
   assertEquals(tableKey(rules)([2, 5]), "2@5");
+  assertEquals(hasTranspositionKey(rules), false);
   const keyed = { ...rules, transpositionKey: ([n]: P) => `${n}` };
   assertEquals(tableKey(keyed)([2, 5]), "2");
   assertEquals(tableKey(keyed)([2, 7]), "2");
+  assertEquals(hasTranspositionKey(keyed), true);
 });
