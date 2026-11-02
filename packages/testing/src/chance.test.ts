@@ -315,3 +315,27 @@ Deno.test("engine contract: catches a score where a Seat is to move", async () =
     "score is only for a pending Chance event",
   );
 });
+
+Deno.test("chance contract: decoded Positions must have the same chanceEvents", () => {
+  // Decoded Positions offer the same rolls in reverse order.
+  type Q = DiceRacePosition & { readonly dec?: boolean };
+  const lossy = {
+    ...diceRace,
+    chanceEvents: (p: Q) => {
+      const events = diceRace.chanceEvents(p);
+      return p.dec ? [...events].reverse() : events;
+    },
+    notation: {
+      ...diceRace.notation,
+      decodePosition: (t: string) => ({
+        ...diceRace.notation.decodePosition(t),
+        dec: true,
+      }),
+    },
+  } as unknown as Rules;
+  assertThrows(
+    () => assertChanceGameRulesContract(lossy, { playouts: 20 }),
+    Error,
+    "different chanceEvents",
+  );
+});
