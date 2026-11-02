@@ -145,3 +145,53 @@ Deno.test("Killers keeps the last two distinct Moves, newest first", () => {
   k.clear();
   assertEquals([k.newer(0), k.older(0)], [undefined, undefined]);
 });
+
+Deno.test("only the older killer is legal here: it is placed alone", () => {
+  const k = new Killers();
+  k.record(2, "m3");
+  k.record(2, "gone"); // newer, not legal
+  assertEquals(ordered([0, 0, 0, 0, 0], k), [3, 0, 1, 2, 4]);
+});
+
+Deno.test("random killers: tactical, then killers, then the other quiet Moves", () => {
+  const random = seededRandom(84);
+  for (let round = 0; round < 500; round++) {
+    const n = Math.floor(random() * 12);
+    const priorities = Array.from(
+      { length: n },
+      () => Math.floor(random() * 5) - 2,
+    );
+    const hash = Math.floor(random() * (n + 1)) - 1;
+    const k = new Killers();
+    // Keys "m<i>" (maybe legal, maybe tactical or the hash Move) or "gone".
+    const pick = () =>
+      random() < 0.25 ? "gone" : `m${Math.floor(random() * Math.max(n, 1))}`;
+    k.record(2, pick());
+    k.record(2, pick());
+    const result = ordered(priorities, k, hash);
+    const label = `${priorities} hash ${hash} ${k.newer(2)},${
+      k.older(2)
+    } -> ${result}`;
+    assertEquals(
+      [...result].sort((a, b) => a - b),
+      priorities.map((_, i) => i),
+      label,
+    );
+    // Reference: the same order without killers, killers moved to the front
+    // of its quiet part.
+    const base = order(priorities, hash);
+    const rest = hash >= 0 ? base.slice(1) : base;
+    const tactical = rest.filter((i) => priorities[i]! > 0);
+    const quiet = rest.filter((i) => priorities[i]! <= 0);
+    const killed = [k.newer(2), k.older(2)]
+      .map((key) => quiet.find((i) => `m${i}` === key))
+      .filter((i): i is number => i !== undefined);
+    const expected = [
+      ...(hash >= 0 ? [hash] : []),
+      ...tactical,
+      ...killed,
+      ...quiet.filter((i) => !killed.includes(i)),
+    ];
+    assertEquals(result, expected, label);
+  }
+});

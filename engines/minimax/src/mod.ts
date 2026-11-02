@@ -123,7 +123,7 @@ export interface MinimaxOptions<Position, Move> {
    * the Game's order breaks ties. The root at depth 1 is ordered the same
    * way. The convention: a priority above 0 marks a tactical Move (capture,
    * promotion) that goes before killer Moves and the history heuristic, 0
-   * or below a quiet one. Called once per Move at every interior node, so
+   * or below a quiet one. Called once per Move at every interior node (and once more for the Move that causes a cutoff, to tell if it is quiet), so
    * keep it cheap. Ordering never changes a result, only the node count.
    * Without it the Game's order is used.
    */

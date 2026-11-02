@@ -59,7 +59,7 @@ export const engine = createMinimaxEngine({
   priority > 0 is a tactical Move (capture, promotion), <= 0 a quiet one. Then the killer Moves:
   per ply, the last two quiet Moves that caused a beta cutoff (kept per depth, compared by
   `encodeMove` text, encoded lazily); the history heuristic (planned) will order the other quiet
-  Moves. The hook runs once per Move at every interior node; ordering never changes a value, only
+  Moves. The hook runs once per Move at every interior node (once more for a Move that causes a cutoff); ordering never changes a value, only
   the node count.
 - The key must determine everything the search sees: equal `encodePosition` texts must have the
   same legal Moves in the same order, the same Seat to move and Outcome, and the same future

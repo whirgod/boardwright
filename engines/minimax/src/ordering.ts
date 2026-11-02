@@ -139,13 +139,15 @@ function placeKillers<Move>(
     if (first >= 0 && (older === undefined || second >= 0)) break;
   }
   if (first < 0 && second < 0) return;
-  // Shift the quiet Moves in front of the last found killer up by the killers.
-  const picked = [first, second].filter((a) => a >= 0);
-  const ids = picked.map((a) => order[a]!);
-  const last = Math.max(first, second);
+  // Shift the quiet Moves in front of the last killer found up by the number
+  // of killers, then put the killers (newer first) at `t`.
+  const idFirst = first >= 0 ? order[first]! : -1;
+  const idSecond = second >= 0 ? order[second]! : -1;
+  const last = first > second ? first : second;
   let w = last;
   for (let a = last; a >= t; a--) {
-    if (!picked.includes(a)) order[w--] = order[a]!;
+    if (a !== first && a !== second) order[w--] = order[a]!;
   }
-  for (let j = ids.length - 1; j >= 0; j--) order[w--] = ids[j]!;
+  if (idSecond >= 0) order[w--] = idSecond;
+  if (idFirst >= 0) order[w--] = idFirst;
 }

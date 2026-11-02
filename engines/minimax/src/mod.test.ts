@@ -763,6 +763,7 @@ Deno.test("handles a Seat moving several times in a row", async () => {
   assertEquals(a.depth, 3);
   // b's reply makes no difference once a played 1, 1: either is a tie.
   assertEquals(a.lines[0]!.moves.slice(0, 2), [1, 1]);
+  assert([0, 1].includes(a.lines[0]!.moves[2]!));
   assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
   assertEquals(a.lines[1], {
     moves: [0, 0, 1],
