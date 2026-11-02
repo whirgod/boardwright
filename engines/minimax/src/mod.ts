@@ -178,6 +178,10 @@ export interface MinimaxOptions<Position, Move> {
    * `createMinimaxEngine` unless an integer >= 0). Without it, every
    * Position at the horizon is evaluated as it stands.
    *
+   * An optional `quiescence.gain` bounds what a tactical Move can win, so
+   * Moves that cannot raise alpha are skipped (delta pruning; never where
+   * standing pat is refused).
+   *
    * Every quiescence Move counts as a node (time limits and aborts
    * interrupt it); quiescence results are not stored in the table; Lines
    * include the quiescence Moves, so they may be longer than the reported
@@ -463,11 +467,17 @@ async function* analyze<Position, Move>(
     const capped = depth <= -maxPlies;
     const standPat = capped || quiescence!.standPat(position);
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
+    // Delta pruning (`Quiescence.gain`) applies only where standing pat.
+    const gain = standPat ? quiescence!.gain : undefined;
+    let stood = 0;
+    // The best bound of the Moves skipped by delta pruning (all <= alpha).
+    let skipped = -Infinity;
     if (standPat) {
       horizons++;
       const score = staticScore(position);
       if (capped || score >= beta) return { score, pv: NO_MOVES };
       best = { score, pv: NO_MOVES };
+      stood = score;
       if (score > alpha) alpha = score;
     }
     const moves = quiescenceMoves(
@@ -479,6 +489,15 @@ async function* analyze<Position, Move>(
       scratch,
     );
     for (const move of moves) {
+      // It cannot raise alpha: skipped, as an unsearched Move (it is not
+      // a horizon, nor does it make the depth less solved).
+      if (gain !== undefined) {
+        const bound = stood + gain(position, move);
+        if (bound <= alpha) {
+          if (bound > skipped) skipped = bound;
+          continue;
+        }
+      }
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {
         best = { score: r.score, pv: [move, ...r.pv] };
@@ -488,6 +507,10 @@ async function* analyze<Position, Move>(
         }
       }
     }
+    // Fail-soft: a skipped Move is only known to score <= its bound, so the
+    // result stays a valid upper bound where it fails low (the parent may
+    // store it).
+    if (skipped > best.score) best = { score: skipped, pv: NO_MOVES };
     return best;
   }
 
