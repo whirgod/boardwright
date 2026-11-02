@@ -356,7 +356,7 @@ async function* analyze<Position, Move>(
   // Quiescence plies past the horizon before a Position is evaluated anyway.
   const maxPlies = quiescence?.maxPlies ?? DEFAULT_QUIESCENCE_PLIES;
   // Extensions on the path from the root to the node being searched.
-  let extended = 0;
+  let extended = 0; // balanced by `child`; reset per depth in `searchDepth`
 
   /** The evaluation of non-terminal `position`, for its Seat to move. */
   function staticScore(position: Position): number {
@@ -408,6 +408,8 @@ async function* analyze<Position, Move>(
       extend && depthLeft >= 0 && extended < maxExtensions &&
       rules.toMove(next) !== undefined && extend(next)
     ) {
+      // Only adds plies: a stored depth d still means "at least d plies",
+      // whatever path reached the Position.
       depthLeft++;
       extended++;
       bumped = true;
@@ -594,6 +596,7 @@ async function* analyze<Position, Move>(
   /** One depth: every root Move searched to `depth`, best `wanted` exact. */
   function* searchDepth(depth: number): Search<Iteration<Move>> {
     horizons = 0;
+    extended = 0; // a depth never starts mid-path, whatever happened before
     table.nextIteration();
     killers.clear(); // see `Killers`
     history.age();

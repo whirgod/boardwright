@@ -131,6 +131,15 @@ const endless: GameRules<number, number> = {
   },
 };
 
+// Nodes searched (alpha-beta prunes some of the full tree), deterministic:
+// no table, all Positions distinct.
+const EXACT: Record<string, number> = {
+  "0/3": 17,
+  "1/3": 35,
+  "2/3": 70,
+  "3/1": 28,
+};
+
 Deno.test("the bound holds on a Game with endless checks", async () => {
   for (
     const [maxExtensions, depth] of [[0, 3], [1, 3], [2, 3], [3, 1]] as const
@@ -149,7 +158,13 @@ Deno.test("the bound holds on a Game with endless checks", async () => {
       { maxDepth: depth },
     );
     assertEquals(a.lines[0]!.moves.length, depth + maxExtensions);
-    assert(count.nodes > 0);
+    // Each iteration is at most a full binary tree of depth + maxExtensions plies.
+    let expected = 0;
+    for (let d = 1; d <= depth; d++) {
+      expected += 2 ** (d + maxExtensions + 1) - 2;
+    }
+    assert(count.nodes <= expected, `${count.nodes} > ${expected}`);
+    assertEquals(count.nodes, EXACT[`${maxExtensions}/${depth}`]);
   }
   const { rules } = budgeted(endless, 100_000);
   // The default bound applies without an explicit one.

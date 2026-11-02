@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import type { ChessMove, ChessPosition } from "@boardwright/game-chess";
 import { assertEngineContract, seededRandom } from "@boardwright/testing";
@@ -401,6 +401,7 @@ Deno.test("check extension finds a mate by checks just past the nominal depth", 
     plain = a;
   }
   assertEquals(plain!.lines[0]!.score.kind, "value");
+  assertNotEquals(plain!.lines[0]!.moves.map(uci)[0], "d5d2");
   const a = await search(fen, 2);
   assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
   assertEquals(a.lines[0]!.moves.map(uci), ["d5d2", "e2e1", "f4f2"]);
