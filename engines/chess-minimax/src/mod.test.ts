@@ -386,4 +386,22 @@ Deno.test("moveKey: distinct for distinct quiet Moves; promotions share one but 
   assertEquals(castled, 2);
   assertEquals(enPassant, 1); // tactical: not in `quiet`, never history-sorted
   assert(promoted >= 4);
+
+Deno.test("check extension finds a mate by checks just past the nominal depth", async () => {
+  // Rd2+ Ke1 Qf2#: three plies, found at depth 2 because the check is extended.
+  const fen = "8/7K/8/3R4/5Q2/8/4k3/8 w - - 0 1";
+  const plainEngine = createMinimaxEngine({
+    rules,
+    evaluate,
+    movePriority,
+    name: "no extension",
+  });
+  let plain: Analysis<ChessMove> | undefined;
+  for await (const a of plainEngine.analyze(decode(fen), { maxDepth: 2 })) {
+    plain = a;
+  }
+  assertEquals(plain!.lines[0]!.score.kind, "value");
+  const a = await search(fen, 2);
+  assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
+  assertEquals(a.lines[0]!.moves.map(uci), ["d5d2", "e2e1", "f4f2"]);
 });
