@@ -85,6 +85,32 @@ export interface GameRules<Position, Move> {
    * forever.
    */
   isPass?(move: Move): boolean;
+  /**
+   * Optional: the Position's Transposition key (GLOSSARY), under which
+   * Engines recognise a Position reached by another Move order, e.g. in a
+   * transposition table. Without it, Engines key on `notation.encodePosition`,
+   * which includes everything that affects play, also earlier play
+   * (repetitions, move clocks), so Positions reached by different Move orders
+   * rarely share it. Supply it when the Position carries such history.
+   *
+   * Obligations (checked by the contract kits):
+   * - Pure and total over the Game's Positions: never throws, returns a
+   *   string, the same for `decodePosition(encodePosition(p))` as for `p`.
+   * - Among Positions without an Outcome, equal keys mean the same Seat to
+   *   move (`undefined` while a Chance event is pending) and the same legal
+   *   Moves **in the same order** (Engines store a Move as its index into
+   *   `legalMoves`); in a {@link ChanceGameRules}, also the same Chance
+   *   events with the same probabilities, in the same order. And the same
+   *   Move (Chance result) leads to Positions with equal keys again.
+   *
+   * So unlike `encodePosition`, it may leave out only earlier play that
+   * decides Outcomes (repetitions, move clocks): equal keys may differ in
+   * Outcome (one may be a draw by repetition), and so in the value of what
+   * follows. Engines check the Outcome before they use what they stored for
+   * a key, and accept that a stored score may come from other earlier play
+   * (graph-history interaction, ADR 0009).
+   */
+  transpositionKey?(position: Position): string;
 }
 
 /** Text encoding used on the wire and in stored Match records. */
@@ -93,7 +119,8 @@ export interface Notation<Position, Move> {
    * Must capture everything that affects play: Positions with equal text
    * must have the same Seat to move, Outcome and legal Moves **in the same
    * order** (and, with chance, the same Chance events). Engines key
-   * transposition tables on this text and store Moves as indexes into
+   * transposition tables on this text, unless the Game supplies a
+   * `GameRules.transpositionKey`, and store Moves as indexes into
    * `legalMoves`. Checked by the contract kits via `decodePosition`.
    */
   encodePosition(position: Position): string;

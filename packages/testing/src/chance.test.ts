@@ -339,3 +339,64 @@ Deno.test("chance contract: decoded Positions must have the same chanceEvents", 
     "different chanceEvents",
   );
 });
+
+/** The dice race's Notation, with `a` 3 written as 2 while the die is pending. */
+const mergeThreeIntoTwo = (p: DiceRacePosition) =>
+  diceRace.notation.encodePosition(
+    p.roll === null && p.a === 3 ? { ...p, a: 2 } : p,
+  );
+
+Deno.test("chance contract: a transpositionKey is checked too", () => {
+  assertChanceGameRulesContract({
+    ...diceRace,
+    transpositionKey: diceRace.notation.encodePosition,
+  });
+  // Merging pending rolls of `a` 2 and 3: the same (no) Moves and the same
+  // rolls, but each roll leads to Positions with different keys.
+  assertThrows(
+    () =>
+      assertChanceGameRulesContract({
+        ...diceRace,
+        transpositionKey: mergeThreeIntoTwo,
+      }),
+    Error,
+    "] leads to different keys",
+  );
+  // Merging the rolls to play: the same Moves, which lead to different keys.
+  assertThrows(
+    () =>
+      assertChanceGameRulesContract({
+        ...diceRace,
+        transpositionKey: (p) => `${p.a}:${p.b}:${p.turn}:${p.roll && "r"}`,
+      }),
+    Error,
+    "f leads to different keys",
+  );
+});
+
+Deno.test("chance contract: a transpositionKey must not merge different chanceEvents", () => {
+  // From 3 on, `a`'s die always shows 1; the key merges 3 with 2.
+  const loaded: Rules = {
+    ...diceRace,
+    chanceEvents: (p) =>
+      p.a >= 3 && diceRace.chanceEvents(p).length > 0
+        ? [{ chance: 1, probability: 1 }]
+        : diceRace.chanceEvents(p),
+    resolveChance(p, roll) {
+      if (loaded.chanceEvents(p).every((e) => e.chance !== roll)) {
+        throw new Error(`no roll ${roll} is pending`);
+      }
+      return { ...p, roll };
+    },
+    transpositionKey: mergeThreeIntoTwo,
+  };
+  assertChanceGameRulesContract({
+    ...loaded,
+    transpositionKey: diceRace.notation.encodePosition,
+  });
+  assertThrows(
+    () => assertChanceGameRulesContract(loaded),
+    Error,
+    "which have a different chanceEvents",
+  );
+});
