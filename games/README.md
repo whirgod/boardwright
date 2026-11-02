@@ -31,6 +31,13 @@ Notation round-trips, `decode*` throwing on garbage (extend with `garbage: [...]
 determinism. A decoded Position must play identically (same Seat, Outcome and legal Moves in
 the same order), so `encodePosition` must include all play-relevant state. Failures print the seed and the Move list. Add game-specific rule tests next to it.
 
+If the Position carries earlier play that only decides Outcomes (repetition history, move
+clocks), supply the optional `transpositionKey(position)` without it (ADR 0009), so Engines'
+transposition tables recognise Move orders that reach the same Position. The kit then checks it
+too: total and stable, the same for a decoded Position, and Positions without an Outcome that
+share it (random playouts reach many) have the same Seat to move, legal Moves in the same order
+and Chance events, and each Move leads to Positions that share a key again.
+
 A Game with chance (dice, ADR 0005) implements `ChanceGameRules` (`chanceEvents`,
 `resolveChance`, `encodeChance`/`decodeChance`) and runs `assertChanceGameRulesContract`
 instead: the same checks with Chance events resolved at random by their probabilities, plus

@@ -180,15 +180,20 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 - `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
 - `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
   opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked". Move ordering: hash Move, then
-  Moves that close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7).
+  Moves that close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7). The
+  Game's Transposition key (board, Seat, hands) lets Move orders share table entries in the
+  moving phase (-11% to -17% nodes at depth 6 and 7, #83).
 - `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
-  guards and central squares.
+  guards and central squares. The Game's Transposition key lets king Moves in any order share
+  table entries (-40% to -59% nodes in a kings endgame at depth 10 and 12, #83).
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
   switching to an endgame table. Move ordering: the library's transposition table (hash Move), then
   captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77%
-  nodes at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks
-  and repetition history, so few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
+  nodes at depth 5, -32% to -97% at depth 6), then quiet Moves. The table is keyed by the chess
+  Transposition key (no move clocks or repetition history), so Move orders that reach the same
+  Position share entries (-1% to -14% nodes at depth 5 and 6, #83); use `maxDepth` (4-5) or
+  `maxTimeMs`.
   Quiescence search (`quiescence`): captures (en passant included) and queen promotions past the
   horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); where stand pat is
   allowed, captures that lose material by static exchange evaluation (`see`) are dropped and

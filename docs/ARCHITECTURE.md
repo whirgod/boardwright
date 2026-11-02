@@ -68,6 +68,13 @@ core  <-  games/*  <-  engines/*
   Games with chance (type and run time); `engines/expectiminimax` searches them (and refuses
   Games without chance). A Game may mark its empty play with the optional `GameRules.isPass`; the
   Game master plays a Seat's only legal Move automatically when it is such a pass (`forcedPass`).
+- **Transposition key** (ADR 0009). A Game whose Positions carry earlier play that only decides
+  Outcomes (repetition history, move clocks) supplies the optional `GameRules.transpositionKey`,
+  which leaves it out, so Move orders that reach the same Position share it. Positions without
+  an Outcome that share a key play alike (Seat to move, legal Moves in order, Chance events; the
+  contract kits check it). The Engine libraries key their transposition table by it
+  (`tableKey` in `engines/search`), else by `encodePosition`, check the Outcome before every
+  probe and accept graph-history interaction. Chess, checkers and nine men's morris supply one.
 - **Engine contract kit, no shared limits validator.** Every Engine runs `assertEngineContract`
   (`@boardwright/testing`). `SearchLimits` validation is deliberately duplicated: the server's
   `parseLimits` validates untrusted JSON (shape, unknown fields, host caps), while each Engine

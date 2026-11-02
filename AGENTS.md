@@ -68,6 +68,8 @@ Deno >= 2.5; tasks are defined in `deno.json` (npm packages via `npm:` specifier
 - Deno workspace (ADR 0001): every member has a `deno.json` with `name`, `version`,
   `exports`. Import local files with the `.ts` extension; no build step (except the web UI bundle).
 - Every Game runs `assertGameRulesContract` from `@boardwright/testing` in its tests (`games/README.md`).
+  A Game whose Positions carry repetition history or move clocks supplies `transpositionKey`
+  (ADR 0009); the kit checks it.
 - Every Engine runs `assertEngineContract` from `@boardwright/testing` in its tests (checks the `Engine.analyze` guarantees).
 - Tests use `Deno.test` + `@std/assert`, next to code as `*.test.ts`. Entry points (`main.ts`)
   are excluded from coverage; keep them thin.
