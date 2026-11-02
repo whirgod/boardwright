@@ -212,7 +212,9 @@ async function* analyze<Position, Move>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
-  // Priorities of one node's Moves (reused; see `orderMoves`).
+  // Priorities of one node's Moves, reused by every node: `orderMoves` is done
+  // with it before it returns, i.e. before any child is searched, so plies
+  // never share live data (killers/history, #84/#85, keep their own state).
   const scratch: number[] = [];
   if (movePriority) {
     const listed = order;

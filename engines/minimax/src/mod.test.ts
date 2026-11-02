@@ -352,6 +352,71 @@ Deno.test("a Move priority saves nodes when the best Move is listed last", async
   assert(ordered < plain / 2, `${ordered} vs ${plain}`);
 });
 
+Deno.test("a Move priority never changes a Score or the multi-PV Scores (with a table)", async () => {
+  const index = (p: TicTacToePosition, m: TicTacToeMove) =>
+    ttt.legalMoves(p).indexOf(m);
+  const priorities: ((p: TicTacToePosition, m: TicTacToeMove) => number)[] = [
+    (p, m) => -index(p, m), // reverses the Game's order
+    (p, m) => index(p, m),
+    (p, m) => (index(p, m) % 3) - 1,
+  ];
+  // The default table, and tiny ones that replace entries all the time
+  // (stored hash Move indices, fail-lows and score cutoffs included).
+  for (const tableBytes of [DEFAULT_TABLE_BYTES, ONE_SLOT, THREE_SLOTS]) {
+    for (const movePriority of priorities) {
+      const e = createMinimaxEngine({
+        rules: ttt,
+        evaluate: () => 0,
+        name: "ordered",
+        tableBytes,
+        movePriority,
+      });
+      for (const p of samplePositions()) {
+        const moves = ttt.legalMoves(p);
+        const a = await final(e, p, { lines: moves.length });
+        assertEquals(a.lines.length, moves.length);
+        for (const line of a.lines) {
+          const move = line.moves[0]!;
+          assertEquals(
+            rank(line.score),
+            referenceMove(p, move),
+            `${ttt.notation.encodePosition(p)} ${move}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+Deno.test("a table and a Move priority together search no more than the priority alone", async () => {
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  // Best Move listed last; the priority puts it first only at even plies, so
+  // the hash Move still has work to do at the others.
+  const priority = (p: readonly number[], m: number) =>
+    p.length % 2 === 0 ? m : 0;
+  async function nodes(tableBytes: number) {
+    let played = 0;
+    const counting = {
+      ...wide,
+      play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableBytes,
+      movePriority: priority,
+    });
+    const a = await final(e, [], { maxDepth: 6 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4, 4]);
+    return played;
+  }
+  const withTable = await nodes(DEFAULT_TABLE_BYTES);
+  const alone = await nodes(0);
+  assert(withTable <= alone, `${withTable} vs ${alone}`);
+});
+
 Deno.test("a Move priority never changes a Score (no table)", async () => {
   // The Game's Moves are numbered by their index in the Position.
   const index = (p: TicTacToePosition, m: TicTacToeMove) =>

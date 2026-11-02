@@ -29,10 +29,11 @@
  * best Move of the previous depth first, from the library's transposition
  * table, then captures and promotions (`movePriority`: captures by MVV-LVA,
  * most valuable victim and least valuable attacker first; a queen promotion
- * ahead of them), then the quiet Moves in the Game's order. The table's key is the whole Position, and a
- * chess Position includes the move clocks and the repetition history, so
- * different Move orders (1. Nf3 Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3) rarely
- * share a key: the table mostly helps by ordering Moves.
+ * ahead of them), then the quiet Moves in the Game's order. The table's key
+ * is the whole Position, and a chess Position includes the move clocks and
+ * the repetition history, so different Move orders (1. Nf3 Nf6 2. Nc3 and
+ * 1. Nc3 Nf6 2. Nf3) rarely share a key: the table mostly helps by ordering
+ * Moves.
  *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker.
  */

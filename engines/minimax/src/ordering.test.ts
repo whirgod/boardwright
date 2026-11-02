@@ -1,4 +1,5 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
+import { seededRandom } from "@boardwright/testing";
 import { orderMoves } from "./ordering.ts";
 
 const order = (
@@ -37,5 +38,41 @@ Deno.test("equal priorities keep the Game's order after the hash Move", () => {
 Deno.test("a priority that is not finite is a RangeError", () => {
   for (const bad of [NaN, Infinity, -Infinity]) {
     assertThrows(() => order([0, bad]), RangeError, `got ${bad}`);
+  }
+});
+
+Deno.test("random priorities and hash Moves: a stable, complete ordering", () => {
+  const random = seededRandom(81);
+  for (let round = 0; round < 500; round++) {
+    const n = Math.floor(random() * 12);
+    // Few distinct values (ties); negative, zero and positive.
+    const priorities = Array.from(
+      { length: n },
+      () => Math.floor(random() * 5) - 2,
+    );
+    const hash = Math.floor(random() * (n + 1)) - 1; // -1 .. n-1
+    const result = order(priorities, hash);
+    const label = `${priorities} hash ${hash} -> ${result}`;
+    // A permutation of 0..n-1.
+    assertEquals(
+      [...result].sort((a, b) => a - b),
+      priorities.map((_, i) => i),
+      label,
+    );
+    if (hash >= 0) assertEquals(result[0], hash, label);
+    const rest = hash >= 0 ? result.slice(1) : result;
+    for (let k = 1; k < rest.length; k++) {
+      const [a, b] = [rest[k - 1]!, rest[k]!];
+      assert(
+        priorities[a]! > priorities[b]! ||
+          (priorities[a] === priorities[b] && a < b),
+        label,
+      );
+    }
+    // Tactical (> 0) Moves before quiet ones.
+    const firstQuiet = rest.findIndex((i) => priorities[i]! <= 0);
+    if (firstQuiet >= 0) {
+      assert(rest.slice(firstQuiet).every((i) => priorities[i]! <= 0), label);
+    }
   }
 });

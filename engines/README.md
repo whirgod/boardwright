@@ -111,16 +111,16 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 
 - `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
 - `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
-  opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked". Move ordering: hash Move, then Moves that
-  close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7).
+  opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked". Move ordering: hash Move, then
+  Moves that close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7).
 - `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
   guards and central squares.
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
   switching to an endgame table. Move ordering: the library's transposition table (hash Move), then
-  captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77% nodes
-  at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks and repetition history, so
-  few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
+  captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77%
+  nodes at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks
+  and repetition history, so few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without

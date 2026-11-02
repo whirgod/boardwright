@@ -213,6 +213,15 @@ Deno.test("movePriority: quiet Moves 0, most valuable victim then least valuable
   assert(qxr > 0);
 });
 
+Deno.test("movePriority: a capture-promotion scores both, castling is quiet", () => {
+  const fen = "1n2k3/P7/8/8/8/8/8/R3K2R w KQ - 0 1";
+  const capture = priority(fen, "a7b8q");
+  assert(capture > priority(fen, "a7a8q"), "capture + promotion wins");
+  assert(priority(fen, "a7b8n") > 1, "an under-promotion counts the capture");
+  assertEquals(priority(fen, "e1g1"), 0);
+  assertEquals(priority(fen, "e1c1"), 0);
+});
+
 Deno.test("movePriority: a queen promotion beats any capture", () => {
   const fen = "4k3/P7/8/3q4/4P3/8/8/4K3 w - - 0 1";
   assert(priority(fen, "a7a8q") > priority(fen, "e4d5"));
