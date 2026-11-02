@@ -426,7 +426,11 @@ const chain: GameRules<number, number> = {
 async function chainDepth(quiescence: Quiescence<number, number>) {
   let deepest = 0;
   const e = createMinimaxEngine({
-    rules: { ...chain, play: (_, m) => (deepest = Math.max(deepest, m), m) },
+    // One Move per Position: past 1,000 plies the cap did not hold.
+    rules: budgeted(
+      { ...chain, play: (_, m) => (deepest = Math.max(deepest, m), m) },
+      1000,
+    ),
     // Worse the longer it goes, so standing pat never cuts the chain short.
     evaluate: (p) => -p,
     name: "chain",
@@ -504,22 +508,38 @@ Deno.test("a cap of 0 searches exactly like no quiescence", async () => {
 
 // --- Limits ------------------------------------------------------------------
 
+/**
+ * `rules` whose `play` throws after `max` Moves, so a search that should
+ * stop (e.g. one that no longer yields to the driver, or searches every Move
+ * where stand pat is allowed) fails instead of hanging.
+ */
+function budgeted<P, M>(rules: GameRules<P, M>, max: number): GameRules<P, M> {
+  let played = 0;
+  return {
+    ...rules,
+    play(p, m) {
+      if (++played > max) {
+        throw new Error(`played more than ${max} Moves: the search went on`);
+      }
+      return rules.play(p, m);
+    },
+  };
+}
+
 // Depth 1 is cheap: at ply 1 nothing is tactical. From ply 2 on, stand pat is
-// refused and every Move searched, with a cap far too deep to finish.
-const explode: Quiescence<readonly number[], number> = {
-  standPat: (p) => p.length < 2,
-  maxPlies: 60,
-};
-const exploding = createMinimaxEngine({
-  rules: wide,
-  evaluate: hashValue,
-  name: "explode",
-  quiescence: explode,
-});
+// refused and every Move searched, with a cap far too deep to finish. A 50 ms
+// search plays some 30,000 Moves.
+const exploding = () =>
+  createMinimaxEngine({
+    rules: budgeted(wide, 1_000_000),
+    evaluate: hashValue,
+    name: "explode",
+    quiescence: { standPat: (p) => p.length < 2, maxPlies: 60 },
+  });
 
 Deno.test("a time limit interrupts quiescence", async () => {
   const started = performance.now();
-  const all = await collect(exploding.analyze([], { maxTimeMs: 50 }));
+  const all = await collect(exploding().analyze([], { maxTimeMs: 50 }));
   const elapsed = performance.now() - started;
   assert(elapsed < 1000, `took ${elapsed}ms`);
   assertEquals(all.map((a) => a.depth), [1]);
@@ -529,7 +549,7 @@ Deno.test("aborting interrupts quiescence", async () => {
   const controller = new AbortController();
   const started = performance.now();
   const timer = setTimeout(() => controller.abort(), 50);
-  const all = await collect(exploding.analyze([], {}, controller.signal));
+  const all = await collect(exploding().analyze([], {}, controller.signal));
   clearTimeout(timer);
   const elapsed = performance.now() - started;
   assert(elapsed < 1000, `took ${elapsed}ms`);
