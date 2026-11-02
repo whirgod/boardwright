@@ -31,6 +31,14 @@
  * which is computed on a cutoff and, at a node, for quiet Moves only until the
  * killers are found. Killers only reorder: values never change.
  *
+ * At the depth horizon, an optional Engine-supplied `quiescence` searches on
+ * with the tactical Moves until the Position is quiet (`quiescence.ts`), so
+ * a capture at the horizon is not scored without its recapture. The Seat to
+ * move may stand pat (take the evaluation) where the Engine allows it, so
+ * standing pat counts as a horizon; a quiescence subtree that ends only in
+ * Outcomes does not. Quiescence results are not stored in the table, and
+ * the Lines include the quiescence Moves.
+ *
  * Principal variations stay complete: a score inside the window is never
  * taken from the table. A stored score may come from a deeper search, so a
  * depth can see further than a plain search to that depth would. Each
@@ -71,6 +79,12 @@ import {
 } from "@boardwright/engine-search";
 import { Killers, type MovePriority, orderMoves } from "./ordering.ts";
 import {
+  checkQuiescence,
+  DEFAULT_QUIESCENCE_PLIES,
+  type Quiescence,
+  quiescenceMoves,
+} from "./quiescence.ts";
+import {
   type Bound,
   checkTableBytes,
   createTranspositionTable,
@@ -80,6 +94,7 @@ import {
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
 export { MAX_EVALUATION } from "@boardwright/engine-search";
+export { DEFAULT_QUIESCENCE_PLIES, type Quiescence } from "./quiescence.ts";
 
 /**
  * A Game without chance. Minimax cannot search Chance events (ADR 0005), so a
@@ -128,6 +143,25 @@ export interface MinimaxOptions<Position, Move> {
    * Without it the Game's order is used.
    */
   readonly movePriority?: MovePriority<Position, Move>;
+  /**
+   * Optional quiescence search (`quiescence.ts`), Engine knowledge like
+   * `evaluate`: at the depth horizon, the search goes on with the tactical
+   * Moves until the Position is quiet, so a capture at the horizon is not
+   * scored without the recapture. `standPat(position)` says where the Seat
+   * to move may decline them all (false in chess when in check, in checkers
+   * when a capture is compulsory: every legal Move is searched there);
+   * `tactical` picks the Moves (default: `movePriority` > 0); `maxPlies`
+   * caps the plies past the horizon (default
+   * {@link DEFAULT_QUIESCENCE_PLIES}; a RangeError from
+   * `createMinimaxEngine` unless an integer >= 0). Without it, every
+   * Position at the horizon is evaluated as it stands.
+   *
+   * Every quiescence Move counts as a node (time limits and aborts
+   * interrupt it); quiescence results are not stored in the table; Lines
+   * include the quiescence Moves, so they may be longer than the reported
+   * (nominal) depth.
+   */
+  readonly quiescence?: Quiescence<Position, Move>;
 }
 
 /**
@@ -172,6 +206,7 @@ export function createMinimaxEngine<Position, Move>(
     name,
     tableBytes = DEFAULT_TABLE_BYTES,
     movePriority,
+    quiescence,
   } = options;
   // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
   if (hasChance(rules as GameRules<Position, Move>)) {
@@ -180,6 +215,7 @@ export function createMinimaxEngine<Position, Move>(
     );
   }
   checkTableBytes(tableBytes);
+  if (quiescence) checkQuiescence(quiescence);
 
   return {
     name,
@@ -191,6 +227,7 @@ export function createMinimaxEngine<Position, Move>(
         evaluate,
         tableBytes,
         movePriority,
+        quiescence,
         position,
         limits,
         signal,
@@ -204,6 +241,7 @@ async function* analyze<Position, Move>(
   evaluate: (position: Position) => number,
   tableBytes: number,
   movePriority: MovePriority<Position, Move> | undefined,
+  quiescence: Quiescence<Position, Move> | undefined,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -234,12 +272,25 @@ async function* analyze<Position, Move>(
   const encodeMove = (move: Move) => rules.notation.encodeMove(move);
   const priority: MovePriority<Position, Move> = movePriority ?? noPriority;
   const counter = createNodeCounter();
-  // Horizon Positions evaluated in the current depth, counting a stored
-  // result that came from a search that hit the horizon as one. While none
-  // is found, the depth is exact.
+  // Horizon Positions evaluated in the current depth (in quiescence: every
+  // stand pat), counting a stored result that came from a search that hit
+  // the horizon as one. While none is found, the depth is exact.
   let horizons = 0;
+  // Quiescence plies past the horizon before a Position is evaluated anyway.
+  const maxPlies = quiescence?.maxPlies ?? DEFAULT_QUIESCENCE_PLIES;
 
-  /** Score of `child` (reached from a Position where `seat` moved) if it is a leaf. */
+  /** The evaluation of non-terminal `position`, for its Seat to move. */
+  function staticScore(position: Position): number {
+    return horizonScore(
+      evaluate(position),
+      () => rules.notation.encodePosition(position),
+    );
+  }
+
+  /**
+   * Score of `child` (reached from a Position where `seat` moved) if it is a
+   * leaf: terminal, or at the horizon without quiescence.
+   */
   function leafScore(
     child: Position,
     seat: Seat,
@@ -248,20 +299,18 @@ async function* analyze<Position, Move>(
   ): number | undefined {
     const outcome = rules.outcome(child);
     if (outcome) return terminalScore(outcome, seat, ply);
-    if (depthLeft > 0) return undefined;
+    if (depthLeft > 0 || quiescence) return undefined;
     horizons++;
-    const value = horizonScore(
-      evaluate(child),
-      () => rules.notation.encodePosition(child),
-    );
+    const value = staticScore(child);
     return rules.toMove(child) === seat ? value : -value;
   }
 
   /**
    * Scores Move `move` in `position` (where `seat` is to move) from `seat`'s
-   * perspective, searching `depthLeft` more plies below the child. The PV is
-   * the child's continuation, without `move`; callers prepend `move` only to
-   * results they keep, so discarded nodes allocate nothing.
+   * perspective, searching `depthLeft` more plies below the child (0 or
+   * less: quiescence). The PV is the child's continuation, without `move`;
+   * callers prepend `move` only to results they keep, so discarded nodes
+   * allocate nothing.
    */
   function* child(
     position: Position,
@@ -277,11 +326,64 @@ async function* analyze<Position, Move>(
     const leaf = leafScore(next, seat, depthLeft, ply + 1);
     if (leaf !== undefined) return { score: leaf, pv: NO_MOVES };
     const nextSeat = rules.toMove(next)!;
+    const search = depthLeft > 0 ? negamax : quiesce;
     if (nextSeat === seat) {
-      return yield* negamax(next, nextSeat, depthLeft, ply + 1, alpha, beta);
+      return yield* search(next, nextSeat, depthLeft, ply + 1, alpha, beta);
     }
-    const r = yield* negamax(next, nextSeat, depthLeft, ply + 1, -beta, -alpha);
+    const r = yield* search(next, nextSeat, depthLeft, ply + 1, -beta, -alpha);
     return { score: -r.score, pv: r.pv };
+  }
+
+  /**
+   * Fail-soft quiescence search of a non-terminal `position` at or past the
+   * horizon, from `seat`'s perspective (see `quiescence.ts`); `depth` <= 0 is
+   * minus the plies past the horizon.
+   *
+   * Standing pat skips the quiet Moves, so it counts as a horizon, whether
+   * or not its evaluation decides the score: only a quiescence subtree that
+   * refuses stand pat everywhere and ends in Outcomes is exact. A stand pat
+   * is clamped like any evaluation, so it never makes a forced result; a
+   * forced result found by the Moves is counted in plies from the root, like
+   * any other. The PV includes the quiescence Moves. Results are not stored
+   * in the table: they are many, cheap, and keyed by long texts.
+   */
+  function* quiesce(
+    position: Position,
+    seat: Seat,
+    depth: number,
+    ply: number,
+    alpha: number,
+    beta: number,
+  ): Search<Result<Move>> {
+    const capped = depth <= -maxPlies;
+    const standPat = capped || quiescence!.standPat(position);
+    let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
+    if (standPat) {
+      horizons++;
+      const score = staticScore(position);
+      if (capped || score >= beta) return { score, pv: NO_MOVES };
+      best = { score, pv: NO_MOVES };
+      if (score > alpha) alpha = score;
+    }
+    const moves = quiescenceMoves(
+      position,
+      rules.legalMoves(position),
+      !standPat,
+      quiescence!.tactical,
+      movePriority,
+      scratch,
+    );
+    for (const move of moves) {
+      const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
+      if (r.score > best.score) {
+        best = { score: r.score, pv: [move, ...r.pv] };
+        if (r.score > alpha) {
+          alpha = r.score;
+          if (alpha >= beta) break;
+        }
+      }
+    }
+    return best;
   }
 
   /**
