@@ -27,11 +27,12 @@ algorithm. Depends only on `core` and knows nothing about chance.
 - `@boardwright/engine-search/table` (`src/table.ts`) — the transposition table both libraries
   use, one per `analyze` call: `createTranspositionTable(budget)` (a memory budget in bytes,
   `DEFAULT_TABLE_BYTES` = 256 MiB, `checkTableBytes`; details in the minimax section), entries
-  with the best Move's index (`tryOrder` searches it first), the score, its bound and the depth
-  searched (Infinity when no horizon was hit), and the mate-distance conversion `toTableScore` /
+  with the best Move's index (the hash Move), the score, its bound and the depth searched
+  (Infinity when no horizon was hit), and the mate-distance conversion `toTableScore` /
   `fromTableScore` (forced results are stored counted from the Position, which may recur at
   another ply). It only stores and finds entries: whose perspective a score takes and when it
-  may answer a visit is up to the library.
+  may answer a visit is up to the library. `tryOrder` puts the hash Move first and keeps the
+  Game's order otherwise (expectiminimax; minimax orders Moves itself, `src/ordering.ts`).
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -78,11 +79,12 @@ export const engine = createMinimaxEngine({
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
-- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`: tries the best Move
-  of the previous depth first (hash Move) and reuses stored scores where sound (searched at least
-  as deep, bound settles the window, forced results counted from the Position, a stored horizon
-  still counts against `solved`). Scores inside the window are searched again, so PVs stay
-  complete. A stored deeper result may let a depth see further than a plain search of that depth.
+- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`:
+  tries the best Move of the previous depth first (hash Move) and reuses stored scores where
+  sound (searched at least as deep, bound settles the window, forced results counted from the
+  Position, a stored horizon still counts against `solved`). Scores inside the window are
+  searched again, so PVs stay complete. A stored deeper result may let a depth see further than a
+  plain search of that depth.
 - Move ordering: the hash Move first, then, with the optional Engine-supplied
   `movePriority(position, move)` (finite number, else RangeError), the rest by priority, highest
   first, the Game's order breaking ties; the root at depth 1 too. Convention (`src/ordering.ts`):
