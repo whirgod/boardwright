@@ -20,8 +20,7 @@
  *
  * What it deliberately does not do (so it is easy to read, and to improve):
  * no king-safety, mobility, pawn-structure or bishop-pair terms beyond the
- * tables; no history heuristic, so it searches only a few plies per second
- * budget.
+ * tables.
  *
  * Quiescence search (`quiescence`): at the depth horizon the search goes on
  * with captures and promotions until the Position is quiet, so it does not
@@ -36,7 +35,7 @@
  * table, then captures and promotions (`movePriority`: captures by MVV-LVA,
  * most valuable victim and least valuable attacker first; a queen promotion
  * ahead of them), then the library's killer Moves, then the other quiet
- * Moves in the Game's order. Quiescence searches the captures and promotions
+ * Moves by history score (the squares, `moveKey`), then in the Game's order. Quiescence searches the captures and promotions
  * in the same order (all legal Moves, in check). The table's key
  * is the whole Position, and a chess Position includes the move clocks and
  * the repetition history, so different Move orders (1. Nf3 Nf6 2. Nc3 and
@@ -246,6 +245,10 @@ export function movePriority(
 export const quiescence: Quiescence<ChessPosition, ChessMove> = {
   standPat: (position) => !isInCheck(position),
 };
+/** Identity of a Move for the history heuristic: its squares (cheaper than its text). */
+export function moveKey(move: ChessMove): number {
+  return move.from * 64 + move.to;
+}
 
 export const engine: Engine<ChessPosition, ChessMove> = createMinimaxEngine<
   ChessPosition,
@@ -255,5 +258,6 @@ export const engine: Engine<ChessPosition, ChessMove> = createMinimaxEngine<
   evaluate,
   movePriority,
   quiescence,
+  moveKey,
   name: "Minimax",
 });
