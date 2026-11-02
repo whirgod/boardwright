@@ -27,9 +27,15 @@
  * results. This holds when the budget is full as well: an entry that does
  * not fit still drops an occupant from an earlier iteration, so the budget
  * keeps turning over.
+ *
+ * Shared plumbing of the Engine libraries (`engines/minimax`,
+ * `engines/expectiminimax`), exported as `@boardwright/engine-search/table`.
+ * The table only stores and finds entries; what a score means (whose
+ * perspective, when a stored result may answer a visit) is up to the
+ * library's search.
  */
 
-import { MATE_BOUND } from "@boardwright/engine-search";
+import { MATE_BOUND } from "./mod.ts";
 
 /**
  * What a fail-soft alpha-beta search of window (alpha, beta) returned: the
@@ -43,19 +49,21 @@ export type Bound = "exact" | "lower" | "upper";
 export interface Entry {
   /**
    * Index of the best Move found in `rules.legalMoves(position)`, or -1 if
-   * none. The key determines the Position, so the same key lists the same
-   * Moves in the same order.
+   * none (e.g. a pending Chance event). The key determines the Position, so
+   * the same key lists the same Moves in the same order.
    */
   readonly move: number;
   /**
-   * Nominal plies searched below the Position (quiescence, if any, searched
-   * on past them), or Infinity if the search hit no horizon (every branch it
-   * looked at ended in an Outcome): then the score holds at any depth.
+   * Nominal plies (Moves) searched below the Position (minimax's quiescence,
+   * if any, searched on past them), or Infinity if the search hit no horizon
+   * (every branch it looked at ended in an Outcome): then the score holds at
+   * any depth.
    */
   readonly depth: number;
   /**
-   * The search's score, from the perspective of the Seat to move, with
-   * forced wins and losses counted from this Position ({@link toTableScore}).
+   * The search's score, from the perspective the library fixes for the
+   * Position (the Seat to move, if any), with forced wins and losses counted
+   * from this Position ({@link toTableScore}).
    */
   readonly score: number;
   readonly bound: Bound;
@@ -87,6 +95,14 @@ export const ENTRY_BYTES = 160;
 export const SLOT_BYTES = 8;
 /** Largest memory budget, 4 GiB (some 27 million slots). */
 export const MAX_TABLE_BYTES = 2 ** 32;
+
+/**
+ * Default memory budget of a search's table: 256 MiB. The table grows with
+ * the search, so short searches use little. The server runs up to 4
+ * searches at once (Worker memory is not capped), so the worst case is
+ * about 1 GiB.
+ */
+export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
 
 /** Checks a memory budget: an integer from 0 to {@link MAX_TABLE_BYTES}. */
 export function checkTableBytes(bytes: number): void {

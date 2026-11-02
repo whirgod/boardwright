@@ -9,9 +9,9 @@
  *
  * Iterative deepening searches the same Positions again at every depth, and
  * different Move orders often reach the same Position (a transposition). A
- * transposition table (`table.ts`), keyed by `Notation.encodePosition`,
- * remembers for each Position below the root the best Move found and the
- * score:
+ * transposition table (`@boardwright/engine-search/table`), keyed by
+ * `Notation.encodePosition`, remembers for each Position below the root the
+ * best Move found and the score:
  * - Move ordering: alpha-beta prunes the most when the best Move is searched
  *   first, and the best Move found one depth shallower (the hash Move) is a
  *   good guess, so it is tried first. At the root, the previous depth's
@@ -105,9 +105,10 @@ import {
   type Bound,
   checkTableBytes,
   createTranspositionTable,
+  DEFAULT_TABLE_BYTES,
   fromTableScore,
   toTableScore,
-} from "./table.ts";
+} from "@boardwright/engine-search/table";
 
 /** Largest magnitude an evaluation keeps; larger values are clamped. */
 export { MAX_EVALUATION } from "@boardwright/engine-search";
@@ -143,9 +144,9 @@ export interface MinimaxOptions<Position, Move> {
    * Memory budget of the transposition table in bytes, an integer from 0 (no
    * table) to 2^32 (default {@link DEFAULT_TABLE_BYTES}). Each `analyze`
    * call gets its own table, which grows up to this budget as estimated by
-   * `table.ts`: an entry counts as about 160 bytes plus its key (the encoded
-   * Position), which ranges from a few dozen characters to a few thousand
-   * with a long repetition history.
+   * `@boardwright/engine-search/table`: an entry counts as about 160 bytes
+   * plus its key (the encoded Position), which ranges from a few dozen
+   * characters to a few thousand with a long repetition history.
    */
   readonly tableBytes?: number;
   /**
@@ -224,12 +225,11 @@ export interface MinimaxOptions<Position, Move> {
 export const DEFAULT_MAX_EXTENSIONS = 4;
 
 /**
- * Default memory budget of the transposition table: 256 MiB per search. The
- * table grows with the search, so short searches use little. The server runs
- * up to 4 searches at once (Worker memory is not capped), so the worst case
- * is about 1 GiB.
+ * Default memory budget of the transposition table: 256 MiB per search, about
+ * 1 GiB with the server's 4 concurrent searches (see
+ * `@boardwright/engine-search/table`).
  */
-export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
+export { DEFAULT_TABLE_BYTES };
 
 /**
  * Creates an Engine that searches with negamax + alpha-beta and iterative
