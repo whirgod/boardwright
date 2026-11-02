@@ -2,7 +2,8 @@ import { assert, assertEquals } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import type { ChessMove, ChessPosition } from "@boardwright/game-chess";
 import { assertEngineContract, seededRandom } from "@boardwright/testing";
-import { engine, evaluate, MATERIAL, rules } from "./mod.ts";
+import { createMinimaxEngine } from "@boardwright/engine-minimax";
+import { engine, evaluate, MATERIAL, movePriority, rules } from "./mod.ts";
 
 const decode = (fen: string) => rules.notation.decodePosition(fen);
 const uci = rules.notation.encodeMove;
@@ -190,6 +191,82 @@ Deno.test("beats a seeded random mover", async () => {
     // Either mated the random mover or is clearly ahead in material.
     assert(winner === seat || lead(p, seat) >= 500, `match ${i}`);
   }
+});
+
+/** Priority of the Move `text` (UCI) in `fen`. */
+function priority(fen: string, text: string): number {
+  const p = decode(fen);
+  const move = rules.legalMoves(p).find((m) => uci(m) === text);
+  assert(move, `${text} is not legal in ${fen}`);
+  return movePriority(p, move);
+}
+
+Deno.test("movePriority: quiet Moves 0, most valuable victim then least valuable attacker", () => {
+  const fen = "4k3/8/8/3q3r/4P3/8/8/3QK3 w - - 0 1";
+  assertEquals(priority(fen, "e1e2"), 0);
+  assertEquals(priority(fen, "e4e5"), 0);
+  const pxq = priority(fen, "e4d5");
+  const qxq = priority(fen, "d1d5");
+  const qxr = priority(fen, "d1h5");
+  assert(pxq > qxq, "pawn takes queen beats queen takes queen");
+  assert(qxq > qxr, "queen takes queen beats queen takes rook");
+  assert(qxr > 0);
+});
+
+Deno.test("movePriority: a capture-promotion scores both, castling is quiet", () => {
+  const fen = "1n2k3/P7/8/8/8/8/8/R3K2R w KQ - 0 1";
+  const capture = priority(fen, "a7b8q");
+  assert(capture > priority(fen, "a7a8q"), "capture + promotion wins");
+  assert(priority(fen, "a7b8n") > 1, "an under-promotion counts the capture");
+  assertEquals(priority(fen, "e1g1"), 0);
+  assertEquals(priority(fen, "e1c1"), 0);
+});
+
+Deno.test("movePriority: a queen promotion beats any capture", () => {
+  const fen = "4k3/P7/8/3q4/4P3/8/8/4K3 w - - 0 1";
+  assert(priority(fen, "a7a8q") > priority(fen, "e4d5"));
+  assert(priority(fen, "a7a8n") > 0);
+  assert(priority(fen, "a7a8q") > priority(fen, "a7a8n"));
+});
+
+Deno.test("movePriority: en passant is a capture of a pawn", () => {
+  const fen = "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1";
+  assert(priority(fen, "e5d6") > 0);
+  assertEquals(priority(fen, "e5e6"), 0);
+});
+
+Deno.test("the Move priority saves nodes and keeps the Score", async () => {
+  const plain = (counted: { n: number }) =>
+    createMinimaxEngine({
+      rules: {
+        ...rules,
+        play: (p, m) => (counted.n++, rules.play(p, m)),
+      },
+      evaluate,
+      name: "plain",
+      tableBytes: 0,
+    });
+  const ordered = (counted: { n: number }) =>
+    createMinimaxEngine({
+      rules: {
+        ...rules,
+        play: (p, m) => (counted.n++, rules.play(p, m)),
+      },
+      evaluate,
+      movePriority,
+      name: "ordered",
+      tableBytes: 0,
+    });
+  const fen =
+    "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 7";
+  const a = { n: 0 };
+  const b = { n: 0 };
+  let x: Analysis<ChessMove> | undefined;
+  let y: Analysis<ChessMove> | undefined;
+  for await (const r of plain(a).analyze(decode(fen), { maxDepth: 3 })) x = r;
+  for await (const r of ordered(b).analyze(decode(fen), { maxDepth: 3 })) y = r;
+  assertEquals(y!.lines[0]!.score, x!.lines[0]!.score);
+  assert(b.n < a.n, `${b.n} vs ${a.n}`);
 });
 
 Deno.test("honours the Engine contract", async () => {

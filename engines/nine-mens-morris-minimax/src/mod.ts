@@ -8,6 +8,9 @@
  * empty point left) refine it. A Seat reduced to three pieces flies, so its
  * pieces are never counted as blocked.
  *
+ * Move ordering: the library's hash Move first, then Moves that close a mill
+ * (`movePriority`), then the rest in the Game's order.
+ *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker.
  */
 import type { Engine } from "@boardwright/core";
@@ -73,7 +76,18 @@ export function evaluate(position: MorrisPosition): number {
     WEIGHTS.twoInRow * (a.twos - b.twos);
 }
 
+/**
+ * Move priority for the search: a Move that closes a mill (it removes an
+ * opposing piece) is tactical, 1; every other Move is quiet, 0.
+ */
+export function movePriority(
+  _position: MorrisPosition,
+  move: MorrisMove,
+): number {
+  return move.remove === undefined ? 0 : 1;
+}
+
 export const engine: Engine<MorrisPosition, MorrisMove> = createMinimaxEngine<
   MorrisPosition,
   MorrisMove
->({ rules, evaluate, name: "Minimax" });
+>({ rules, evaluate, movePriority, name: "Minimax" });

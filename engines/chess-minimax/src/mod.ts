@@ -21,17 +21,19 @@
  * What it deliberately does not do (so it is easy to read, and to improve):
  * no quiescence search, so it can stop mid-exchange at the depth cut and
  * misjudge captures (horizon effect); no king-safety, mobility, pawn-structure
- * or bishop-pair terms beyond the tables; no chess-specific move ordering
- * (captures first, killer Moves), so it searches only a few plies per second
- * budget.
+ * or bishop-pair terms beyond the tables; no killer Moves or history
+ * heuristic, so it searches only a few plies per second budget.
  *
  * Checkmate and draws are scored exactly by the search library through the
- * rules; this function only sees non-terminal Positions. Move ordering is
- * whatever the library does: the best Move of the previous depth first, from
- * its transposition table. The table's key is the whole Position, and a
- * chess Position includes the move clocks and the repetition history, so
- * different Move orders (1. Nf3 Nf6 2. Nc3 and 1. Nc3 Nf6 2. Nf3) rarely
- * share a key: the table mostly helps by ordering Moves.
+ * rules; this function only sees non-terminal Positions. Move ordering: the
+ * best Move of the previous depth first, from the library's transposition
+ * table, then captures and promotions (`movePriority`: captures by MVV-LVA,
+ * most valuable victim and least valuable attacker first; a queen promotion
+ * ahead of them), then the quiet Moves in the Game's order. The table's key
+ * is the whole Position, and a chess Position includes the move clocks and
+ * the repetition history, so different Move orders (1. Nf3 Nf6 2. Nc3 and
+ * 1. Nc3 Nf6 2. Nf3) rarely share a key: the table mostly helps by ordering
+ * Moves.
  *
  * Exports `rules` and `engine` so a host can load it by URL in a Worker.
  */
@@ -188,11 +190,45 @@ export function evaluate(position: ChessPosition): number {
   return sum;
 }
 
+/** Rank of a piece for MVV-LVA: pawn 1 ... queen 5, king 6. */
+const RANK: Readonly<Record<string, number>> = {
+  p: 1,
+  n: 2,
+  b: 3,
+  r: 4,
+  q: 5,
+  k: 6,
+};
+
+/**
+ * Move priority for the search: above 0 for captures (en passant included)
+ * and promotions, 0 for quiet Moves. A capture scores 16 * victim rank + 6 -
+ * attacker rank (most valuable victim, least valuable attacker); a queen
+ * promotion adds 150, any other promotion 1.
+ */
+export function movePriority(
+  position: ChessPosition,
+  move: ChessMove,
+): number {
+  const attacker = position.board[move.from]!.toLowerCase();
+  let victim = position.board[move.to]!;
+  if (victim === "." && attacker === "p" && move.to === position.enPassant) {
+    victim = "p";
+  }
+  let priority = 0;
+  if (victim !== ".") {
+    priority = 16 * RANK[victim.toLowerCase()]! + 6 - RANK[attacker]!;
+  }
+  if (move.promotion) priority += move.promotion === "q" ? 150 : 1;
+  return priority;
+}
+
 export const engine: Engine<ChessPosition, ChessMove> = createMinimaxEngine<
   ChessPosition,
   ChessMove
 >({
   rules,
   evaluate,
+  movePriority,
   name: "Minimax",
 });

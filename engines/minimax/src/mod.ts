@@ -23,6 +23,9 @@
  *   counts as hitting it again, so a depth is `solved` only if it is; one
  *   that ended in Outcomes everywhere holds at any depth.
  *
+ * Below the hash Move, an optional Engine-supplied `movePriority` orders the
+ * Moves (`ordering.ts` has the convention: tactical Moves first).
+ *
  * Principal variations stay complete: a score inside the window is never
  * taken from the table. A stored score may come from a deeper search, so a
  * depth can see further than a plain search to that depth would. Each
@@ -61,6 +64,7 @@ import {
   toLines,
   validateLimits,
 } from "@boardwright/engine-search";
+import { type MovePriority, orderMoves } from "./ordering.ts";
 import {
   type Bound,
   checkTableBytes,
@@ -106,6 +110,19 @@ export interface MinimaxOptions<Position, Move> {
    * with a long repetition history.
    */
   readonly tableBytes?: number;
+  /**
+   * Optional Move ordering, Engine knowledge like `evaluate`: how promising
+   * `move` looks in `position`, as a finite number (a RangeError otherwise).
+   * Alpha-beta prunes the most when the best Move is searched first. At a
+   * node the hash Move goes first, then the rest by priority, highest first;
+   * the Game's order breaks ties. The root at depth 1 is ordered the same
+   * way. The convention: a priority above 0 marks a tactical Move (capture,
+   * promotion) that goes before killer Moves and the history heuristic, 0
+   * or below a quiet one. Called once per Move at every interior node, so
+   * keep it cheap. Ordering never changes a result, only the node count.
+   * Without it the Game's order is used.
+   */
+  readonly movePriority?: MovePriority<Position, Move>;
 }
 
 /**
@@ -144,7 +161,13 @@ export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
 export function createMinimaxEngine<Position, Move>(
   options: MinimaxOptions<Position, Move>,
 ): Engine<Position, Move> {
-  const { rules, evaluate, name, tableBytes = DEFAULT_TABLE_BYTES } = options;
+  const {
+    rules,
+    evaluate,
+    name,
+    tableBytes = DEFAULT_TABLE_BYTES,
+    movePriority,
+  } = options;
   // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
   if (hasChance(rules as GameRules<Position, Move>)) {
     throw new TypeError(
@@ -158,7 +181,15 @@ export function createMinimaxEngine<Position, Move>(
     gameId: rules.id,
     analyze(position, limits, signal) {
       validateLimits(limits);
-      return analyze(rules, evaluate, tableBytes, position, limits, signal);
+      return analyze(
+        rules,
+        evaluate,
+        tableBytes,
+        movePriority,
+        position,
+        limits,
+        signal,
+      );
     },
   };
 }
@@ -167,6 +198,7 @@ async function* analyze<Position, Move>(
   rules: GameRules<Position, Move>,
   evaluate: (position: Position) => number,
   tableBytes: number,
+  movePriority: MovePriority<Position, Move> | undefined,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -180,6 +212,16 @@ async function* analyze<Position, Move>(
 
   // Root Moves, re-ordered after each depth by the previous depth's scores.
   let order: readonly Move[] = rules.legalMoves(root);
+  // Priorities of one node's Moves, reused by every node: `orderMoves` is done
+  // with it before it returns, i.e. before any child is searched, so plies
+  // never share live data (killers/history, #84/#85, keep their own state).
+  const scratch: number[] = [];
+  if (movePriority) {
+    const listed = order;
+    order = orderMoves(root, listed, -1, movePriority, scratch).map((i) =>
+      listed[i]!
+    );
+  }
   // What the search found per Position below the root (see `negamax`).
   const table = createTranspositionTable(tableBytes);
   const counter = createNodeCounter();
@@ -277,8 +319,11 @@ async function* analyze<Position, Move>(
       : -1;
     let best: Result<Move> = { score: -Infinity, pv: NO_MOVES };
     let bestIndex = -1;
+    const ordered = movePriority
+      ? orderMoves(position, moves, hashMove, movePriority, scratch)
+      : undefined;
     for (let k = 0; k < moves.length; k++) {
-      const i = tryOrder(k, hashMove);
+      const i = ordered ? ordered[k]! : tryOrder(k, hashMove);
       const move = moves[i]!;
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {

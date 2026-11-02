@@ -2,7 +2,7 @@ import { assert, assertEquals } from "@std/assert";
 import type { Analysis } from "@boardwright/core";
 import { type MorrisMove, POINTS } from "@boardwright/game-nine-mens-morris";
 import { assertEngineContract, seededRandom } from "@boardwright/testing";
-import { engine, evaluate, rules, WEIGHTS } from "./mod.ts";
+import { engine, evaluate, movePriority, rules, WEIGHTS } from "./mod.ts";
 
 /** Position text for the given pieces; `hands` are `white:black` in hand. */
 function text(
@@ -80,6 +80,18 @@ Deno.test("blocked pieces count against their owner", () => {
 Deno.test("completes a mill and removes a piece", async () => {
   const move = await best(placing(["a1", "d1"], ["b2", "b4"], "w"), 3);
   assert(move.startsWith("g1x"), move);
+});
+
+Deno.test("movePriority: Moves that close a mill are tactical", () => {
+  const p = placing(["a1", "d1"], ["b2", "b4"], "w");
+  const moves = rules.legalMoves(decode(p));
+  const closing = moves.filter((m) => movePriority(decode(p), m) > 0);
+  assert(closing.length > 0);
+  assert(closing.every((m) => m.to === "g1" && m.remove !== undefined));
+  assertEquals(
+    moves.filter((m) => movePriority(decode(p), m) === 0).length,
+    moves.length - closing.length,
+  );
 });
 
 /** Final Analysis with every legal root Move reported, best first. */
