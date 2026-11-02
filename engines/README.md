@@ -153,8 +153,8 @@ export const engine = createExpectiminimaxEngine({
   search, 0 = no table).
 - Where a Chance event separates every two Moves (backgammon), alpha-beta prunes nothing: every
   decision node's children are Chance events, searched with a full window. The table then helps
-  through transpositions: different rolls (e.g. 61, 52 and 43) often lead to the same Position,
-  whose next roll is valued once.
+  through transpositions only: different rolls (e.g. 61, 52 and 43) often lead to the same
+  Position, whose next roll is valued once (5-9% fewer Moves at depth 3, see below).
 
 ## Game Engines
 
@@ -184,6 +184,8 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without
-  `maxDepth` stop at depth 2 (a few hundred ms; depth 3 takes about half a minute), even with a
-  `maxTimeMs` (which the server always sets): `maxTimeMs` alone never deepens. Deeper searches
-  need an explicit `maxDepth`, still bounded by `maxTimeMs`.
+  `maxDepth` stop at depth 2 (0.1-0.4 s), even with a `maxTimeMs` (which the server always sets):
+  `maxTimeMs` alone never deepens. Depth 3 plays 400-500 times as many Moves (4-10 million) and
+  takes one to three minutes. The transposition table saves only 5-9% of them, as alpha-beta
+  prunes nothing here and only Positions that different rolls reach transpose, so the cap stays.
+  Deeper searches need an explicit `maxDepth`, still bounded by `maxTimeMs`.

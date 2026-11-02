@@ -33,9 +33,13 @@
  *
  * Backgammon branches wildly: ~20 plays per roll (hundreds for some doubles)
  * times 21 rolls. Depth 1 (pick the play with the best evaluation) takes a
- * millisecond; depth 2 (every roll, the Opponent's best reply) a few hundred;
- * depth 3 about half a minute in the opening. So {@link DEFAULT_MAX_DEPTH}
- * caps searches that set no `maxDepth`, keeping Engine Matches responsive.
+ * millisecond; depth 2 (every roll, the Opponent's best reply) 0.1-0.4 s;
+ * depth 3 plays 400-500 times as many Moves (4-10 million) and takes one to
+ * three minutes. The library's transposition table does not change that: a
+ * Chance event separates every two Moves, so alpha-beta prunes nothing, and
+ * only Positions that different rolls reach transpose (5-9% fewer Moves at
+ * depth 3). So {@link DEFAULT_MAX_DEPTH} caps searches that set no
+ * `maxDepth`, keeping Engine Matches responsive.
  * The cap applies even when `maxTimeMs` is set (the server always sets it):
  * `maxTimeMs` alone never deepens past depth 2. A deeper search needs an
  * explicit `maxDepth`, and is still cut off by `maxTimeMs` (the last
