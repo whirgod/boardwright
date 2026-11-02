@@ -40,11 +40,8 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] Minimax Move ordering: captures-first hook (#81), killer Moves (#84), history heuristic (#85)
 - [x] Minimax quiescence search (#88) with chess SEE and delta pruning (#95); check extensions (#89)
 - [x] Expectiminimax transposition table; the table moved to the search harness (#82)
+- [x] Transposition key supplied by the Game, leaving out history: chess, checkers, morris (#83, ADR 0009)
 
 ## Next
 
 New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
-
-Engine search improvements, in waves (`wave:<n>` labels):
-
-- [ ] Transposition key supplied by the Game, leaving out history (#83)
