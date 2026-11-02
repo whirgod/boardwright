@@ -19,10 +19,16 @@
  *   centre.
  *
  * What it deliberately does not do (so it is easy to read, and to improve):
- * no quiescence search, so it can stop mid-exchange at the depth cut and
- * misjudge captures (horizon effect); no king-safety, mobility, pawn-structure
- * or bishop-pair terms beyond the tables; no killer Moves or history
- * heuristic, so it searches only a few plies per second budget.
+ * no king-safety, mobility, pawn-structure or bishop-pair terms beyond the
+ * tables; no killer Moves or history heuristic, so it searches only a few
+ * plies per second budget.
+ *
+ * Quiescence search (`quiescence`): at the depth horizon the search goes on
+ * with captures and promotions until the Position is quiet, so it does not
+ * stop mid-exchange and misjudge captures (the horizon effect). A Seat in
+ * check may not stand pat (`isInCheck` from the Game). No delta pruning or
+ * static exchange evaluation, so every capture is searched, which costs
+ * nodes in tactical Positions; checks are not searched past the horizon.
  *
  * Checkmate and draws are scored exactly by the search library through the
  * rules; this function only sees non-terminal Positions. Move ordering: the
@@ -35,15 +41,20 @@
  * 1. Nc3 Nf6 2. Nf3) rarely share a key: the table mostly helps by ordering
  * Moves.
  *
- * Exports `rules` and `engine` so a host can load it by URL in a Worker.
+ * Exports `rules` and `engine` so a host can load it by URL in a Worker, and
+ * its parts (`evaluate`, `movePriority`, `quiescence`) to compose variants.
  */
 import type { Engine } from "@boardwright/core";
-import { createMinimaxEngine } from "@boardwright/engine-minimax";
+import {
+  createMinimaxEngine,
+  type Quiescence,
+} from "@boardwright/engine-minimax";
 import {
   type Cell,
   chess,
   type ChessMove,
   type ChessPosition,
+  isInCheck,
   type Piece,
 } from "@boardwright/game-chess";
 
@@ -223,6 +234,17 @@ export function movePriority(
   return priority;
 }
 
+/**
+ * Quiescence search at the horizon: captures (en passant included) and
+ * promotions, the Moves `movePriority` ranks above 0, until the Position is
+ * quiet. A Seat in check must answer the check, so it may not stand pat:
+ * every legal Move is searched. Default cap
+ * (`DEFAULT_QUIESCENCE_PLIES`).
+ */
+export const quiescence: Quiescence<ChessPosition, ChessMove> = {
+  standPat: (position) => !isInCheck(position),
+};
+
 export const engine: Engine<ChessPosition, ChessMove> = createMinimaxEngine<
   ChessPosition,
   ChessMove
@@ -230,5 +252,6 @@ export const engine: Engine<ChessPosition, ChessMove> = createMinimaxEngine<
   rules,
   evaluate,
   movePriority,
+  quiescence,
   name: "Minimax",
 });
