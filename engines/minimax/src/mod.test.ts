@@ -259,6 +259,18 @@ const wide: GameRules<readonly number[], number> = {
   },
 };
 
+/**
+ * `rules` with a Notation that never names the same Move twice, so no Move is
+ * ever recognised as a killer: the search runs as without killers.
+ */
+function withoutKillers<P, M>(rules: GameRules<P, M>): GameRules<P, M> {
+  let n = 0;
+  return {
+    ...rules,
+    notation: { ...rules.notation, encodeMove: () => String(n++) },
+  };
+}
+
 /** Pseudo-random value of a Position for its Seat to move (FNV-1a hash). */
 function hashValue(p: readonly number[]): number {
   let h = 2166136261;
@@ -306,7 +318,7 @@ Deno.test("hash Moves from the previous depth save nodes", async () => {
   async function nodes(tableBytes: number) {
     let played = 0;
     const counting = {
-      ...wide,
+      ...withoutKillers(wide),
       play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
     };
     const e = createMinimaxEngine({
@@ -333,7 +345,7 @@ Deno.test("a Move priority saves nodes when the best Move is listed last", async
   ) {
     let played = 0;
     const counting = {
-      ...wide,
+      ...withoutKillers(wide),
       play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
     };
     const e = createMinimaxEngine({
@@ -749,10 +761,10 @@ Deno.test("handles a Seat moving several times in a row", async () => {
   const e = createMinimaxEngine({ rules: twice, name: "t", evaluate: () => 0 });
   const a = await final(e, [], { lines: 2 });
   assertEquals(a.depth, 3);
-  assertEquals(a.lines[0], {
-    moves: [1, 1, 0],
-    score: { kind: "win-in", plies: 3 },
-  });
+  // b's reply makes no difference once a played 1, 1: either is a tie.
+  assertEquals(a.lines[0]!.moves.slice(0, 2), [1, 1]);
+  assert([0, 1].includes(a.lines[0]!.moves[2]!));
+  assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
   assertEquals(a.lines[1], {
     moves: [0, 0, 1],
     score: { kind: "loss-in", plies: 3 },
@@ -992,4 +1004,77 @@ Deno.test("refuses Games with chance (ADR 0005)", () => {
     () => createMinimaxEngine({ rules: widened, evaluate: () => 0, name: "m" }),
     TypeError,
   );
+});
+
+Deno.test("killer Moves save nodes (siblings share a refutation)", async () => {
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  /** Nodes (Moves played) to search `wide` to depth 5, without a table. */
+  async function nodes(rules: GameRules<readonly number[], number>) {
+    let played = 0;
+    const counting = {
+      ...rules,
+      play: (p: readonly number[], m: number) => (played++, rules.play(p, m)),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableBytes: 0,
+    });
+    const a = await final(e, [], { maxDepth: 5 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4]);
+    return played;
+  }
+  const plain = await nodes(withoutKillers(wide));
+  const killed = await nodes(wide);
+  assert(killed < plain * 0.9, `${killed} vs ${plain}`);
+});
+
+Deno.test("killer Moves never change a Score or the multi-PV Scores (no table)", async () => {
+  const index = (p: TicTacToePosition, m: TicTacToeMove) =>
+    ttt.legalMoves(p).indexOf(m);
+  const hooks: (
+    | ((p: TicTacToePosition, m: TicTacToeMove) => number)
+    | undefined
+  )[] = [undefined, (p, m) => -index(p, m), (p, m) => (index(p, m) % 3) - 1];
+  for (const movePriority of hooks) {
+    const e = createMinimaxEngine({
+      rules: ttt,
+      evaluate: () => 0,
+      name: "killers",
+      tableBytes: 0,
+      ...(movePriority ? { movePriority } : {}),
+    });
+    for (const p of samplePositions()) {
+      const moves = ttt.legalMoves(p);
+      const a = await final(e, p, { lines: moves.length });
+      assertEquals(a.lines.length, moves.length);
+      for (const line of a.lines) {
+        const move = line.moves[0]!;
+        assertEquals(
+          rank(line.score),
+          referenceMove(p, move),
+          `${ttt.notation.encodePosition(p)} ${move}`,
+        );
+      }
+    }
+  }
+  // Depth-limited, where cutoffs are frequent.
+  const e = createMinimaxEngine({
+    rules: wide,
+    name: "w",
+    evaluate: hashValue,
+    tableBytes: 0,
+  });
+  for (const maxDepth of [2, 3, 4]) {
+    await assertExactMultiPv(
+      e,
+      [],
+      { maxDepth },
+      wide.legalMoves([]),
+      (m) => -wideReference([m], maxDepth - 1),
+      `killers depth=${maxDepth}`,
+    );
+  }
 });
