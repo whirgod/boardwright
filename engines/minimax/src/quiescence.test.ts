@@ -895,6 +895,7 @@ const DELTA: Record<string, GraphNode> = {
 async function deltaSearch(
   nodes: Record<string, GraphNode>,
   gain: ((p: string, m: string) => number) | undefined,
+  maxDepth = 2,
 ) {
   const g = graphGame(nodes);
   const counted = counting(g.rules);
@@ -905,7 +906,7 @@ async function deltaSearch(
     name: "delta",
     quiescence: { ...g.quiescence, ...(gain ? { gain } : {}) },
   });
-  const a = await final(e, "root", { maxDepth: 2 });
+  const a = await final(e, "root", { maxDepth });
   return { line: a.lines[0]!, nodes: counted.count.nodes };
 }
 
@@ -958,4 +959,38 @@ Deno.test("delta pruning: not at the cap", async () => {
   });
   await final(e, "root", { maxDepth: 2 });
   assertEquals(asked, []);
+});
+
+// "m2" is reached twice at depth 1, first under x1 with alpha 20 (where its
+// capture is skipped: 0 + 10 <= 20), then under x2 with alpha 5. The first
+// visit stores a bound for m2 in the table; if the skipped Move were left out
+// of the result, that bound would be too strong and cut off the second visit,
+// which wins 10 (not 0) by capturing.
+const FAILSOFT: Record<string, GraphNode> = {
+  root: { seat: "a", moves: ["m0", "p"] },
+  m0: { seat: "b", moves: ["n1"] },
+  n1: { seat: "a", moves: ["n2"] },
+  n2: { seat: "b", moves: ["n3"] },
+  n3: { seat: "a", moves: ["end"], value: 5 },
+  p: { seat: "b", moves: ["x1", "x2"] },
+  x1: { seat: "a", moves: ["g", "m2"] },
+  g: { seat: "b", moves: ["g2"] },
+  g2: { seat: "a", moves: ["end"], value: 20 },
+  x2: { seat: "a", moves: ["m2"] },
+  m2: { seat: "b", moves: ["c"] },
+  c: { seat: "a", moves: ["xsmall"], value: 0 },
+  xsmall: { seat: "b", moves: ["end"], value: -10 },
+  end: {},
+};
+
+Deno.test("delta pruning: a skipped Move still bounds the result (a stored bound stays sound)", async () => {
+  const exact = await deltaSearch(FAILSOFT, undefined, 4);
+  assertEquals(exact.line.moves, ["p", "x2", "m2", "c", "xsmall"]);
+  assertEquals(exact.line.score, { kind: "value", value: 10 });
+  const pruned = await deltaSearch(
+    FAILSOFT,
+    (_p, m) => (m === "xsmall" ? 10 : 0),
+    4,
+  );
+  assertEquals(pruned.line, exact.line);
 });

@@ -438,6 +438,19 @@ Deno.test("see: hand-picked exchanges", () => {
     // would lose 400.
     ["3r3k/8/8/3p4/8/8/3R4/3RK3 w - - 0 1", "d2d5", 100],
     ["3r3k/8/8/3p4/8/8/8/3RK3 w - - 0 1", "d1d5", 100 - 500],
+    // Black to move: a free pawn, and a pawn defended by a pawn.
+    ["4k3/8/8/3p4/4P3/8/8/4K3 b - - 0 1", "d5e4", 100],
+    ["4k3/8/8/3p4/4P3/3P4/8/4K3 b - - 0 1", "d5e4", 0],
+    // The king may not be the last attacker into a defended square: the
+    // black king cannot take back on e4 (the pawn d3 defends it).
+    ["8/8/8/3k4/4p3/3P4/8/4R1K1 w - - 0 1", "e1e4", 100],
+    // A diagonal x-ray: the queen behind the bishop joins; without it the
+    // capture loses 230.
+    ["4k3/8/8/5n2/3p4/2B5/1Q6/4K3 w - - 0 1", "c3d4", 90],
+    ["4k3/8/8/5n2/3p4/2B5/8/4K3 w - - 0 1", "c3d4", -230],
+    // A promoting recapture (bxa1=Q) is valued as a pawn's capture: SEE is 0
+    // here although the recapture also promotes. Known limitation.
+    ["7k/8/8/8/8/8/1p6/r2R2K1 w - - 0 1", "d1a1", 0],
     // En passant: the captured pawn is not on the target square.
     ["4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 100],
   ];
@@ -478,7 +491,7 @@ Deno.test("gain bounds what the Move wins", () => {
   assertEquals(g("8/P6k/8/8/8/8/8/K7 w - - 0 1", "a7a8q"), 800 + m);
 });
 
-Deno.test("a Seat in check does not stand pat, so nothing is dropped or pruned", () => {
+Deno.test("a Seat in check does not stand pat (so every Move is searched), a quiet one does", () => {
   const position = decode("4k3/8/5N2/8/8/8/8/4K3 b - - 0 1");
   assert(!quiescenceOptions.standPat(position));
   assert(quiescenceOptions.standPat(decode("4k3/8/8/8/8/8/8/4K3 b - - 0 1")));

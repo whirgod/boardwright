@@ -50,17 +50,21 @@ export interface Quiescence<Position, Move> {
    */
   readonly tactical?: (position: Position, move: Move) => boolean;
   /**
-   * Optional delta pruning: an upper bound on how much `move` can improve on
-   * standing pat in `position`: no matter what follows it, the Seat to move
-   * ends with a score of at most `evaluate(position) + gain(position, move)`
+   * Optional delta pruning: a heuristic upper bound on how much `move` can
+   * improve on standing pat in `position`: the Seat to move is assumed to end
+   * with a score of at most `evaluate(position) + gain(position, move)`
    * (chess: the material the capture or promotion wins, plus a margin for
    * what the evaluation also counts). Where standing pat is allowed, a
    * tactical Move is skipped if `evaluate(position) + gain` cannot beat
-   * alpha (it could not raise it). Never applied where standing pat is
-   * refused (every legal Move is searched there) or at the cap. A bound that
-   * is too low prunes Moves that matter and changes results; Infinity never
-   * prunes. Called once per tactical Move at a quiescence node that has
-   * stood pat, so keep it cheap. Without it, nothing is pruned.
+   * alpha (it could not raise it); the node then returns at least that
+   * bound, so a fail-low result stays a valid upper bound. Never applied
+   * where standing pat is refused (every legal Move is searched there) or at
+   * the cap. The bound does not have to cover a forced result: a skipped
+   * Move that would have given mate (chess: a capture with check) is missed,
+   * which only weakens the search at the horizon; it never makes a false
+   * forced result. A bound that is too low prunes Moves that matter;
+   * Infinity never prunes. Called once per tactical Move at a quiescence
+   * node that has stood pat, so keep it cheap. Without it, nothing is pruned.
    */
   readonly gain?: (position: Position, move: Move) => number;
   /**

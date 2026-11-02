@@ -66,7 +66,9 @@ export const engine = createMinimaxEngine({
   `gain(position, move)` (optional) is an upper bound on what a tactical Move can win beyond
   standing pat: where standing pat is allowed, a Move with `evaluate + gain <= alpha` is skipped
   (delta pruning; never in a Position that refuses stand pat, never at the cap, `Infinity` never
-  prunes; a bound that is too low changes results).
+  prunes; a skipped Move still counts with its bound, so a fail-low result stays an upper bound).
+  The bound is heuristic and does not cover mates: a skipped capture that would mate is a
+  depth-limited weakness at the horizon, never a false forced result.
   Standing pat counts as a horizon (so the depth is not `solved`); a quiescence subtree that ends
   only in Outcomes does not. Forced results found in quiescence count their plies from the root;
   they are real wins, but a quiet Move past the horizon might win sooner. Without the option, a

@@ -470,6 +470,8 @@ async function* analyze<Position, Move>(
     // Delta pruning (`Quiescence.gain`) applies only where standing pat.
     const gain = standPat ? quiescence!.gain : undefined;
     let stood = 0;
+    // The best bound of the Moves skipped by delta pruning (all <= alpha).
+    let skipped = -Infinity;
     if (standPat) {
       horizons++;
       const score = staticScore(position);
@@ -489,7 +491,13 @@ async function* analyze<Position, Move>(
     for (const move of moves) {
       // It cannot raise alpha: skipped, as an unsearched Move (it is not
       // a horizon, nor does it make the depth less solved).
-      if (gain !== undefined && stood + gain(position, move) <= alpha) continue;
+      if (gain !== undefined) {
+        const bound = stood + gain(position, move);
+        if (bound <= alpha) {
+          if (bound > skipped) skipped = bound;
+          continue;
+        }
+      }
       const r = yield* child(position, seat, move, depth - 1, ply, alpha, beta);
       if (r.score > best.score) {
         best = { score: r.score, pv: [move, ...r.pv] };
@@ -499,6 +507,10 @@ async function* analyze<Position, Move>(
         }
       }
     }
+    // Fail-soft: a skipped Move is only known to score <= its bound, so the
+    // result stays a valid upper bound where it fails low (the parent may
+    // store it).
+    if (skipped > best.score) best = { score: skipped, pv: NO_MOVES };
     return best;
   }
 
