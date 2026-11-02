@@ -35,10 +35,19 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 - [x] External Engine protocol: out-of-process Engines over stdio (#18, ADR 0008)
 - [x] Web UI: SAN in the Move list (#60); polish, accessible board state (#55)
 - [x] Minimax transposition table: hash-Move ordering, score reuse, byte budget (#76)
+- [x] Contract kit: decoded Positions must play identically (#78)
+- [x] Minimax table: slot re-read test, lazy slots, 256 MiB default budget (#79)
 
 ## Next
 
 New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
 
-- [ ] Contract kit: decoded Positions must play identically (#78)
-- [ ] Minimax table: test the slot re-read in `store`; replacement under a full budget (#79)
+Engine search improvements, in waves (`wave:<n>` labels):
+
+- [ ] Minimax: Move-ordering hook, captures first in chess (#81)
+- [ ] Engine library: transposition table for expectiminimax (#82)
+- [ ] Transposition key supplied by the Game, leaving out history (#83)
+- [ ] Minimax: killer Moves (#84)
+- [ ] Minimax: quiescence search (#88)
+- [ ] Minimax: history heuristic (#85)
+- [ ] Minimax: check extensions (#89)
