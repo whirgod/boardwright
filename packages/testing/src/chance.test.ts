@@ -347,10 +347,18 @@ const mergeThreeIntoTwo = (p: DiceRacePosition) =>
   );
 
 Deno.test("chance contract: a transpositionKey is checked too", () => {
-  assertChanceGameRulesContract({
+  // A key equal to `encodePosition` is never shared by two encodings: the
+  // non-vacuity check must be turned off, else it fails.
+  const plainKey = {
     ...diceRace,
     transpositionKey: diceRace.notation.encodePosition,
-  });
+  };
+  assertChanceGameRulesContract(plainKey, { minTranspositions: 0 });
+  assertThrows(
+    () => assertChanceGameRulesContract(plainKey),
+    Error,
+    "fewer than minTranspositions=1",
+  );
   // Merging pending rolls of `a` 2 and 3: the same (no) Moves and the same
   // rolls, but each roll leads to Positions with different keys.
   assertThrows(
@@ -393,7 +401,7 @@ Deno.test("chance contract: a transpositionKey must not merge different chanceEv
   assertChanceGameRulesContract({
     ...loaded,
     transpositionKey: diceRace.notation.encodePosition,
-  });
+  }, { minTranspositions: 0 });
   assertThrows(
     () => assertChanceGameRulesContract(loaded),
     Error,

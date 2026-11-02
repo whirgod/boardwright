@@ -51,8 +51,36 @@ function play(p: MorrisPosition, ...moves: string[]): MorrisPosition {
 const enc = (moves: readonly MorrisMove[]) =>
   moves.map((m) => n.encodeMove(m)).sort();
 
+/**
+ * Positions for the kit's `transpositionKey` checks that random playouts
+ * rarely meet: the same board and Seat to move with other pieces in hand
+ * (placing or flying; Black placing its last piece or moving). A key that
+ * leaves out either hand merges Positions that play differently, which the
+ * kit then reports.
+ */
+const KEY_POSITIONS = [
+  pos({ white: "a1 c3 e5", black: "a7 g1 e3", hand: [6, 6] }),
+  pos({ white: "a1 c3 e5", black: "a7 g1 e3", hand: [0, 0] }),
+  pos({
+    white: "a1 a7 c3 e5 g1",
+    black: "b4 d2 d6 f4",
+    turn: "black",
+    hand: [0, 1],
+  }),
+  pos({
+    white: "a1 a7 c3 e5 g1",
+    black: "b4 d2 d6 f4",
+    turn: "black",
+    hand: [0, 0],
+  }),
+].map((p) => n.encodePosition(p));
+
 Deno.test("satisfies the GameRules contract", () => {
-  assertGameRulesContract(g, { seed: 7, playouts: 150 });
+  assertGameRulesContract(g, {
+    seed: 7,
+    playouts: 150,
+    keyPositions: KEY_POSITIONS,
+  });
 });
 
 Deno.test("initial position", () => {

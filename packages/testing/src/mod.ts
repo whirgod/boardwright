@@ -4,6 +4,7 @@ import {
   type GameRules,
   hasChance,
   pickChance,
+  type RulesOutcome,
   type Seat,
 } from "@boardwright/core";
 
@@ -22,6 +23,21 @@ export interface ContractOptions {
   readonly illegalSamples?: number;
   /** Max size of the candidate Move pool (by Notation). Default 256. */
   readonly illegalPoolSize?: number;
+  /**
+   * Positions (in Notation) that join the `transpositionKey` checks besides
+   * the playouts' Positions, for what random playouts rarely meet: e.g. the
+   * same placement with and without castling rights, or the same board with
+   * other pieces in hand. A key that leaves out such a field merges them, and
+   * the kit then finds that they play differently. Each must decode.
+   */
+  readonly keyPositions?: readonly string[];
+  /**
+   * Least number of Positions that must share a `transpositionKey` with a
+   * Position of another encoding (in the playouts or `keyPositions`), so the
+   * key checks are not vacuous. Default 1; 0 turns it off (e.g. a key equal
+   * to `encodePosition`). Only for Games that supply a key.
+   */
+  readonly minTranspositions?: number;
 }
 
 const DEFAULT_GARBAGE = [
@@ -62,12 +78,15 @@ export function seededRandom(seed: number): () => number {
  * same order); with chance, the same Chance events too.
  *
  * If the Game supplies a `transpositionKey`, checks it too: it never throws,
- * returns a stable string, and is the same for a decoded Position; and
- * Positions without an Outcome that share a key, across all playouts, play
- * alike: same Seat to move and legal Moves in the same order (with chance,
- * the same Chance events), and each Move (Chance result) leads to Positions
- * that share a key again. Random playouts reach the same Position by
- * different Move orders, so this compares Positions with different histories.
+ * returns a stable string, and is the same for a decoded Position; Positions
+ * that share a key, across all playouts and `keyPositions`, have the same
+ * decisive Outcome if one has one (the key may leave out only what decides
+ * draws); and those without an Outcome play alike: same Seat to move and
+ * legal Moves in the same order (with chance, the same Chance events), and
+ * each Move (Chance result) leads to Positions that share a key again.
+ * Random playouts reach the same Position by different Move orders, so this
+ * compares Positions with different histories; at least `minTranspositions`
+ * such Positions must be found.
  */
 export function assertGameRulesContract<Position, Move>(
   rules: GameRules<Position, Move>,
@@ -110,14 +129,20 @@ export function assertChanceGameRulesContract<Position, Move, Chance>(
 }
 
 /**
- * What the contract kit remembers about a Position per Transposition key: its
- * text, and how it plays (Moves and Chance events in Notation, in order).
+ * What the contract kit remembers per Transposition key: the first Position
+ * seen and its decisive Outcome (JSON, `""` if none or a draw), and the first
+ * Position without an Outcome and how it plays (Moves and Chance events in
+ * Notation, in order).
  */
-interface KeyedPosition {
+interface Keyed {
   readonly encoded: string;
-  readonly seat: Seat | undefined;
-  readonly moves: string;
-  readonly chance: string;
+  readonly decisive: string;
+  play?: {
+    readonly encoded: string;
+    readonly seat: Seat | undefined;
+    readonly moves: string;
+    readonly chance: string;
+  };
 }
 
 /** One step of a playout: a Move or a Chance event, in Notation. */
@@ -273,22 +298,25 @@ function runContract<Position, Move, Chance>(
   const transpositionKey = rules.transpositionKey === undefined
     ? undefined
     : (p: Position) => rules.transpositionKey!(p);
-  // Per Transposition key, the first Position seen without an Outcome: what
-  // an Engine assumes about every Position without an Outcome with that key.
-  const byKey = new Map<string, KeyedPosition>();
+  // Per Transposition key, the first Positions seen (see `Keyed`): what an
+  // Engine assumes about every Position with that key.
+  const byKey = new Map<string, Keyed>();
+  // Positions that shared a key with a Position of another encoding.
+  let transpositions = 0;
 
   /**
    * Checks `transpositionKey` on `position` (see `GameRules`): it never
-   * throws, returns a stable string, and is kept by decoding. Positions
-   * without an Outcome that share it play alike: same Seat to move, legal
-   * Moves in the same order and Chance events, and every Move (or Chance
-   * result) leads to Positions that share their key again.
+   * throws, returns a stable string, and is kept by decoding. Positions that
+   * share it have the same decisive Outcome, if one has one (history may
+   * decide only draws). Those without an Outcome play alike: same Seat to
+   * move, legal Moves in the same order and Chance events, and every Move (or
+   * Chance result) leads to Positions that share their key again.
    */
   function checkTranspositionKey(
     keyOf: (p: Position) => string,
     position: Position,
     encoded: string,
-    terminal: boolean,
+    outcome: RulesOutcome | undefined,
     seat: Seat | undefined,
     legal: readonly Move[],
   ): void {
@@ -309,19 +337,35 @@ function runContract<Position, Move, Chance>(
       key,
       "decoded position has a different transpositionKey",
     );
-    if (terminal) return; // equal keys may differ in Outcome
-    const seen: KeyedPosition = {
+    const decisive = outcome?.winner === undefined
+      ? ""
+      : JSON.stringify(outcome);
+    let keyed = byKey.get(key as string);
+    if (keyed === undefined) {
+      keyed = { encoded, decisive };
+      byKey.set(key as string, keyed);
+    } else if (keyed.decisive !== decisive) {
+      fail(
+        `transpositionKey ${JSON.stringify(key)} is shared by ` +
+          `${keyed.encoded} and ${encoded}, which differ in a decisive ` +
+          `Outcome (${keyed.decisive || "none"} vs ${decisive || "none"}): ` +
+          `the play it leaves out may decide only draws`,
+      );
+    }
+    if (outcome) return; // equal keys may differ by a draw
+    const seen = {
       encoded,
       seat,
       moves: legal.map((m) => n.encodeMove(m)).join(" "),
       chance: chance ? showChance(chance, position).join(" ") : "",
     };
-    const first = byKey.get(key as string);
+    const first = keyed.play;
     if (first === undefined) {
-      byKey.set(key as string, seen);
+      keyed.play = seen;
       return;
     }
     if (first.encoded === encoded) return; // the same Position again
+    transpositions++;
     const shared = `transpositionKey ${JSON.stringify(key)} is shared by ` +
       `${first.encoded} and ${encoded}`;
     const differs = first.seat !== seen.seat
@@ -358,6 +402,25 @@ function runContract<Position, Move, Chance>(
         }
       });
     }
+  }
+
+  // Positions the Game names for the key checks join the same buckets.
+  if (transpositionKey) {
+    (options.keyPositions ?? []).forEach((text, i) => {
+      try {
+        const position = n.decodePosition(text);
+        checkTranspositionKey(
+          transpositionKey,
+          position,
+          text,
+          rules.outcome(position),
+          rules.toMove(position),
+          rules.legalMoves(position),
+        );
+      } catch (e) {
+        fail(`keyPositions[${i}] ${text}: ${(e as Error).message}`);
+      }
+    });
   }
 
   let reachedTerminal = false;
@@ -459,7 +522,7 @@ function runContract<Position, Move, Chance>(
             transpositionKey,
             position,
             encoded,
-            outcome !== undefined,
+            outcome,
             seat,
             legal,
           );
@@ -587,6 +650,15 @@ function runContract<Position, Move, Chance>(
     }
   }
   if (!reachedTerminal) fail("no playout reached a terminal position");
+  const wanted = options.minTranspositions ?? 1;
+  if (transpositionKey && transpositions < wanted) {
+    fail(
+      `transpositionKey was shared by Positions of different encodings ` +
+        `${transpositions} time(s), fewer than minTranspositions=${wanted}: ` +
+        `its checks found nothing to compare (more playouts, keyPositions, ` +
+        `or minTranspositions: 0 for a key equal to encodePosition)`,
+    );
+  }
   if (chance && !reachedChance) fail("no playout reached a Chance event");
 }
 
