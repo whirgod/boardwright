@@ -267,3 +267,38 @@ Deno.test("isPass: a pass must hand the turn on", () => {
   const err = assertThrows(() => assertGameRulesContract(stuck));
   assertEquals((err as Error).message.includes("hand the turn on"), true);
 });
+
+Deno.test("rejects a lossy Notation that drops the Seat to move", () => {
+  // Encodes only the pile: a decoded Position forgets whose turn it is.
+  expectFailure({
+    notation: {
+      ...nim.notation,
+      encodePosition: (p) => `${p.n}`,
+      decodePosition(text) {
+        if (!/^[0-5]$/.test(text)) throw new Error("bad position");
+        return { n: Number(text), turn: "a" };
+      },
+    },
+  }, "decoded position has a different");
+});
+
+Deno.test("rejects a Notation that reorders legal Moves after decoding", () => {
+  // The decoded Position lists Moves in reverse order.
+  type Q = P & { readonly rev?: boolean };
+  const reversing: GameRules<Q, string> = {
+    ...nim,
+    legalMoves: (p) => {
+      const l = nim.legalMoves(p);
+      return p.rev ? [...l].reverse() : l;
+    },
+    notation: {
+      ...nim.notation,
+      decodePosition: (t) => ({ ...nim.notation.decodePosition(t), rev: true }),
+    },
+  };
+  assertThrows(
+    () => assertGameRulesContract(reversing),
+    Error,
+    "different legalMoves",
+  );
+});

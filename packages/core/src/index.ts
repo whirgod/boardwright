@@ -89,6 +89,13 @@ export interface GameRules<Position, Move> {
 
 /** Text encoding used on the wire and in stored Match records. */
 export interface Notation<Position, Move> {
+  /**
+   * Must capture everything that affects play: Positions with equal text
+   * must have the same Seat to move, Outcome and legal Moves **in the same
+   * order** (and, with chance, the same Chance events). Engines key
+   * transposition tables on this text and store Moves as indexes into
+   * `legalMoves`. Checked by the contract kits via `decodePosition`.
+   */
   encodePosition(position: Position): string;
   /** Throws on invalid text. */
   decodePosition(text: string): Position;

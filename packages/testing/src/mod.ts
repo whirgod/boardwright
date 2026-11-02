@@ -55,6 +55,10 @@ export function seededRandom(seed: number): () => number {
  * playouts. Every Game package without chance must call this from its tests
  * (Games with chance call {@link assertChanceGameRulesContract}). Failures
  * are prefixed with the game id and seed, and name the offending Move list.
+ *
+ * Also checks that `decodePosition(encodePosition(p))` plays identically to
+ * `p`: same Seat to move, Outcome and legal Moves (by `encodeMove`, in the
+ * same order); with chance, the same Chance events too.
  */
 export function assertGameRulesContract<Position, Move>(
   rules: GameRules<Position, Move>,
@@ -78,6 +82,8 @@ export function assertGameRulesContract<Position, Move>(
  * empty and `resolveChance` throws when nothing is pending; replaying Moves
  * and Chance events reproduces every Position; some playout meets a Chance
  * event. Every Game package with chance must call this from its tests.
+ * Like the plain contract, it also requires decoded Positions to play
+ * identically (see {@link assertGameRulesContract}).
  */
 export function assertChanceGameRulesContract<Position, Move, Chance>(
   rules: ChanceGameRules<Position, Move, Chance>,
@@ -300,6 +306,37 @@ function runContract<Position, Move, Chance>(
               `${chance.notation.encodeChance(e.chance)}@${e.probability}`
             );
           assertEquals(show(), show(), "chanceEvents is not stable");
+        }
+        // A decoded Position must play identically (transposition tables key
+        // on the encoded text): same Seat, Outcome, legal Moves in order.
+        {
+          const q = n.decodePosition(encoded);
+          assertEquals(
+            rules.toMove(q),
+            seat,
+            "decoded position has a different toMove",
+          );
+          assertEquals(
+            JSON.stringify(rules.outcome(q)),
+            JSON.stringify(outcome),
+            "decoded position has a different outcome",
+          );
+          assertEquals(
+            rules.legalMoves(q).map((m) => n.encodeMove(m)),
+            legal.map((m) => n.encodeMove(m)),
+            "decoded position has different legalMoves (set or order)",
+          );
+          if (chance) {
+            const show = (pos: Position) =>
+              chance.chanceEvents(pos).map((e) =>
+                `${chance.notation.encodeChance(e.chance)}@${e.probability}`
+              );
+            assertEquals(
+              show(q),
+              show(position),
+              "decoded position has different chanceEvents",
+            );
+          }
         }
         if (pending) {
           assertEquals(legal.length, 0, "pending Chance event has legal moves");
