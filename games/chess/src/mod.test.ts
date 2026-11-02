@@ -5,6 +5,7 @@ import {
   chess as g,
   type ChessPosition,
   INITIAL_FEN,
+  isInCheck,
   isInsufficientMaterial,
   parseSquare,
   squareName,
@@ -211,6 +212,21 @@ Deno.test("checkmate and stalemate", () => {
   const check = play(g.initialPosition(), "e2e4", "f7f6", "d1h5");
   assertEquals(g.outcome(check), undefined);
   assertEquals(moves(check), ["g7g6"]);
+});
+
+Deno.test("isInCheck: whether the Seat to move is in check, also when mated", () => {
+  assertFalse(isInCheck(g.initialPosition()));
+  // Checked by a queen, a knight and a pawn.
+  assert(isInCheck(play(g.initialPosition(), "e2e4", "f7f6", "d1h5")));
+  assert(isInCheck(pos("4k3/8/3N4/8/8/8/8/4K3 b - - 0 1")));
+  assert(isInCheck(pos("4k3/8/8/8/8/8/3p4/4K3 w - - 0 1")));
+  // An en passant capture that uncovers a rook: a discovered check.
+  const before = pos("8/8/8/R2pP2k/8/8/8/4K3 w - d6 0 1");
+  assertFalse(isInCheck(before));
+  assert(isInCheck(play(before, "e5d6")));
+  // Mated: still in check. Stalemated: not.
+  assert(isInCheck(play(g.initialPosition(), "f2f3", "e7e5", "g2g4", "d8h4")));
+  assertFalse(isInCheck(pos("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")));
 });
 
 Deno.test("threefold repetition", () => {

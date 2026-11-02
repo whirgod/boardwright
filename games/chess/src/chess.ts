@@ -196,6 +196,16 @@ function findLegal(p: ChessPosition, move: ChessMove): IMove | undefined {
 }
 
 /**
+ * Whether the Seat to move (`position.turn`) is in check, also in a terminal
+ * Position (checkmate). Memoized with the legal Moves, so it is free after
+ * `legalMoves` or `outcome` and costs one Move generation otherwise. For
+ * Engines (e.g. no stand pat in check); not part of `GameRules`.
+ */
+export function isInCheck(position: ChessPosition): boolean {
+  return info(position).inCheck;
+}
+
+/**
  * True when neither Seat can possibly checkmate (dead position by material):
  * no pawns, rooks or queens, and either at most one knight and no bishops,
  * or only bishops that all stand on squares of one colour.
