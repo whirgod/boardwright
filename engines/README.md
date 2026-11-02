@@ -25,8 +25,13 @@ algorithm. Depends only on `core` and knows nothing about chance.
 - Score scale: `MATE`, `MATE_BOUND`, `MAX_EVALUATION`, `terminalScore`, `horizonScore`
   (clamp, NaN check), `toScore`.
 - `@boardwright/engine-search/table` (`src/table.ts`) — the transposition table both libraries
-  use: `createTranspositionTable(budget)`, `DEFAULT_TABLE_BYTES`, `checkTableBytes`, and the
-  mate-distance conversion `toTableScore` / `fromTableScore`.
+  use, one per `analyze` call: `createTranspositionTable(budget)` (a memory budget in bytes,
+  `DEFAULT_TABLE_BYTES` = 256 MiB, `checkTableBytes`; details in the minimax section), entries
+  with the best Move's index (`tryOrder` searches it first), the score, its bound and the depth
+  searched (Infinity when no horizon was hit), and the mate-distance conversion `toTableScore` /
+  `fromTableScore` (forced results are stored counted from the Position, which may recur at
+  another ply). It only stores and finds entries: whose perspective a score takes and when it
+  may answer a visit is up to the library.
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -130,6 +135,24 @@ export const engine = createExpectiminimaxEngine({
   _cardinal_ evaluations (e.g. expected points), unlike minimax, which only compares them.
 - A pending Position without `chanceEvents` (a Game bug) throws a descriptive `TypeError`.
 - Games without chance are refused with a `TypeError` (use minimax).
+- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`,
+  with the same key requirement as minimax (a pending Chance event must also list the same
+  results). Decision nodes use it as minimax does: hash Move first, stored scores reused where
+  sound, scores inside the window searched again so Lines stay complete. A Chance node stores
+  its expected value (exact, as every result gets a full window, and with no Move), and any
+  later visit searched at least as deep reuses it, as the Line ends there anyway. The value is
+  stored for the Game's first Seat and negated for the other; that is exact without asking
+  anything more of `evaluate`, since below a Chance event every horizon is evaluated for the
+  Seat that just moved and every other value is negamax. Forced results are stored counted from
+  the Position, an entry's depth counts Moves only, and a stored result that hit the horizon
+  still counts against `solved`. A stored deeper result may let a depth see further than a plain
+  search of that depth, so a depth may report a forced result that a deeper one finds faster.
+- `tableBytes`: the table's memory budget, as in minimax (`DEFAULT_TABLE_BYTES` = 256 MiB per
+  search, 0 = no table).
+- Where a Chance event separates every two Moves (backgammon), alpha-beta prunes nothing: every
+  decision node's children are Chance events, searched with a full window. The table then helps
+  through transpositions: different rolls (e.g. 61, 52 and 43) often lead to the same Position,
+  whose next roll is valued once.
 
 ## Game Engines
 

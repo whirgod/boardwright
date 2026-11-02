@@ -43,9 +43,44 @@
  * are clamped to ±`winValue`, so a forced win is always at least as good as
  * any evaluation.
  *
+ * ## The transposition table
+ *
+ * Iterative deepening searches the same Positions again at every depth, and
+ * different Moves and rolls often reach the same Position (in backgammon,
+ * rolls of 61, 52 and 43 can end in the same one). A transposition table
+ * (`@boardwright/engine-search/table`, shared with the minimax library),
+ * keyed by `Notation.encodePosition`, remembers what the search found below
+ * the root:
+ * - Decision nodes, as in minimax: the best Move found one depth shallower
+ *   (the hash Move) is searched first, and a stored score answers a later
+ *   visit if it was searched at least as deep and its bound settles the
+ *   window. A score inside the window is searched again, so Lines stay
+ *   complete up to the next Chance event.
+ * - Chance nodes: the expected value is exact (every result gets a full
+ *   window), so it is stored without a Move and answers any later visit
+ *   searched at least as deep; the Line ends there anyway. Nobody is to move
+ *   at a Chance event and the value is from the parent's Seat, so the table
+ *   holds the first Seat's value and negates it for the other (exact, see
+ *   `expectation`).
+ *
+ * Forced wins and losses are stored counted from the Position, as it may
+ * recur at another ply, and an entry's depth counts Moves only, like the
+ * search. A stored result that hit the horizon counts as hitting it again,
+ * so a depth is `solved` only if it is; one that ended in Outcomes
+ * everywhere holds at any depth. A stored deeper result may let a depth see
+ * further than a plain search to that depth (it may then report a forced
+ * result that the next depth finds faster). Each `analyze` call has its own
+ * table, bounded by a memory budget, `tableBytes`. The key must determine
+ * everything the search sees (see `ExpectiminimaxOptions.rules`).
+ *
+ * Where a Chance event separates every two Moves, as in backgammon,
+ * alpha-beta prunes nothing (every decision node's children are Chance
+ * events, searched with a full window), so the table helps through
+ * transpositions only.
+ *
  * The plumbing (iterative deepening, limits, time and abort handling,
- * multi-PV bookkeeping, the score scale) lives in the shared search harness
- * `@boardwright/engine-search`; this module is the algorithm.
+ * multi-PV bookkeeping, the score scale, the table) lives in the shared
+ * search harness `@boardwright/engine-search`; this module is the algorithm.
  */
 import {
   type Analysis,

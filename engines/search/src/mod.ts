@@ -11,6 +11,8 @@
  * - The numeric score scale ({@link MATE}, {@link terminalScore},
  *   {@link horizonScore}, {@link toScore}) that turns forced wins and
  *   evaluations into one comparable number, and back into a `Score`.
+ * - The transposition table, in its own module (`table.ts`, exported as
+ *   `@boardwright/engine-search/table`).
  *
  * An algorithm is written as a synchronous generator ({@link Search}) that
  * `yield`s every few nodes ({@link createNodeCounter}); the harness drives it

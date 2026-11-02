@@ -13,7 +13,7 @@ packages/testing  Contract test kits every Game / Engine runs (assertGameRulesCo
 games/<game>      One package per Game implementing GameRules (games/tic-tac-toe is the reference;
                   games/backgammon implements ChanceGameRules)
 engines/search    Shared search harness of the Engine libraries (iterative deepening, limits,
-                  time/abort, multi-PV, score scale); chance-agnostic
+                  time/abort, multi-PV, score scale, transposition table); chance-agnostic
 engines/<algo>    Game-agnostic Engine libraries: engines/minimax (alpha-beta search),
                   engines/expectiminimax (Games with chance, ADR 0005)
 engines/<game>-<name>  One package per Engine for one Game: an Engine library + an evaluation, e.g.
