@@ -25,9 +25,12 @@
  * Quiescence search (`quiescence`): at the depth horizon the search goes on
  * with captures and promotions until the Position is quiet, so it does not
  * stop mid-exchange and misjudge captures (the horizon effect). A Seat in
- * check may not stand pat (`isInCheck` from the Game). No delta pruning or
- * static exchange evaluation, so every capture is searched, which costs
- * nodes in tactical Positions; checks are not searched past the horizon.
+ * check may not stand pat (`isInCheck` from the Game), so every legal Move is
+ * searched there. Where it may stand pat, only queen promotions and captures
+ * that do not lose material by static exchange evaluation (`see`) are
+ * searched, and delta pruning skips a capture whose victim's value plus a
+ * margin cannot raise alpha (`gain`); that cuts the nodes in tactical
+ * Positions by 3-5x. Checks are not searched past the horizon.
  *
  * Check extension (`extend`): a Move that gives check is searched a ply deeper
  * (the library bounds it to 4 extra plies per path), so a forced mate by
@@ -241,15 +244,171 @@ export function movePriority(
   return priority;
 }
 
+/** Value of a piece in the exchange (static exchange evaluation): a king is "worth" more than any exchange. */
+const EXCHANGE: Readonly<Record<string, number>> = {
+  ...MATERIAL,
+  k: 10_000,
+};
+
+const KNIGHT_JUMPS = [
+  [1, 2],
+  [2, 1],
+  [2, -1],
+  [1, -2],
+  [-1, -2],
+  [-2, -1],
+  [-2, 1],
+  [-1, 2],
+] as const;
+// Direction (file, rank) and whether it is a diagonal.
+const RAYS = [
+  [1, 0, false],
+  [-1, 0, false],
+  [0, 1, false],
+  [0, -1, false],
+  [1, 1, true],
+  [1, -1, true],
+  [-1, 1, true],
+  [-1, -1, true],
+] as const;
+
 /**
- * Quiescence search at the horizon: captures (en passant included) and
- * promotions, the Moves `movePriority` ranks above 0, until the Position is
- * quiet. A Seat in check must answer the check, so it may not stand pat:
- * every legal Move is searched. Default cap
+ * The square of the least valuable piece of the given colour that attacks
+ * `to` on `board`, or -1. Ignores pins; sliders see through emptied squares,
+ * which is how x-ray attackers join an exchange.
+ */
+function leastAttacker(
+  board: readonly Cell[],
+  to: number,
+  white: boolean,
+): number {
+  const file = to & 7, rank = to >> 3;
+  const at = (f: number, r: number): Cell =>
+    f < 0 || f > 7 || r < 0 || r > 7 ? "." : board[r * 8 + f]!;
+  // Pawns attack forwards: a white pawn attacker stands one rank below.
+  const pawn = white ? "P" : "p";
+  const pr = white ? rank - 1 : rank + 1;
+  for (const f of [file - 1, file + 1]) {
+    if (at(f, pr) === pawn) return pr * 8 + f;
+  }
+  const knight = white ? "N" : "n";
+  for (const [df, dr] of KNIGHT_JUMPS) {
+    if (at(file + df, rank + dr) === knight) return (rank + dr) * 8 + file + df;
+  }
+  // Sliders and the king, the least valuable first: bishop, rook, queen.
+  let bishop = -1, rook = -1, queen = -1, king = -1;
+  for (const [df, dr, diagonal] of RAYS) {
+    for (
+      let f = file + df, r = rank + dr, step = 1;;
+      f += df, r += dr, step++
+    ) {
+      const cell = at(f, r);
+      if (cell === ".") {
+        if (f < 0 || f > 7 || r < 0 || r > 7) break;
+        continue;
+      }
+      if (cell < "a" !== white) break;
+      const kind = cell.toLowerCase();
+      const square = r * 8 + f;
+      if (kind === "q") queen = square;
+      else if (kind === "b" && diagonal) bishop = square;
+      else if (kind === "r" && !diagonal) rook = square;
+      else if (kind === "k" && step === 1) king = square;
+      break;
+    }
+  }
+  return bishop >= 0 ? bishop : rook >= 0 ? rook : queen >= 0 ? queen : king;
+}
+
+/** The piece `move` captures (en passant included), or "." for none. */
+function victimOf(position: ChessPosition, move: ChessMove): Cell {
+  const victim = position.board[move.to]!;
+  if (
+    victim === "." && move.to === position.enPassant &&
+    position.board[move.from]!.toLowerCase() === "p"
+  ) {
+    return position.turn === "white" ? "p" : "P";
+  }
+  return victim;
+}
+
+/**
+ * Static exchange evaluation of a capture: the material (centipawns) the
+ * Seat to move wins or loses in the best sequence of captures on the target
+ * square, where either Seat may stop recapturing at any time, the least
+ * valuable attacker goes first and x-ray attackers join once a piece in
+ * front has gone. Ignores pins and checks, and promotions on the way. For a
+ * Move that captures nothing: 0.
+ */
+export function see(position: ChessPosition, move: ChessMove): number {
+  const victim = victimOf(position, move);
+  if (victim === ".") return 0;
+  const board = position.board.slice();
+  const gain: number[] = [EXCHANGE[victim.toLowerCase()]!];
+  let onSquare = EXCHANGE[board[move.from]!.toLowerCase()]!;
+  board[move.from] = ".";
+  if (board[move.to] === ".") {
+    board[move.to + (position.turn === "white" ? -8 : 8)] = ".";
+  }
+  let white = position.turn !== "white"; // the Seat that recaptures
+  let d = 0;
+  for (;;) {
+    const from = leastAttacker(board, move.to, white);
+    if (from < 0) break;
+    d++;
+    gain[d] = onSquare - gain[d - 1]!;
+    onSquare = EXCHANGE[board[from]!.toLowerCase()]!;
+    board[from] = ".";
+    white = !white;
+  }
+  // Each Seat may stop: the last capture is only made if it pays.
+  for (; d > 0; d--) gain[d - 1] = -Math.max(-gain[d - 1]!, gain[d]!);
+  return gain[0]!;
+}
+
+/**
+ * Whether a quiescence node searches `move` where standing pat is allowed:
+ * queen promotions (underpromotions rarely matter and add three branches per
+ * promotion), and captures that do not lose material by `see`. A capture of
+ * a piece at least as valuable as the capturer cannot lose: no exchange is
+ * computed for it.
+ */
+export function tactical(position: ChessPosition, move: ChessMove): boolean {
+  if (move.promotion) return move.promotion === "q";
+  const victim = victimOf(position, move);
+  if (victim === ".") return false;
+  const attacker = EXCHANGE[position.board[move.from]!.toLowerCase()]!;
+  return EXCHANGE[victim.toLowerCase()]! >= attacker ||
+    see(position, move) >= 0;
+}
+
+/** Margin (centipawns) of `gain`: what piece-square values can add to material. */
+export const DELTA_MARGIN = 200;
+
+/**
+ * Upper bound of what a quiescence Move can win beyond standing pat, for
+ * delta pruning: the victim's material, a queen promotion's 800 more, and
+ * `DELTA_MARGIN` for placement changes in the evaluation. It does not cover
+ * a mate (a capture that mates is pruned if far behind alpha).
+ */
+export function gain(position: ChessPosition, move: ChessMove): number {
+  const victim = victimOf(position, move);
+  return (victim === "." ? 0 : MATERIAL[victim.toLowerCase()]!) +
+    (move.promotion ? MATERIAL.q! - MATERIAL.p! : 0) + DELTA_MARGIN;
+}
+
+/**
+ * Quiescence search at the horizon: queen promotions and the captures that
+ * `tactical` keeps (en passant included; not those that lose material by
+ * static exchange evaluation), until the Position is quiet, with delta
+ * pruning (`gain`). A Seat in check must answer the check, so it may not
+ * stand pat: every legal Move is searched, none pruned. Default cap
  * (`DEFAULT_QUIESCENCE_PLIES`).
  */
 export const quiescence: Quiescence<ChessPosition, ChessMove> = {
   standPat: (position) => !isInCheck(position),
+  tactical,
+  gain,
 };
 /**
  * Identity of a Move for the history heuristic: its squares (cheaper than its

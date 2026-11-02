@@ -63,6 +63,10 @@ export const engine = createMinimaxEngine({
   16; RangeError unless an integer >= 0); at the cap a Position is evaluated as it stands.
   Quiescence Moves count as nodes (time limits and aborts interrupt them), their results are not
   stored in the table, and Lines include them, so a Line may be longer than the nominal `depth`.
+  `gain(position, move)` (optional) is an upper bound on what a tactical Move can win beyond
+  standing pat: where standing pat is allowed, a Move with `evaluate + gain <= alpha` is skipped
+  (delta pruning; never in a Position that refuses stand pat, never at the cap, `Infinity` never
+  prunes; a bound that is too low changes results).
   Standing pat counts as a horizon (so the depth is not `solved`); a quiescence subtree that ends
   only in Outcomes does not. Forced results found in quiescence count their plies from the root;
   they are real wins, but a quiet Move past the horizon might win sooner. Without the option, a
@@ -174,10 +178,12 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
   captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77%
   nodes at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks
   and repetition history, so few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
-  Quiescence search (`quiescence`): captures (en passant included) and promotions past the
-  horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); it costs nodes in
-  tactical Positions but wins most games against the same Engine without it, at equal depth and
-  at equal time per Move. Check extension (`extend` = `isInCheck`): a Move that gives check is
+  Quiescence search (`quiescence`): captures (en passant included) and queen promotions past the
+  horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); where stand pat is
+  allowed, captures that lose material by static exchange evaluation (`see`) are dropped and
+  delta pruning skips captures that cannot reach alpha (`gain`: victim + 200); in check every
+  legal Move is searched. It wins most games against the same Engine without it, at equal depth
+  and at equal time per Move. Check extension (`extend` = `isInCheck`): a Move that gives check is
   searched a ply deeper (up to 4 per path), so a forced mate by checks just past the depth is
   found; +0-25% nodes, 15/20 against the same Engine without it at equal time per Move.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,

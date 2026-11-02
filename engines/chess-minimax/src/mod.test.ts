@@ -4,12 +4,17 @@ import type { ChessMove, ChessPosition } from "@boardwright/game-chess";
 import { assertEngineContract, seededRandom } from "@boardwright/testing";
 import { createMinimaxEngine } from "@boardwright/engine-minimax";
 import {
+  DELTA_MARGIN,
   engine,
   evaluate,
+  gain,
   MATERIAL,
   moveKey,
   movePriority,
+  quiescence as quiescenceOptions,
   rules,
+  see,
+  tactical,
 } from "./mod.ts";
 
 const decode = (fen: string) => rules.notation.decodePosition(fen);
@@ -406,4 +411,97 @@ Deno.test("check extension finds a mate by checks just past the nominal depth", 
   const a = await search(fen, 2);
   assertEquals(a.lines[0]!.score, { kind: "win-in", plies: 3 });
   assertEquals(a.lines[0]!.moves.map(uci), ["d5d2", "e2e1", "f4f2"]);
+});
+
+// --- Quiescence pruning (#95) ---------------------------------------------
+
+const moveIn = (fen: string, move: string) => {
+  const position = decode(fen);
+  const m = rules.legalMoves(position).find((x) => uci(x) === move);
+  assert(m, `${move} is not legal in ${fen}`);
+  return { position, move: m };
+};
+
+Deno.test("see: hand-picked exchanges", () => {
+  const cases: [string, string, number][] = [
+    // A free pawn.
+    ["4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 100],
+    // Pawn takes a pawn that a pawn defends: an even trade.
+    ["4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 0],
+    // Knight takes a pawn that a pawn defends: 100 - 320.
+    ["4k3/8/2p5/3p4/8/2N5/8/4K3 w - - 0 1", "c3d5", -220],
+    // Queen takes a defended pawn.
+    ["4k3/8/2p5/3p4/8/8/8/3QK3 w - - 0 1", "d1d5", -800],
+    // Rook takes a knight that a pawn defends: 320 - 500.
+    ["4k3/8/2p5/3n4/8/8/8/3RK3 w - - 0 1", "d1d5", -180],
+    // A doubled rook (x-ray) wins the pawn a rook defends; the single rook
+    // would lose 400.
+    ["3r3k/8/8/3p4/8/8/3R4/3RK3 w - - 0 1", "d2d5", 100],
+    ["3r3k/8/8/3p4/8/8/8/3RK3 w - - 0 1", "d1d5", 100 - 500],
+    // En passant: the captured pawn is not on the target square.
+    ["4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 100],
+  ];
+  for (const [fen, move, expected] of cases) {
+    const { position, move: m } = moveIn(fen, move);
+    assertEquals(see(position, m), expected, `${fen} ${move}`);
+  }
+  // A quiet Move captures nothing.
+  const { position, move } = moveIn("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", "e2e4");
+  assertEquals(see(position, move), 0);
+});
+
+Deno.test("tactical: losing captures and underpromotions are dropped", () => {
+  const picked = (fen: string) => {
+    const position = decode(fen);
+    return rules.legalMoves(position).filter((m) => tactical(position, m))
+      .map(uci).sort();
+  };
+  // Even trade kept; the knight taking a defended pawn and quiet Moves not.
+  assertEquals(picked("4k3/8/2p5/3p4/4P3/2N5/8/4K3 w - - 0 1"), ["e4d5"]);
+  // Queen promotion only: no rook, bishop or knight promotion.
+  assertEquals(picked("8/P6k/8/8/8/8/8/K7 w - - 0 1"), ["a7a8q"]);
+  // A cheaper piece takes a more valuable one: kept even if defended.
+  assertEquals(picked("4k3/8/2p5/3q4/4P3/8/8/4K3 w - - 0 1"), ["e4d5"]);
+  // En passant is a capture.
+  assertEquals(picked("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"), ["e5d6"]);
+});
+
+Deno.test("gain bounds what the Move wins", () => {
+  const g = (fen: string, move: string) => {
+    const { position, move: m } = moveIn(fen, move);
+    return gain(position, m);
+  };
+  const m = DELTA_MARGIN;
+  assertEquals(g("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5"), 100 + m);
+  assertEquals(g("4k3/8/8/3q4/4P3/8/8/4K3 w - - 0 1", "e4d5"), 900 + m);
+  assertEquals(g("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), 100 + m);
+  assertEquals(g("8/P6k/8/8/8/8/8/K7 w - - 0 1", "a7a8q"), 800 + m);
+});
+
+Deno.test("a Seat in check does not stand pat, so nothing is dropped or pruned", () => {
+  const position = decode("4k3/8/5N2/8/8/8/8/4K3 b - - 0 1");
+  assert(!quiescenceOptions.standPat(position));
+  assert(quiescenceOptions.standPat(decode("4k3/8/8/8/8/8/8/4K3 b - - 0 1")));
+});
+
+Deno.test("the quiescence prunings cost fewer nodes and keep the best Move in a tactical Position", async () => {
+  const fen =
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+  const nodes = async (quiescence: typeof quiescenceOptions) => {
+    let n = 0;
+    const e = createMinimaxEngine({
+      rules: { ...rules, play: (p, m) => (n++, rules.play(p, m)) },
+      evaluate,
+      movePriority,
+      quiescence,
+      name: "q",
+    });
+    let last: Analysis<ChessMove> | undefined;
+    for await (const a of e.analyze(decode(fen), { maxDepth: 3 })) last = a;
+    return { n, best: last!.lines[0]!.moves.map(uci)[0] };
+  };
+  const full = await nodes({ standPat: quiescenceOptions.standPat });
+  const pruned = await nodes(quiescenceOptions);
+  assert(pruned.n < full.n, `${pruned.n} >= ${full.n}`);
+  assertEquals(pruned.best, full.best);
 });
