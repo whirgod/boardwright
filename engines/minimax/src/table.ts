@@ -19,10 +19,14 @@
  *
  * A key hashes to one slot, which holds one entry. There is one slot per
  * {@link ENTRY_BYTES} of budget, so with real keys the budget runs out
- * before the slots do. Replacement prefers depth: a new entry does not
+ * before the slots do. The slots are allocated in chunks, when a store first
+ * needs one, so a short search does not pay for a large budget. Replacement
+ * prefers depth: a new entry does not
  * replace one searched deeper in the same iteration (depth of iterative
  * deepening), but entries from earlier iterations always give way, so the
- * table does not fill up with stale results.
+ * table does not fill up with stale results. This holds when the budget is
+ * full as well: an entry that does not fit still drops an occupant from an
+ * earlier iteration, so the budget keeps turning over.
  */
 
 import { MATE_BOUND } from "@boardwright/engine-search";
@@ -75,7 +79,7 @@ export function fromTableScore(score: number, ply: number): number {
 
 /**
  * Bytes counted per entry besides its key: the entry object and the key's
- * string header. Measured in V8 at about 100-115 bytes; rounded up, so the
+ * string header. Measured in V8 at about 100-110 bytes; rounded up, so the
  * budget is an upper bound.
  */
 export const ENTRY_BYTES = 160;
@@ -118,6 +122,9 @@ export interface TranspositionTable {
 /** The probe of a table without slots. */
 const NOTHING: Probe = { entry: undefined, store() {} };
 
+/** Slots per chunk: the slot array is allocated chunk by chunk, on first use. */
+export const CHUNK_SLOTS = 256;
+
 interface Slot extends Entry {
   readonly key: string;
   /** Bytes counted for this entry. */
@@ -129,19 +136,27 @@ interface Slot extends Entry {
  * Creates an empty table with a memory budget of `budget` bytes (see
  * {@link checkTableBytes}). A budget below {@link ENTRY_BYTES} (e.g. 0) has
  * no slot and stores nothing.
+ *
+ * There is one slot per {@link ENTRY_BYTES} of budget, but the slot array is
+ * allocated in chunks of {@link CHUNK_SLOTS} slots when a store first needs
+ * them, so a short search does not pay for a large budget (a 256 MiB table
+ * has 1.7 million slots, 13 MB). A chunk counts as {@link SLOT_BYTES} per
+ * slot once allocated, and is allocated only if the budget has room for it,
+ * so `bytes` never exceeds the budget.
  */
 export function createTranspositionTable(budget: number): TranspositionTable {
   checkTableBytes(budget);
-  const slots: (Slot | undefined)[] = new Array(
-    Math.floor(budget / ENTRY_BYTES),
+  const slotCount = Math.floor(budget / ENTRY_BYTES);
+  const chunks: ((Slot | undefined)[] | undefined)[] = new Array(
+    Math.ceil(slotCount / CHUNK_SLOTS),
   );
-  let bytes = slots.length * SLOT_BYTES;
+  let bytes = 0;
   let size = 0;
   let iteration = 0;
 
   return {
     probe(key) {
-      if (slots.length === 0) return NOTHING;
+      if (slotCount === 0) return NOTHING;
       // FNV-1a hash, noting whether the key needs two bytes per character.
       let h = 0x811c9dc5;
       let wide = false;
@@ -150,20 +165,41 @@ export function createTranspositionTable(budget: number): TranspositionTable {
         if (c > 0xff) wide = true;
         h = Math.imul(h ^ c, 0x01000193);
       }
-      const i = (h >>> 0) % slots.length;
+      const i = (h >>> 0) % slotCount;
+      const chunk = Math.floor(i / CHUNK_SLOTS);
+      const at = i - chunk * CHUNK_SLOTS;
       const cost = ENTRY_BYTES + (wide ? 2 : 1) * key.length;
-      const found = slots[i];
+      const found = chunks[chunk]?.[at];
       return {
         entry: found?.key === key ? found : undefined,
         store(entry) {
-          const old = slots[i]; // may have changed since the lookup
+          let slots = chunks[chunk]; // may have changed since the lookup
+          const old = slots?.[at];
           if (old?.iteration === iteration && old.depth > entry.depth) return;
           const growth = cost - (old?.cost ?? 0);
-          if (bytes + growth > budget) return;
-          bytes += growth;
+          const chunkBytes = slots === undefined
+            ? Math.min(CHUNK_SLOTS, slotCount - chunk * CHUNK_SLOTS) *
+              SLOT_BYTES
+            : 0;
+          if (bytes + chunkBytes + growth > budget) {
+            // No room: an entry from an earlier iteration still gives way,
+            // so the budget keeps turning over.
+            if (old !== undefined && old.iteration < iteration) {
+              slots![at] = undefined;
+              bytes -= old.cost;
+              size--;
+            }
+            return;
+          }
+          if (slots === undefined) {
+            slots = chunks[chunk] = new Array(
+              chunkBytes / SLOT_BYTES,
+            );
+          }
+          bytes += chunkBytes + growth;
           if (old === undefined) size++;
           const { move, depth, score, bound } = entry;
-          slots[i] = { key, cost, iteration, move, depth, score, bound };
+          slots[at] = { key, cost, iteration, move, depth, score, bound };
         },
       };
     },

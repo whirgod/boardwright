@@ -58,11 +58,13 @@ export const engine = createMinimaxEngine({
   (repetition history, move clocks). A Notation that leaves part of the Position out makes stored
   scores wrong.
 - One table per `analyze` call, bounded by a memory budget, the `tableBytes` option
-  (`DEFAULT_TABLE_BYTES` = 32 MiB, 0 = no table). It counts each entry as 160 bytes plus its key
+  (`DEFAULT_TABLE_BYTES` = 256 MiB, 0 = no table; the server runs up to 4 searches at once, so
+  the worst case is about 1 GiB). The table grows with the search (its slots are allocated on
+  first use), so short searches stay small. It counts each entry as 160 bytes plus its key
   (V8 needs about 100-110 bytes plus the key). Keys are exact and can be long: from a few dozen
   characters to about 2,000 in a quiet chess endgame with a long repetition history. An entry
   that would exceed the budget is not stored; deeper entries win a slot, entries from earlier
-  depths give way.
+  depths give way (also when the budget is full).
 
 ## `engines/expectiminimax` (`@boardwright/engine-expectiminimax`)
 

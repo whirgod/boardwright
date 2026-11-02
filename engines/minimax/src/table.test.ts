@@ -6,6 +6,7 @@ import {
 } from "@std/assert";
 import { MATE, MAX_EVALUATION } from "@boardwright/engine-search";
 import {
+  CHUNK_SLOTS,
   createTranspositionTable,
   type Entry,
   ENTRY_BYTES,
@@ -45,11 +46,59 @@ Deno.test("returns what was stored, by key", () => {
   assertHolds(table, "b", entry(1, 0));
   assertHolds(table, "c");
   assertEquals(table.size, 2);
-  // A probe stores for its own key, even after other keys were stored.
+});
+
+Deno.test("a probe stores for its own key, even after other keys were stored", () => {
+  const table = createTranspositionTable(4096);
   const probe = table.probe("d");
   set(table, "e", entry(1, 1));
   probe.store(entry(5, 2));
   assertHolds(table, "d", entry(5, 2));
+});
+
+Deno.test("store re-reads its slot: the budget holds when the occupant changed since the lookup", () => {
+  const table = createTranspositionTable(ONE_SLOT); // all keys share the slot
+  const probe = table.probe("d"); // looked up while the slot was empty
+  set(table, "x".repeat(100), entry(1)); // the "subtree search" fills the slot
+  assertEquals(table.bytes, SLOT_BYTES + ENTRY_BYTES + 100);
+  table.nextIteration();
+  set(table, "e", entry(1)); // replaces the long entry with a short one
+  assertEquals(table.bytes, SLOT_BYTES + ENTRY_BYTES + 1);
+  // A stale (empty) slot would add a second entry's cost.
+  probe.store(entry(1, 7));
+  assertHolds(table, "d", entry(1, 7));
+  assertEquals(table.size, 1);
+  assertEquals(table.bytes, SLOT_BYTES + ENTRY_BYTES + 1);
+});
+
+Deno.test("allocates its slots lazily, within the budget", () => {
+  const budget = 256 * 2 ** 20;
+  const table = createTranspositionTable(budget);
+  assertEquals(table.bytes, 0);
+  assertHolds(table, "a"); // a lookup allocates nothing
+  assertEquals(table.bytes, 0);
+  set(table, "a", entry(1, 2));
+  // One chunk of slots plus the entry.
+  assertEquals(table.bytes, CHUNK_SLOTS * SLOT_BYTES + ENTRY_BYTES + 1);
+  assertHolds(table, "a", entry(1, 2));
+  // Many keys: never over budget, and slot bytes grow with use only.
+  for (let i = 0; i < 20000; i++) set(table, `key ${i}`, entry(1, i));
+  assert(table.bytes <= budget);
+  assert(table.bytes < budget / 4, `${table.bytes}`);
+  for (const i of [0, 9999, 19999]) {
+    assertHolds(table, `key ${i}`, entry(1, i));
+  }
+});
+
+Deno.test("a chunk is allocated only if the budget has room for it", () => {
+  // Two chunks' worth of slots; long keys use up the budget quickly.
+  const budget = 2 * CHUNK_SLOTS * ENTRY_BYTES;
+  const table = createTranspositionTable(budget);
+  for (let i = 0; i < 5000; i++) {
+    set(table, `key ${i}`.padEnd(2000, "|"), entry(1, i));
+    assert(table.bytes <= budget, `${table.bytes} > ${budget}`);
+  }
+  assert(table.size > 0);
 });
 
 Deno.test("stays within its memory budget, also with long keys", () => {
@@ -89,7 +138,7 @@ Deno.test("counts keys beyond Latin-1 at two bytes per character", () => {
   assertEquals(wide.bytes, budget - (room % 2));
 });
 
-Deno.test("a full budget keeps the entries it has", () => {
+Deno.test("a full budget does not store what would exceed it", () => {
   const table = createTranspositionTable(ONE_SLOT);
   const key = (c: string, length: number) => c.repeat(length);
   set(table, key("a", 100), entry(1));
@@ -97,12 +146,24 @@ Deno.test("a full budget keeps the entries it has", () => {
   table.nextIteration();
   set(table, key("b", 100), entry(1));
   assertHolds(table, key("b", 100), entry(1));
-  // ...but a longer one would exceed the budget: the old entry stays.
-  table.nextIteration();
+  // ...but not one in the same iteration that is longer.
   set(table, key("c", 200), entry(1));
   assertHolds(table, key("c", 200));
   assertHolds(table, key("b", 100), entry(1));
   assertEquals(table.bytes, SLOT_BYTES + ENTRY_BYTES + 100);
+});
+
+Deno.test("an entry from an earlier iteration gives way when the budget is full", () => {
+  const table = createTranspositionTable(ONE_SLOT);
+  set(table, "a".repeat(100), entry(1));
+  table.nextIteration();
+  // Too long to fit: not stored, but the stale occupant is dropped...
+  set(table, "b".repeat(200), entry(1));
+  assertEquals(table.size, 0);
+  assertEquals(table.bytes, SLOT_BYTES);
+  // ...so the budget serves the next key, even a longer one than the old.
+  set(table, "c".repeat(120), entry(1));
+  assertHolds(table, "c".repeat(120), entry(1));
 });
 
 Deno.test("replacement keeps the deeper entry within an iteration", () => {
