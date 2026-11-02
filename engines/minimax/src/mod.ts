@@ -115,9 +115,10 @@ export interface MinimaxOptions<Position, Move> {
   readonly rules: GameRulesWithoutChance<Position, Move>;
   /**
    * Heuristic value of a non-terminal Position from the perspective of the
-   * Seat to move (higher is better for that Seat). Called only at the depth
-   * horizon. Must not return NaN; magnitudes above {@link MAX_EVALUATION}
-   * are clamped so they never outrank a forced win.
+   * Seat to move (higher is better for that Seat). Called at the depth
+   * horizon, or with `quiescence` past it: wherever the Seat to move stands
+   * pat, and at the cap. Must not return NaN; magnitudes above
+   * {@link MAX_EVALUATION} are clamped so they never outrank a forced win.
    */
   readonly evaluate: (position: Position) => number;
   readonly name: string;
@@ -138,9 +139,12 @@ export interface MinimaxOptions<Position, Move> {
    * the Game's order breaks ties. The root at depth 1 is ordered the same
    * way. The convention: a priority above 0 marks a tactical Move (capture,
    * promotion) that goes before killer Moves and the history heuristic, 0
-   * or below a quiet one. Called once per Move at every interior node (and once more for the Move that causes a cutoff, to tell if it is quiet), so
-   * keep it cheap. Ordering never changes a result, only the node count.
-   * Without it the Game's order is used.
+   * or below a quiet one. Called once per Move at every interior node (and
+   * once more for the Move that causes a cutoff, to tell if it is quiet),
+   * and with `quiescence` once per legal Move at every quiescence node (to
+   * pick and order the tactical Moves), so keep it cheap. Ordering never
+   * changes a result, only the node count. Without it the Game's order is
+   * used.
    */
   readonly movePriority?: MovePriority<Position, Move>;
   /**
@@ -188,7 +192,8 @@ export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
  *   its own principal variation.
  * - A terminal Position yields a single Analysis with depth 0 and no Lines.
  * - Invalid limits throw a RangeError from `analyze` itself; an invalid
- *   `tableBytes` throws one from `createMinimaxEngine`.
+ *   `tableBytes` or `quiescence.maxPlies` throws one from
+ *   `createMinimaxEngine`.
  *
  * The search runs on the calling thread but gives the event loop a turn
  * every few milliseconds, so timers and abort requests are observed while it

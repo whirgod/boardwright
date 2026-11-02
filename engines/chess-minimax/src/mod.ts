@@ -20,8 +20,8 @@
  *
  * What it deliberately does not do (so it is easy to read, and to improve):
  * no king-safety, mobility, pawn-structure or bishop-pair terms beyond the
- * tables; no killer Moves or history heuristic, so it searches only a few
- * plies per second budget.
+ * tables; no history heuristic, so it searches only a few plies per second
+ * budget.
  *
  * Quiescence search (`quiescence`): at the depth horizon the search goes on
  * with captures and promotions until the Position is quiet, so it does not
@@ -35,7 +35,9 @@
  * best Move of the previous depth first, from the library's transposition
  * table, then captures and promotions (`movePriority`: captures by MVV-LVA,
  * most valuable victim and least valuable attacker first; a queen promotion
- * ahead of them), then the quiet Moves in the Game's order. The table's key
+ * ahead of them), then the library's killer Moves, then the other quiet
+ * Moves in the Game's order. Quiescence searches the captures and promotions
+ * in the same order (all legal Moves, in check). The table's key
  * is the whole Position, and a chess Position includes the move clocks and
  * the repetition history, so different Move orders (1. Nf3 Nf6 2. Nc3 and
  * 1. Nc3 Nf6 2. Nf3) rarely share a key: the table mostly helps by ordering

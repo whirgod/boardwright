@@ -57,8 +57,8 @@ export const engine = createMinimaxEngine({
   stored in the table, and Lines include them, so a Line may be longer than the nominal `depth`.
   Standing pat counts as a horizon (so the depth is not `solved`); a quiescence subtree that ends
   only in Outcomes does not. Forced results found in quiescence count their plies from the root;
-  they are real wins, but a quiet Move past the horizon might win sooner. Without the option,
-  the search and its node counts are unchanged.
+  they are real wins, but a quiet Move past the horizon might win sooner. Without the option, a
+  Position at the horizon is evaluated as it stands.
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
