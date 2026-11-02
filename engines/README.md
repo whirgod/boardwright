@@ -59,6 +59,14 @@ export const engine = createMinimaxEngine({
   only in Outcomes does not. Forced results found in quiescence count their plies from the root;
   they are real wins, but a quiet Move past the horizon might win sooner. Without the option, a
   Position at the horizon is evaluated as it stands.
+- Search extensions, with the optional Engine-supplied `extend(position)`: true for a non-terminal
+  child Position that deserves one more ply (chess: the Seat to move is in check), which is then
+  searched one ply deeper than the nominal depth, in the same iteration, so a forced sequence just
+  past the horizon is seen. Applies in the main search only (never inside quiescence); at most
+  `maxExtensions` per path from the root (`DEFAULT_MAX_EXTENSIONS` = 4; RangeError unless an
+  integer >= 0), which bounds the tree in Games with endless checks. The table stores the depth
+  actually searched, so a shallower entry never answers a probe that needs the extra ply.
+  Without the option, the search is exactly as before.
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
@@ -142,7 +150,9 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
   Quiescence search (`quiescence`): captures (en passant included) and promotions past the
   horizon, no stand pat in check (`isInCheck` from `@boardwright/game-chess`); it costs nodes in
   tactical Positions but wins most games against the same Engine without it, at equal depth and
-  at equal time per Move.
+  at equal time per Move. Check extension (`extend` = `isInCheck`): a Move that gives check is
+  searched a ply deeper (up to 4 per path), so a forced mate by checks just past the depth is
+  found; +0-25% nodes, 15/20 against the same Engine without it at equal time per Move.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)
   squashed by `tanh` into (-1, 1), `winValue` 1; gammons are not valued. Searches without

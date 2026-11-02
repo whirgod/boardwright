@@ -46,6 +46,11 @@
  * Outcomes does not. Quiescence results are not stored in the table, and
  * the Lines include the quiescence Moves.
  *
+ * An optional Engine-supplied `extend` adds a ply below a child that deserves
+ * it (in chess, a check), up to `maxExtensions` per path, so a forced
+ * sequence just past the depth is seen. Extensions apply in the main search
+ * only, and the table stores the depth searched, extensions included.
+ *
  * Principal variations stay complete: a score inside the window is never
  * taken from the table. A stored score may come from a deeper search, so a
  * depth can see further than a plain search to that depth would. Each
@@ -192,7 +197,31 @@ export interface MinimaxOptions<Position, Move> {
    * keep using `encodeMove` text whatever the key.
    */
   readonly moveKey?: (move: Move) => string | number;
+  /**
+   * Optional search extension, Engine knowledge like `evaluate`: whether the
+   * non-terminal Position `next`, just reached by a Move, deserves one more
+   * ply (in chess: the Seat to move is in check, so a forced sequence of
+   * checks is not cut off at the horizon). The child is then searched one
+   * ply deeper than the nominal depth, in the same iteration. Called once
+   * per Move at every interior node and at the horizon (not inside
+   * quiescence), so keep it cheap. At most `maxExtensions` plies are added
+   * on any path from the root, which bounds the tree in Games with endless
+   * checks. The table stores the depth actually searched, so an extended
+   * entry only answers a probe it covers; as the extra plies depend on the
+   * path, a stored value may differ slightly from a fresh search of the same
+   * depth. Without it, the search is exactly as before.
+   */
+  readonly extend?: (position: Position) => boolean;
+  /**
+   * The bound on extensions per path from the root, an integer >= 0 (a
+   * RangeError from `createMinimaxEngine` otherwise); default
+   * {@link DEFAULT_MAX_EXTENSIONS}.
+   */
+  readonly maxExtensions?: number;
 }
+
+/** Default bound on extensions per path (see `MinimaxOptions.extend`). */
+export const DEFAULT_MAX_EXTENSIONS = 4;
 
 /**
  * Default memory budget of the transposition table: 256 MiB per search. The
@@ -239,6 +268,8 @@ export function createMinimaxEngine<Position, Move>(
     movePriority,
     quiescence,
     moveKey,
+    extend,
+    maxExtensions = DEFAULT_MAX_EXTENSIONS,
   } = options;
   // Callers that bypass the type (e.g. `any`, or rules widened to GameRules).
   if (hasChance(rules as GameRules<Position, Move>)) {
@@ -248,6 +279,11 @@ export function createMinimaxEngine<Position, Move>(
   }
   checkTableBytes(tableBytes);
   if (quiescence) checkQuiescence(quiescence);
+  if (!(Number.isInteger(maxExtensions) && maxExtensions >= 0)) {
+    throw new RangeError(
+      `maxExtensions must be an integer >= 0, got ${maxExtensions}`,
+    );
+  }
 
   return {
     name,
@@ -261,6 +297,8 @@ export function createMinimaxEngine<Position, Move>(
         movePriority,
         quiescence,
         moveKey,
+        extend,
+        maxExtensions,
         position,
         limits,
         signal,
@@ -276,6 +314,8 @@ async function* analyze<Position, Move>(
   movePriority: MovePriority<Position, Move> | undefined,
   quiescence: Quiescence<Position, Move> | undefined,
   moveKey: ((move: Move) => string | number) | undefined,
+  extend: ((position: Position) => boolean) | undefined,
+  maxExtensions: number,
   root: Position,
   limits: SearchLimits,
   signal: AbortSignal | undefined,
@@ -315,6 +355,8 @@ async function* analyze<Position, Move>(
   let horizons = 0;
   // Quiescence plies past the horizon before a Position is evaluated anyway.
   const maxPlies = quiescence?.maxPlies ?? DEFAULT_QUIESCENCE_PLIES;
+  // Extensions on the path from the root to the node being searched.
+  let extended = 0; // balanced by `child`; reset per depth in `searchDepth`
 
   /** The evaluation of non-terminal `position`, for its Seat to move. */
   function staticScore(position: Position): number {
@@ -360,15 +402,41 @@ async function* analyze<Position, Move>(
   ): Search<Result<Move>> {
     if (counter.visit()) yield;
     const next = rules.play(position, move);
+    // Never inside quiescence (`depthLeft` < 0); never past the bound.
+    let bumped = false;
+    if (
+      extend && depthLeft >= 0 && extended < maxExtensions &&
+      rules.toMove(next) !== undefined && extend(next)
+    ) {
+      // Only adds plies: a stored depth d still means "at least d plies",
+      // whatever path reached the Position.
+      depthLeft++;
+      extended++;
+      bumped = true;
+    }
     const leaf = leafScore(next, seat, depthLeft, ply + 1);
-    if (leaf !== undefined) return { score: leaf, pv: NO_MOVES };
+    if (leaf !== undefined) {
+      if (bumped) extended--;
+      return { score: leaf, pv: NO_MOVES };
+    }
     const nextSeat = rules.toMove(next)!;
     const search = depthLeft > 0 ? negamax : quiesce;
+    let result: Result<Move>;
     if (nextSeat === seat) {
-      return yield* search(next, nextSeat, depthLeft, ply + 1, alpha, beta);
+      result = yield* search(next, nextSeat, depthLeft, ply + 1, alpha, beta);
+    } else {
+      const r = yield* search(
+        next,
+        nextSeat,
+        depthLeft,
+        ply + 1,
+        -beta,
+        -alpha,
+      );
+      result = { score: -r.score, pv: r.pv };
     }
-    const r = yield* search(next, nextSeat, depthLeft, ply + 1, -beta, -alpha);
-    return { score: -r.score, pv: r.pv };
+    if (bumped) extended--;
+    return result;
   }
 
   /**
@@ -528,6 +596,7 @@ async function* analyze<Position, Move>(
   /** One depth: every root Move searched to `depth`, best `wanted` exact. */
   function* searchDepth(depth: number): Search<Iteration<Move>> {
     horizons = 0;
+    extended = 0; // a depth never starts mid-path, whatever happened before
     table.nextIteration();
     killers.clear(); // see `Killers`
     history.age();
