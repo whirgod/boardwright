@@ -27,9 +27,15 @@
  * results. This holds when the budget is full as well: an entry that does
  * not fit still drops an occupant from an earlier iteration, so the budget
  * keeps turning over.
+ *
+ * Shared plumbing of the Engine libraries (`engines/minimax`,
+ * `engines/expectiminimax`), exported as `@boardwright/engine-search/table`.
+ * The table only stores and finds entries; what a score means (whose
+ * perspective, when a stored result may answer a visit) is up to the
+ * library's search.
  */
 
-import { MATE_BOUND } from "@boardwright/engine-search";
+import { MATE_BOUND } from "./mod.ts";
 
 /**
  * What a fail-soft alpha-beta search of window (alpha, beta) returned: the
@@ -87,6 +93,14 @@ export const ENTRY_BYTES = 160;
 export const SLOT_BYTES = 8;
 /** Largest memory budget, 4 GiB (some 27 million slots). */
 export const MAX_TABLE_BYTES = 2 ** 32;
+
+/**
+ * Default memory budget of a search's table: 256 MiB. The table grows with
+ * the search, so short searches use little. The server runs up to 4
+ * searches at once (Worker memory is not capped), so the worst case is
+ * about 1 GiB.
+ */
+export const DEFAULT_TABLE_BYTES = 256 * 2 ** 20;
 
 /** Checks a memory budget: an integer from 0 to {@link MAX_TABLE_BYTES}. */
 export function checkTableBytes(bytes: number): void {

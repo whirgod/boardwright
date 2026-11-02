@@ -24,6 +24,9 @@ algorithm. Depends only on `core` and knows nothing about chance.
 - `rankRootMoves` / `toLines` — multi-PV bookkeeping at the root.
 - Score scale: `MATE`, `MATE_BOUND`, `MAX_EVALUATION`, `terminalScore`, `horizonScore`
   (clamp, NaN check), `toScore`.
+- `@boardwright/engine-search/table` (`src/table.ts`) — the transposition table both libraries
+  use: `createTranspositionTable(budget)`, `DEFAULT_TABLE_BYTES`, `checkTableBytes`, and the
+  mate-distance conversion `toTableScore` / `fromTableScore`.
 
 ## `engines/minimax` (`@boardwright/engine-minimax`)
 
@@ -70,7 +73,7 @@ export const engine = createMinimaxEngine({
 - Games with chance are refused (ADR 0005): `rules` is typed `GameRulesWithoutChance`, and
   `createMinimaxEngine` throws a `TypeError` for rules that pass `hasChance`. Chance search
   belongs in `engines/expectiminimax`.
-- Transposition table (`src/table.ts`), keyed by `Notation.encodePosition`: tries the best Move
+- Transposition table (`@boardwright/engine-search/table`), keyed by `Notation.encodePosition`: tries the best Move
   of the previous depth first (hash Move) and reuses stored scores where sound (searched at least
   as deep, bound settles the window, forced results counted from the Position, a stored horizon
   still counts against `solved`). Scores inside the window are searched again, so PVs stay

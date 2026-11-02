@@ -4,7 +4,7 @@ import {
   assertObjectMatch,
   assertThrows,
 } from "@std/assert";
-import { MATE, MAX_EVALUATION } from "@boardwright/engine-search";
+import { MATE, MAX_EVALUATION } from "./mod.ts";
 import {
   CHUNK_SLOTS,
   createTranspositionTable,
