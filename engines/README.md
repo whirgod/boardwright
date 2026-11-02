@@ -53,6 +53,12 @@ export const engine = createMinimaxEngine({
   as deep, bound settles the window, forced results counted from the Position, a stored horizon
   still counts against `solved`). Scores inside the window are searched again, so PVs stay
   complete. A stored deeper result may let a depth see further than a plain search of that depth.
+- Move ordering: the hash Move first, then, with the optional Engine-supplied
+  `movePriority(position, move)` (finite number, else RangeError), the rest by priority, highest
+  first, the Game's order breaking ties; the root at depth 1 too. Convention (`src/ordering.ts`):
+  priority > 0 is a tactical Move (capture, promotion), <= 0 a quiet one; killer Moves and the
+  history heuristic (planned) will order the quiet Moves after the tactical ones. The hook runs
+  once per Move at every interior node; ordering never changes a value, only the node count.
 - The key must determine everything the search sees: equal `encodePosition` texts must have the
   same legal Moves in the same order, the same Seat to move and Outcome, and the same future
   (repetition history, move clocks). A Notation that leaves part of the Position out makes stored
@@ -105,13 +111,15 @@ Each composes an Engine library with a heuristic evaluation and exports `rules` 
 
 - `engines/tic-tac-toe-minimax`: neutral evaluation; the Game is solved outright.
 - `engines/nine-mens-morris-minimax`: material (board + hand) dominates; closed mills, blocked
-  opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked".
+  opponent pieces and two-in-a-row mill threats refine it. Flying Seats are never "blocked". Move ordering: hash Move, then Moves that
+  close a mill (`movePriority`; about -30% nodes at depth 6, -54% at depth 7).
 - `engines/checkers-minimax`: man 100, king 160, plus small bonuses for advancement, back-row
   guards and central squares.
 - `engines/chess-minimax`: material (P100 N320 B330 R500 Q900) plus piece-square tables from
   Michniewski's Simplified Evaluation Function (cited in the source), with the king table
-  switching to an endgame table. Move ordering comes only from the library's transposition table
-  (no captures-first hook yet), and chess keys include the move clocks and repetition history, so
+  switching to an endgame table. Move ordering: the library's transposition table (hash Move), then
+  captures by MVV-LVA (en passant included) and promotions (`movePriority`, about -43% to -77% nodes
+  at depth 5, -32% to -97% at depth 6), then quiet Moves; chess keys include the move clocks and repetition history, so
   few transpositions share a key; use `maxDepth` (4-5) or `maxTimeMs`.
 - `engines/backgammon-expecti`: expectiminimax with a readable evaluation in pips (pip count,
   borne-off and bar checkers, blots within the Opponent's reach, made points, home-board points)

@@ -324,6 +324,111 @@ Deno.test("hash Moves from the previous depth save nodes", async () => {
   assert(withTable < withoutTable / 2, `${withTable} vs ${withoutTable}`);
 });
 
+Deno.test("a Move priority saves nodes when the best Move is listed last", async () => {
+  const sum = (p: readonly number[]) =>
+    p.reduce((s, m, i) => s + (i % 2 === p.length % 2 ? m : -m), 0);
+  /** Nodes (Moves played) to search `wide` to depth 5, without a table. */
+  async function nodes(
+    movePriority?: (p: readonly number[], m: number) => number,
+  ) {
+    let played = 0;
+    const counting = {
+      ...wide,
+      play: (p: readonly number[], m: number) => (played++, wide.play(p, m)),
+    };
+    const e = createMinimaxEngine({
+      rules: counting,
+      name: "w",
+      evaluate: sum,
+      tableBytes: 0,
+      ...(movePriority ? { movePriority } : {}),
+    });
+    const a = await final(e, [], { maxDepth: 5 });
+    assertEquals(a.lines[0]!.moves, [4, 4, 4, 4, 4]);
+    return played;
+  }
+  const plain = await nodes();
+  const ordered = await nodes((_p, m) => m);
+  assert(ordered < plain / 2, `${ordered} vs ${plain}`);
+});
+
+Deno.test("a Move priority never changes a Score (no table)", async () => {
+  // The Game's Moves are numbered by their index in the Position.
+  const index = (p: TicTacToePosition, m: TicTacToeMove) =>
+    ttt.legalMoves(p).indexOf(m);
+  const priorities: ((p: TicTacToePosition, m: TicTacToeMove) => number)[] = [
+    (p, m) => -index(p, m), // reverses the Game's order
+    (p, m) => index(p, m),
+    (p, m) => (index(p, m) % 3) - 1, // negative, zero and positive
+    () => 7, // all equal
+  ];
+  const plain = createMinimaxEngine({
+    rules: ttt,
+    evaluate: () => 0,
+    name: "plain",
+    tableBytes: 0,
+  });
+  for (const p of samplePositions()) {
+    const moves = ttt.legalMoves(p);
+    const scores = (a: Analysis<TicTacToeMove>) =>
+      a.lines.map((l) => [String(l.moves[0]), rank(l.score)] as const).sort();
+    const expected = scores(await final(plain, p, { lines: moves.length }));
+    for (const movePriority of priorities) {
+      const e = createMinimaxEngine({
+        rules: ttt,
+        evaluate: () => 0,
+        name: "ordered",
+        tableBytes: 0,
+        movePriority,
+      });
+      const a = await final(e, p, { lines: moves.length });
+      assertEquals(scores(a), expected, ttt.notation.encodePosition(p));
+    }
+  }
+});
+
+Deno.test("a Move priority orders the root at depth 1 and is called once per Move", async () => {
+  const seen: number[] = [];
+  const e = createMinimaxEngine({
+    rules: wide,
+    name: "w",
+    evaluate: () => 0,
+    movePriority: (_p, m) => (seen.push(m), m),
+  });
+  const a = await final(e, [], { maxDepth: 1, lines: 5 });
+  assertEquals(seen, [0, 1, 2, 3, 4]);
+  // All Scores are equal, so the root order shows in the order of the Lines.
+  assertEquals(a.lines.map((l) => l.moves[0]), [4, 3, 2, 1, 0]);
+});
+
+Deno.test("a Move priority that is not finite is a RangeError", async () => {
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    const e = createMinimaxEngine({
+      rules: ttt,
+      evaluate: () => 0,
+      name: "bad",
+      movePriority: () => bad,
+    });
+    // At the root, and further down.
+    await assertRejects(
+      () => final(e, ttt.initialPosition()),
+      RangeError,
+      "finite",
+    );
+    const late = createMinimaxEngine({
+      rules: ttt,
+      evaluate: () => 0,
+      name: "late",
+      movePriority: (p) => ttt.legalMoves(p).length === 9 ? 0 : bad,
+    });
+    await assertRejects(
+      () => final(late, ttt.initialPosition(), { maxDepth: 3 }),
+      RangeError,
+      "finite",
+    );
+  }
+});
+
 Deno.test("matches an exhaustive reference on sampled positions", async () => {
   const sample = samplePositions();
   const runs = [engine, tinyTable].flatMap((e) => sample.map((p) => [e, p]));
