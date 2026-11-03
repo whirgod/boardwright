@@ -45,3 +45,9 @@ Work items are tracked as GitHub issues (labels `wave:<n>`, `model:<size>`), see
 ## Next
 
 New work starts as GitHub issues (see [WORKFLOW.md](WORKFLOW.md)).
+
+Engine search follow-ups, wave 11 (`wave:<n>` labels):
+
+- [ ] Trustworthy `solved` results under a Transposition key (graph-history interaction) (#102)
+- [ ] Chess SEE: pinned attackers and promoting recaptures (#103)
+- [ ] Chess quiescence: knight underpromotions with check, no delta pruning of mating captures (#104)
